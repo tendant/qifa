@@ -101,6 +101,10 @@ func (d *Deployer) deployHost(ctx context.Context, deployment state.Deployment, 
 	containerName := d.containerName(role, deployment.Version)
 	remoteEnv := fmt.Sprintf("/tmp/%s.env", containerName)
 	appPort := d.appPort(role, server)
+	previousActive, err := d.store.ActiveTarget(d.cfg.Service, host, role)
+	if err != nil && !errors.Is(err, state.ErrNoActiveTarget) {
+		return err
+	}
 
 	if err := d.appendEvent(deployment.ID, host, role, "connecting", "connecting to host"); err != nil {
 		return err
@@ -155,15 +159,28 @@ func (d *Deployer) deployHost(ctx context.Context, deployment state.Deployment, 
 			Service: d.cfg.Service,
 			Host:    targetHost,
 			Port:    appPort,
-			AppPort: appPort,
 		}); err != nil {
 			return err
 		}
 	}
+	if err := d.store.AppendActiveTarget(state.ActiveTarget{
+		Service:      d.cfg.Service,
+		Host:         host,
+		Role:         role,
+		DeploymentID: deployment.ID,
+		Version:      deployment.Version,
+		Image:        imageRef,
+		Container:    containerName,
+		TargetHost:   targetHost,
+		TargetPort:   appPort,
+		UpdatedAt:    time.Now().UTC(),
+	}); err != nil {
+		return err
+	}
 	if err := d.appendEvent(deployment.ID, host, role, "deployed", "host deployed successfully"); err != nil {
 		return err
 	}
-	if err := d.cleanupPriorContainers(ctx, host, role, deployment.Version); err != nil {
+	if err := d.cleanupPriorContainer(ctx, previousActive, containerName); err != nil {
 		return err
 	}
 	return nil
@@ -225,16 +242,25 @@ func (d *Deployer) Status(ctx context.Context, out io.Writer) error {
 			fmt.Fprintf(out, "%s %s %s %s\n", event.CreatedAt.Format(time.RFC3339), event.Role, event.Host, event.Message)
 		}
 	}
+	activeTargets, err := d.store.ActiveTargets(d.cfg.Service)
+	if err != nil {
+		return err
+	}
+	if len(activeTargets) > 0 {
+		fmt.Fprintln(out, "")
+		for _, target := range activeTargets {
+			fmt.Fprintf(out, "active %s %s %s %s %s\n", target.UpdatedAt.Format(time.RFC3339), target.Role, target.Host, target.Version, target.Container)
+		}
+	}
 	return nil
 }
 
 func (d *Deployer) Logs(ctx context.Context, out io.Writer) error {
-	host, role, err := d.defaultTarget()
+	host, container, err := d.defaultTarget()
 	if err != nil {
 		return err
 	}
-	name := d.latestContainer(role)
-	logOutput, err := d.remoteDocker.Logs(ctx, host, name)
+	logOutput, err := d.remoteDocker.Logs(ctx, host, container)
 	if err != nil {
 		return err
 	}
@@ -243,11 +269,11 @@ func (d *Deployer) Logs(ctx context.Context, out io.Writer) error {
 }
 
 func (d *Deployer) Exec(ctx context.Context, command string, out io.Writer) error {
-	host, role, err := d.defaultTarget()
+	host, container, err := d.defaultTarget()
 	if err != nil {
 		return err
 	}
-	result, err := d.remoteDocker.Exec(ctx, host, d.latestContainer(role), command)
+	result, err := d.remoteDocker.Exec(ctx, host, container, command)
 	if err != nil {
 		return err
 	}
@@ -325,58 +351,42 @@ func (d *Deployer) containerName(role, version string) string {
 	return fmt.Sprintf("%s-%s-%s", d.cfg.Service, role, version)
 }
 
-func (d *Deployer) latestContainer(role string) string {
-	deployments, _, err := d.store.Snapshot()
-	if err != nil || len(deployments) == 0 {
-		return d.cfg.Service + "-" + role
+func (d *Deployer) latestContainer(role, host string) string {
+	active, err := d.store.ActiveTarget(d.cfg.Service, host, role)
+	if err == nil {
+		return active.Container
 	}
-	var latest *state.Deployment
-	for _, deployment := range deployments {
-		if deployment.Service != d.cfg.Service {
-			continue
-		}
-		candidate := deployment
-		if latest == nil || candidate.StartedAt.After(latest.StartedAt) {
-			latest = &candidate
-		}
-	}
-	if latest == nil {
-		return d.cfg.Service + "-" + role
-	}
-	return d.containerName(role, latest.Version)
+	return d.cfg.Service + "-" + role
 }
 
-func (d *Deployer) defaultTarget() (host string, role string, err error) {
-	for _, role = range orderedRoles(d.cfg.Servers) {
+func (d *Deployer) defaultTarget() (host string, container string, err error) {
+	for _, role := range orderedRoles(d.cfg.Servers) {
+		server := d.cfg.Servers[role]
+		for _, host := range server.Hosts {
+			active, activeErr := d.store.ActiveTarget(d.cfg.Service, host, role)
+			if activeErr == nil {
+				return active.Host, active.Container, nil
+			}
+			if !errors.Is(activeErr, state.ErrNoActiveTarget) {
+				return "", "", activeErr
+			}
+		}
+	}
+	for _, role := range orderedRoles(d.cfg.Servers) {
 		server := d.cfg.Servers[role]
 		if len(server.Hosts) > 0 {
-			return server.Hosts[0], role, nil
+			host := server.Hosts[0]
+			return host, d.latestContainer(role, host), nil
 		}
 	}
 	return "", "", errors.New("no target hosts configured")
 }
 
-func (d *Deployer) cleanupPriorContainers(ctx context.Context, host, role, currentVersion string) error {
-	deployments, _, err := d.store.Snapshot()
-	if err != nil {
-		return err
+func (d *Deployer) cleanupPriorContainer(ctx context.Context, previous *state.ActiveTarget, currentContainer string) error {
+	if previous == nil || previous.Container == "" || previous.Container == currentContainer {
+		return nil
 	}
-
-	seen := map[string]struct{}{}
-	for _, deployment := range deployments {
-		if deployment.Service != d.cfg.Service || deployment.Version == currentVersion {
-			continue
-		}
-		name := d.containerName(role, deployment.Version)
-		if _, ok := seen[name]; ok {
-			continue
-		}
-		seen[name] = struct{}{}
-		if err := d.remoteDocker.StopAndRemove(ctx, host, name); err != nil {
-			return err
-		}
-	}
-	return nil
+	return d.remoteDocker.StopAndRemove(ctx, previous.Host, previous.Container)
 }
 
 func (d *Deployer) appPort(role string, server config.Server) int {

@@ -323,6 +323,10 @@ set -eu
 echo "$*" >> %q/proxy_calls.log
 if [ "${1:-}" = "--version" ]; then
   echo "kamal-proxy 0.0.0"
+  exit 0
+fi
+if [ "${1:-}" = "run" ]; then
+  : > /tmp/kamal-proxy.sock
 fi
 `, e.stateDir))
 

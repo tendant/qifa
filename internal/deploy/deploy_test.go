@@ -23,41 +23,66 @@ func TestOrderedRolesWebFirst(t *testing.T) {
 	}
 }
 
-func TestLatestContainerUsesLatestDeployment(t *testing.T) {
+func TestLatestContainerUsesActiveTarget(t *testing.T) {
 	store, err := state.NewStore(filepath.Join(t.TempDir(), "state.jsonl"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	first := time.Now().UTC().Add(-time.Minute)
 	second := time.Now().UTC()
-	if err := store.AppendDeployment(state.Deployment{
-		ID:        "1",
+	if err := store.AppendActiveTarget(state.ActiveTarget{
 		Service:   "app",
-		Version:   "v1",
-		Image:     "img:v1",
-		Status:    state.StatusSucceeded,
-		StartedAt: first,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.AppendDeployment(state.Deployment{
-		ID:        "2",
-		Service:   "app",
+		Host:      "host1",
+		Role:      "web",
 		Version:   "v2",
 		Image:     "img:v2",
-		Status:    state.StatusSucceeded,
-		StartedAt: second,
+		Container: "app-web-v2",
+		UpdatedAt: second,
 	}); err != nil {
 		t.Fatal(err)
 	}
 
 	d := &Deployer{
-		cfg: &config.Config{Service: "app"},
+		cfg:   &config.Config{Service: "app"},
 		store: store,
 	}
-	got := d.latestContainer("web")
+	got := d.latestContainer("web", "host1")
 	if got != "app-web-v2" {
 		t.Fatalf("unexpected latest container: %s", got)
+	}
+}
+
+func TestDefaultTargetPrefersActiveTarget(t *testing.T) {
+	store, err := state.NewStore(filepath.Join(t.TempDir(), "state.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AppendActiveTarget(state.ActiveTarget{
+		Service:   "app",
+		Host:      "host1",
+		Role:      "web",
+		Version:   "v2",
+		Image:     "img:v2",
+		Container: "app-web-v2",
+		UpdatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	d := &Deployer{
+		cfg: &config.Config{
+			Service: "app",
+			Servers: map[string]config.Server{
+				"web": {Hosts: []string{"host1"}},
+			},
+		},
+		store: store,
+	}
+	host, container, err := d.defaultTarget()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if host != "host1" || container != "app-web-v2" {
+		t.Fatalf("unexpected target: %s %s", host, container)
 	}
 }
 

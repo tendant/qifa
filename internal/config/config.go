@@ -30,9 +30,19 @@ type Server struct {
 }
 
 type Proxy struct {
-	Host        string      `yaml:"host"`
-	AppPort     int         `yaml:"app_port"`
-	Healthcheck Healthcheck `yaml:"healthcheck"`
+	Host            string        `yaml:"host"`
+	Hosts           []string      `yaml:"hosts"`
+	AppPort         int           `yaml:"app_port"`
+	Healthcheck     Healthcheck   `yaml:"healthcheck"`
+	DeployTimeout   time.Duration `yaml:"deploy_timeout"`
+	DrainTimeout    time.Duration `yaml:"drain_timeout"`
+	TargetTimeout   time.Duration `yaml:"target_timeout"`
+	TLS             bool          `yaml:"tls"`
+	TLSRedirect     *bool         `yaml:"tls_redirect"`
+	TLSStaging      bool          `yaml:"tls_staging"`
+	ForwardHeaders  *bool         `yaml:"forward_headers"`
+	PathPrefixes    []string      `yaml:"path_prefixes"`
+	StripPathPrefix *bool         `yaml:"strip_path_prefix"`
 }
 
 type Healthcheck struct {
@@ -64,9 +74,9 @@ type SSH struct {
 }
 
 type Hooks struct {
-	PreBuild     string `yaml:"pre_build"`
-	PostDeploy   string `yaml:"post_deploy"`
-	PreRollback  string `yaml:"pre_rollback"`
+	PreBuild    string `yaml:"pre_build"`
+	PostDeploy  string `yaml:"post_deploy"`
+	PreRollback string `yaml:"pre_rollback"`
 }
 
 type Accessory struct {
@@ -130,6 +140,15 @@ func applyDefaults(cfg *Config) {
 	if cfg.Proxy.Healthcheck.Timeout == 0 {
 		cfg.Proxy.Healthcheck.Timeout = 5 * time.Second
 	}
+	if cfg.Proxy.DeployTimeout == 0 {
+		cfg.Proxy.DeployTimeout = 30 * time.Second
+	}
+	if cfg.Proxy.DrainTimeout == 0 {
+		cfg.Proxy.DrainTimeout = 30 * time.Second
+	}
+	if cfg.Proxy.TargetTimeout == 0 {
+		cfg.Proxy.TargetTimeout = 30 * time.Second
+	}
 }
 
 func WriteSample(path string) error {
@@ -159,6 +178,13 @@ servers:
 proxy:
   host: app.example.com
   app_port: 3000
+  deploy_timeout: 30s
+  drain_timeout: 30s
+  target_timeout: 30s
+  tls: true
+  tls_redirect: true
+  path_prefixes:
+    - /
   healthcheck:
     path: /up
     interval: 2s
