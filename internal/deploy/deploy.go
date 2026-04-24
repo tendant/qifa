@@ -185,6 +185,9 @@ func (d *Deployer) Rollback(ctx context.Context) error {
 			}
 		}
 	}
+	if err := d.updateStatus(deployment, state.StatusRolledBack); err != nil {
+		return err
+	}
 	d.log.Printf("rolled back to %s", prev.Image)
 	return nil
 }
