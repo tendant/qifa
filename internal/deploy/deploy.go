@@ -150,6 +150,9 @@ func (d *Deployer) deployHost(ctx context.Context, deployment state.Deployment, 
 	if err := d.appendEvent(deployment.ID, host, role, "deployed", "host deployed successfully"); err != nil {
 		return err
 	}
+	if err := d.cleanupPriorContainers(ctx, host, role, deployment.Version); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -157,7 +160,7 @@ func (d *Deployer) Rollback(ctx context.Context) error {
 	if err := hooks.Run(ctx, d.cfg.Hooks.PreRollback, nil); err != nil {
 		return err
 	}
-	prev, err := d.store.LatestSuccessful(d.cfg.Service)
+	prev, err := d.store.RollbackTarget(d.cfg.Service)
 	if err != nil {
 		return err
 	}
@@ -338,6 +341,29 @@ func (d *Deployer) defaultTarget() (host string, role string, err error) {
 		}
 	}
 	return "", "", errors.New("no target hosts configured")
+}
+
+func (d *Deployer) cleanupPriorContainers(ctx context.Context, host, role, currentVersion string) error {
+	deployments, _, err := d.store.Snapshot()
+	if err != nil {
+		return err
+	}
+
+	seen := map[string]struct{}{}
+	for _, deployment := range deployments {
+		if deployment.Service != d.cfg.Service || deployment.Version == currentVersion {
+			continue
+		}
+		name := d.containerName(role, deployment.Version)
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		if err := d.remoteDocker.StopAndRemove(ctx, host, name); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func orderedRoles(servers map[string]config.Server) []string {

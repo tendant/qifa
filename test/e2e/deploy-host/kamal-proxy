@@ -1,0 +1,19 @@
+#!/bin/sh
+set -eu
+
+echo "$(date -u +%FT%TZ) $*" >> /tmp/kamal-proxy.log
+
+if [ "${1:-}" = "--version" ]; then
+  echo "kamal-proxy test-shim"
+  exit 0
+fi
+
+case "${1:-}" in
+  deploy|remove)
+    exit 0
+    ;;
+  *)
+    echo "unsupported kamal-proxy command: $*" >&2
+    exit 1
+    ;;
+esac

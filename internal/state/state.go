@@ -145,3 +145,30 @@ func (s *Store) LatestSuccessful(service string) (*Deployment, error) {
 	}
 	return latest, nil
 }
+
+func (s *Store) RollbackTarget(service string) (*Deployment, error) {
+	deployments, _, err := s.Snapshot()
+	if err != nil {
+		return nil, err
+	}
+
+	successes := make([]Deployment, 0)
+	for _, deployment := range deployments {
+		if deployment.Service == service && deployment.Status == StatusSucceeded {
+			successes = append(successes, deployment)
+		}
+	}
+	if len(successes) == 0 {
+		return nil, errors.New("no successful deployment found")
+	}
+
+	sort.Slice(successes, func(i, j int) bool {
+		return successes[i].StartedAt.After(successes[j].StartedAt)
+	})
+	if len(successes) > 1 {
+		target := successes[1]
+		return &target, nil
+	}
+	target := successes[0]
+	return &target, nil
+}

@@ -1,0 +1,27 @@
+services:
+  zot:
+    image: ghcr.io/project-zot/zot:latest
+    command: ["serve", "/etc/zot/config.json"]
+    ports:
+      - "5001:5000"
+    volumes:
+      - ./zot/config.json:/etc/zot/config.json:ro
+      - zot-data:/var/lib/registry
+
+  deploy-host:
+    build:
+      context: ./deploy-host
+    privileged: true
+    depends_on:
+      - zot
+    ports:
+      - "2222:22"
+      - "23750:2375"
+      - "3000:3000"
+    volumes:
+      - ./.tmp/ssh:/test-ssh
+      - deploy-host-data:/var/lib/docker
+
+volumes:
+  zot-data:
+  deploy-host-data:

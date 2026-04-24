@@ -23,7 +23,7 @@ func (l *Local) BuildAndPush(ctx context.Context, cfg *config.Config, imageRef s
 		args = append(args, "--platform", cfg.Builder.Platform)
 	}
 	args = append(args, cfg.Builder.Context)
-	if err := runLocal(ctx, "docker", args...); err != nil {
+	if err := runLocalEnv(ctx, map[string]string{"DOCKER_BUILDKIT": "0"}, "docker", args...); err != nil {
 		return err
 	}
 	return runLocal(ctx, "docker", "push", imageRef)
@@ -80,9 +80,17 @@ func (r *Remote) Exec(ctx context.Context, host, name, command string) (string, 
 }
 
 func runLocal(ctx context.Context, binary string, args ...string) error {
+	return runLocalEnv(ctx, nil, binary, args...)
+}
+
+func runLocalEnv(ctx context.Context, extraEnv map[string]string, binary string, args ...string) error {
 	cmd := exec.CommandContext(ctx, binary, args...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
+	cmd.Env = os.Environ()
+	for key, value := range extraEnv {
+		cmd.Env = append(cmd.Env, key+"="+value)
+	}
 	return cmd.Run()
 }
 
