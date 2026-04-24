@@ -18,14 +18,19 @@ This repo includes a Docker-based integration harness for real build, push, pull
 ## Run It
 
 ```bash
-chmod +x scripts/test-zot-e2e.sh
-scripts/test-zot-e2e.sh
+make test-e2e
 ```
 
 To keep the Docker environment up after the script exits:
 
 ```bash
-KEEP_E2E_ENV=1 scripts/test-zot-e2e.sh
+KEEP_E2E_ENV=1 bash scripts/test-zot-e2e.sh
+```
+
+To run the same sequence used in CI:
+
+```bash
+make ci
 ```
 
 ## Services
@@ -38,3 +43,10 @@ KEEP_E2E_ENV=1 scripts/test-zot-e2e.sh
 ## Important Limitation
 
 The harness now validates repeated web deploys without publishing app containers directly on the host. The proxy routes to container IPs discovered from the remote Docker daemon, which is close to the production model but still assumes the proxy process can reach bridge-network container addresses on the host.
+
+## CI
+
+GitHub Actions runs:
+
+- `make test`
+- `make test-e2e`
