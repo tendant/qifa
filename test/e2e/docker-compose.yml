@@ -17,7 +17,7 @@ services:
     ports:
       - "2222:22"
       - "23750:2375"
-      - "3000:3000"
+      - "8080:80"
     volumes:
       - ./.tmp/ssh:/test-ssh
       - deploy-host-data:/var/lib/docker

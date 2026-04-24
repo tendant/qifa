@@ -100,6 +100,7 @@ func (d *Deployer) Deploy(ctx context.Context) error {
 func (d *Deployer) deployHost(ctx context.Context, deployment state.Deployment, role, host string, server config.Server, imageRef string, envFile []byte) error {
 	containerName := d.containerName(role, deployment.Version)
 	remoteEnv := fmt.Sprintf("/tmp/%s.env", containerName)
+	appPort := d.appPort(role, server)
 
 	if err := d.appendEvent(deployment.ID, host, role, "connecting", "connecting to host"); err != nil {
 		return err
@@ -125,13 +126,25 @@ func (d *Deployer) deployHost(ctx context.Context, deployment state.Deployment, 
 	if err := d.updateStatus(deployment, state.StatusStarting); err != nil {
 		return err
 	}
-	if err := d.remoteDocker.RunContainer(ctx, host, containerName, imageRef, remoteEnv, server.Cmd, server.Port); err != nil {
+	publishedPort := 0
+	if role != "web" {
+		publishedPort = server.Port
+	}
+	if err := d.remoteDocker.RunContainer(ctx, host, containerName, imageRef, remoteEnv, server.Cmd, publishedPort); err != nil {
 		return err
 	}
 	if err := d.updateStatus(deployment, state.StatusHealthChecking); err != nil {
 		return err
 	}
-	if err := d.healthCheck(ctx, host, server, containerName); err != nil {
+	targetHost := host
+	if role == "web" {
+		containerIP, err := d.remoteDocker.ContainerIP(ctx, host, containerName)
+		if err != nil {
+			return err
+		}
+		targetHost = containerIP
+	}
+	if err := d.healthCheck(ctx, host, targetHost, appPort, containerName); err != nil {
 		return err
 	}
 	if role == "web" {
@@ -140,9 +153,9 @@ func (d *Deployer) deployHost(ctx context.Context, deployment state.Deployment, 
 		}
 		if err := d.proxy.Deploy(ctx, host, proxy.Target{
 			Service: d.cfg.Service,
-			Host:    host,
-			Port:    server.Port,
-			AppPort: server.Port,
+			Host:    targetHost,
+			Port:    appPort,
+			AppPort: appPort,
 		}); err != nil {
 			return err
 		}
@@ -271,13 +284,13 @@ func (d *Deployer) AccessoryLogs(ctx context.Context, name string, out io.Writer
 	return err
 }
 
-func (d *Deployer) healthCheck(ctx context.Context, host string, server config.Server, containerName string) error {
-	if server.Port == 0 {
+func (d *Deployer) healthCheck(ctx context.Context, host, targetHost string, targetPort int, containerName string) error {
+	if targetPort == 0 {
 		_, err := d.remoteDocker.Exec(ctx, host, containerName, "true")
 		return err
 	}
 	path := d.cfg.Proxy.Healthcheck.Path
-	command := fmt.Sprintf("for i in 1 2 3 4 5; do curl -fsS http://127.0.0.1:%d%s && exit 0; sleep %d; done; exit 1", server.Port, path, int(d.cfg.Proxy.Healthcheck.Interval.Seconds()))
+	command := fmt.Sprintf("for i in 1 2 3 4 5; do curl -fsS http://%s:%d%s && exit 0; sleep %d; done; exit 1", targetHost, targetPort, path, int(d.cfg.Proxy.Healthcheck.Interval.Seconds()))
 	_, err := d.ssh.Run(ctx, host, command)
 	return err
 }
@@ -364,6 +377,16 @@ func (d *Deployer) cleanupPriorContainers(ctx context.Context, host, role, curre
 		}
 	}
 	return nil
+}
+
+func (d *Deployer) appPort(role string, server config.Server) int {
+	if server.Port > 0 {
+		return server.Port
+	}
+	if role != "web" {
+		return 0
+	}
+	return d.cfg.Proxy.AppPort
 }
 
 func orderedRoles(servers map[string]config.Server) []string {

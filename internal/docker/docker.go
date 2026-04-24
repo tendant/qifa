@@ -23,7 +23,11 @@ func (l *Local) BuildAndPush(ctx context.Context, cfg *config.Config, imageRef s
 		args = append(args, "--platform", cfg.Builder.Platform)
 	}
 	args = append(args, cfg.Builder.Context)
-	if err := runLocalEnv(ctx, map[string]string{"DOCKER_BUILDKIT": "0"}, "docker", args...); err != nil {
+	extraEnv := map[string]string{}
+	if cfg.Builder.Platform == "" {
+		extraEnv["DOCKER_BUILDKIT"] = "0"
+	}
+	if err := runLocalEnv(ctx, extraEnv, "docker", args...); err != nil {
 		return err
 	}
 	return runLocal(ctx, "docker", "push", imageRef)
@@ -64,6 +68,10 @@ func (r *Remote) RunContainer(ctx context.Context, host, name, imageRef, envFile
 	}
 	_, err := r.client.Run(ctx, host, strings.Join(args, " "))
 	return err
+}
+
+func (r *Remote) ContainerIP(ctx context.Context, host, name string) (string, error) {
+	return r.client.Run(ctx, host, "docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "+shellQuote(name))
 }
 
 func (r *Remote) StopAndRemove(ctx context.Context, host, name string) error {

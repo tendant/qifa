@@ -262,6 +262,8 @@ case "$cmd" in
     envfile=""
     image=""
     usercmd=""
+    ipfile=""
+    ipoctet=$(($(find "$state/containers" -maxdepth 1 -type f | wc -l) + 10))
     while [ "$#" -gt 0 ]; do
       case "$1" in
         --restart|--name|--env-file|-p)
@@ -282,7 +284,13 @@ case "$cmd" in
           ;;
       esac
     done
-    printf 'image=%%s\nenvfile=%%s\ncmd=%%s\n' "$image" "$envfile" "$usercmd" > "$state/containers/$name"
+    ipfile="$state/containers/$name"
+    printf 'image=%%s\nenvfile=%%s\ncmd=%%s\nip=172.18.0.%%s\n' "$image" "$envfile" "$usercmd" "$ipoctet" > "$ipfile"
+    ;;
+  inspect)
+    if [ "${1:-}" = "-f" ]; then shift 2; fi
+    name="$1"
+    awk -F= '/^ip=/{print $2}' "$state/containers/$name"
     ;;
   logs)
     if [ "${1:-}" = "--tail" ]; then shift 2; fi

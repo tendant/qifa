@@ -143,8 +143,10 @@ EOF
 (
   cd "$WEB_DIR"
   "$BIN_DIR/godeploy" deploy
-  curl -fsS http://127.0.0.1:3000/up
-  curl -fsS http://127.0.0.1:3000/version
+  curl -fsS -H 'Host: localhost' http://127.0.0.1:8080/up
+  curl -fsS -H 'Host: localhost' http://127.0.0.1:8080/version
+  "$BIN_DIR/godeploy" deploy
+  curl -fsS -H 'Host: localhost' http://127.0.0.1:8080/up
   "$BIN_DIR/godeploy" status
   "$BIN_DIR/godeploy" logs
   "$BIN_DIR/godeploy" app exec "echo web-ok"
