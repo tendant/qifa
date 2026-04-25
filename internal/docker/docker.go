@@ -138,15 +138,15 @@ func (r *Remote) Build(ctx context.Context, host string, cfg *config.Config, ima
 	}
 }
 
-func (r *Remote) RunContainer(ctx context.Context, host, name, imageRef, envFile, command string, port int) error {
+func (r *Remote) RunContainer(ctx context.Context, host, name, imageRef, envFile, command string, hostPort, containerPort int) error {
 	var args []string
 	args = append(args, "docker run -d --restart unless-stopped")
 	args = append(args, "--name "+shellQuote(name))
 	if envFile != "" {
 		args = append(args, "--env-file "+shellQuote(envFile))
 	}
-	if port > 0 {
-		args = append(args, fmt.Sprintf("-p %d:%d", port, port))
+	if hostPort > 0 && containerPort > 0 {
+		args = append(args, fmt.Sprintf("-p %d:%d", hostPort, containerPort))
 	}
 	if command != "" {
 		args = append(args, shellQuote(imageRef)+" "+command)
@@ -166,8 +166,34 @@ func (r *Remote) StopAndRemove(ctx context.Context, host, name string) error {
 	return err
 }
 
+func (r *Remote) ListContainers(ctx context.Context, host, namePrefix string) ([]string, error) {
+	command := "docker ps -a --format '{{.Names}}'"
+	if namePrefix != "" {
+		command = "docker ps -a --filter " + shellQuote("name=^"+namePrefix) + " --format '{{.Names}}'"
+	}
+	result, err := r.client.Run(ctx, host, command)
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(result) == "" {
+		return nil, nil
+	}
+	var names []string
+	for _, line := range strings.Split(result, "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			names = append(names, line)
+		}
+	}
+	return names, nil
+}
+
 func (r *Remote) Logs(ctx context.Context, host, name string) (string, error) {
 	return r.client.Run(ctx, host, "docker logs --tail 200 "+shellQuote(name))
+}
+
+func (r *Remote) ContainerState(ctx context.Context, host, name string) (string, error) {
+	return r.client.Run(ctx, host, "docker inspect -f '{{.State.Status}} exit={{.State.ExitCode}} error={{.State.Error}}' "+shellQuote(name))
 }
 
 func (r *Remote) Exec(ctx context.Context, host, name, command string) (string, error) {

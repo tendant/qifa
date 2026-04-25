@@ -231,6 +231,58 @@ func TestDeployerEndToEndWithLocalSSH(t *testing.T) {
 	}
 }
 
+func TestDeployerNonProxyHealthCheckUsesPublishedPort(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	env := newIntegrationEnv(t)
+	cfg := env.config(t, "per_target", "local", "testapp", config.Registry{}, "")
+	server := cfg.Servers["web"]
+	proxyEnabled := false
+	server.Proxy = &proxyEnabled
+	server.Port = 19080
+	server.AppPort = 80
+	cfg.Servers["web"] = server
+
+	store, err := state.NewStore(filepath.Join(env.root, ".qifa", "state.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	deployer, err := New(cfg, store, &stdout, &stderr)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := deployer.Deploy(ctx); err != nil {
+		t.Fatalf(
+			"deploy failed: %v\nstdout:\n%s\nstderr:\n%s\ndocker calls:\n%s\ncurl calls:\n%s\nproxy calls:\n%s\nsshd log:\n%s",
+			err,
+			stdout.String(),
+			stderr.String(),
+			readIfExists(filepath.Join(env.stateDir, "docker_calls.log")),
+			readIfExists(filepath.Join(env.stateDir, "curl_calls.log")),
+			readIfExists(filepath.Join(env.stateDir, "proxy_calls.log")),
+			readIfExists(filepath.Join(env.root, "sshd.log")),
+		)
+	}
+
+	curlCalls := readIfExists(filepath.Join(env.stateDir, "curl_calls.log"))
+	if !strings.Contains(curlCalls, "http://127.0.0.1:19080/up") {
+		t.Fatalf("expected health check on published port, got %q", curlCalls)
+	}
+	if strings.Contains(curlCalls, "http://127.0.0.1:80/up") || strings.Contains(curlCalls, fmt.Sprintf("http://127.0.0.1:%d:19080/up", env.port)) {
+		t.Fatalf("unexpected health check on container port, got %q", curlCalls)
+	}
+
+	proxyCalls := readIfExists(filepath.Join(env.stateDir, "proxy_calls.log"))
+	if strings.Contains(proxyCalls, "deploy") {
+		t.Fatalf("expected proxy deploy to be skipped, got %q", proxyCalls)
+	}
+}
+
 type integrationEnv struct {
 	root       string
 	home       string
@@ -388,6 +440,41 @@ shift
 case "$cmd" in
   build|push|info|pull|login)
     exit 0
+    ;;
+  ps)
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        -a)
+          shift
+          ;;
+        --filter)
+          filter="$2"
+          shift 2
+          ;;
+        --format)
+          format="$2"
+          shift 2
+          ;;
+        *)
+          shift
+          ;;
+      esac
+    done
+    prefix=""
+    case "${filter:-}" in
+      name=^*)
+        prefix="${filter#name=^}"
+        ;;
+    esac
+    for path in "$state"/containers/*; do
+      [ -e "$path" ] || continue
+      name="$(basename "$path")"
+      case "$name" in
+        "$prefix"*)
+          printf '%%s\n' "$name"
+          ;;
+      esac
+    done
     ;;
   run)
     name=""

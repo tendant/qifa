@@ -63,7 +63,7 @@ func (c *Client) Run(ctx context.Context, host, command string) (string, error) 
 		return "", ctx.Err()
 	case err := <-done:
 		if err != nil {
-			return "", formatRemoteError("ssh", host, command, err, stderr.String())
+			return "", formatRemoteError("remote command", host, command, err, stderr.String())
 		}
 		return strings.TrimSpace(stdout.String()), nil
 	}

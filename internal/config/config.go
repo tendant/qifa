@@ -25,10 +25,11 @@ type Config struct {
 }
 
 type Server struct {
-	Hosts []string `yaml:"hosts"`
-	Port  int      `yaml:"port"`
-	Cmd   string   `yaml:"cmd"`
-	Proxy *bool    `yaml:"proxy"`
+	Hosts   []string `yaml:"hosts"`
+	Port    int      `yaml:"port"`
+	AppPort int      `yaml:"app_port"`
+	Cmd     string   `yaml:"cmd"`
+	Proxy   *bool    `yaml:"proxy"`
 }
 
 type Proxy struct {

@@ -119,6 +119,9 @@ func (d *Deployer) deployHost(ctx context.Context, deployment state.Deployment, 
 	if err := d.ssh.Upload(ctx, host, remoteEnv, envFile, 0o600); err != nil {
 		return err
 	}
+	if err := d.cleanupStaleContainers(ctx, host, role, containerName, previousActive); err != nil {
+		return err
+	}
 	if buildOnHost {
 		if err := d.updateStatus(deployment, state.StatusBuilding); err != nil {
 			return err
@@ -142,24 +145,30 @@ func (d *Deployer) deployHost(ctx context.Context, deployment state.Deployment, 
 		return err
 	}
 	publishedPort := 0
+	containerPort := 0
 	if !useProxy {
 		publishedPort = server.Port
+		containerPort = appPort
 	}
-	if err := d.remoteDocker.RunContainer(ctx, host, containerName, imageRef, remoteEnv, server.Cmd, publishedPort); err != nil {
+	if err := d.remoteDocker.RunContainer(ctx, host, containerName, imageRef, remoteEnv, server.Cmd, publishedPort, containerPort); err != nil {
+		_ = d.remoteDocker.StopAndRemove(ctx, host, containerName)
 		return err
 	}
 	if err := d.updateStatus(deployment, state.StatusHealthChecking); err != nil {
 		return err
 	}
-	targetHost := host
+	targetHost := "127.0.0.1"
+	healthPort := appPort
 	if useProxy {
 		containerIP, err := d.remoteDocker.ContainerIP(ctx, host, containerName)
 		if err != nil {
 			return err
 		}
 		targetHost = containerIP
+	} else {
+		healthPort = server.Port
 	}
-	if err := d.healthCheck(ctx, host, targetHost, appPort, containerName); err != nil {
+	if err := d.healthCheck(ctx, host, targetHost, healthPort, containerName); err != nil {
 		return err
 	}
 	if useProxy {
@@ -343,7 +352,7 @@ func (d *Deployer) AccessoryBoot(ctx context.Context, name string) error {
 	if err := d.remoteDocker.StopAndRemove(ctx, accessory.Host, containerName); err != nil {
 		return err
 	}
-	return d.remoteDocker.RunContainer(ctx, accessory.Host, containerName, accessory.Image, "", "", 0)
+	return d.remoteDocker.RunContainer(ctx, accessory.Host, containerName, accessory.Image, "", "", 0, 0)
 }
 
 func (d *Deployer) AccessoryLogs(ctx context.Context, name string, out io.Writer) error {
@@ -363,17 +372,35 @@ func (d *Deployer) AccessoryLogs(ctx context.Context, name string, out io.Writer
 func (d *Deployer) healthCheck(ctx context.Context, host, targetHost string, targetPort int, containerName string) error {
 	if targetPort == 0 {
 		_, err := d.remoteDocker.Exec(ctx, host, containerName, "true")
-		return err
+		if err != nil {
+			return d.withContainerDiagnostics(ctx, host, containerName, err)
+		}
+		return nil
 	}
 	path := d.cfg.Proxy.Healthcheck.Path
 	command := fmt.Sprintf("for i in 1 2 3 4 5; do curl -fsS http://%s:%d%s && exit 0; sleep %d; done; exit 1", targetHost, targetPort, path, int(d.cfg.Proxy.Healthcheck.Interval.Seconds()))
 	_, err := d.ssh.Run(ctx, host, command)
-	return err
+	if err != nil {
+		return d.withContainerDiagnostics(ctx, host, containerName, err)
+	}
+	return nil
 }
 
 func (d *Deployer) failDeployment(deployment state.Deployment, cause error) error {
 	_ = d.updateStatus(deployment, state.StatusFailed)
 	return cause
+}
+
+func (d *Deployer) withContainerDiagnostics(ctx context.Context, host, containerName string, cause error) error {
+	lines := []string{cause.Error()}
+	if state, err := d.remoteDocker.ContainerState(ctx, host, containerName); err == nil && strings.TrimSpace(state) != "" {
+		lines = append(lines, "container_state: "+strings.TrimSpace(state))
+	}
+	if logs, err := d.remoteDocker.Logs(ctx, host, containerName); err == nil && strings.TrimSpace(logs) != "" {
+		lines = append(lines, "container_logs:")
+		lines = append(lines, strings.TrimSpace(logs))
+	}
+	return fmt.Errorf("%s", strings.Join(lines, "\n"))
 }
 
 func (d *Deployer) updateStatus(deployment state.Deployment, next state.Status) error {
@@ -439,7 +466,31 @@ func (d *Deployer) cleanupPriorContainer(ctx context.Context, previous *state.Ac
 	return d.remoteDocker.StopAndRemove(ctx, previous.Host, previous.Container)
 }
 
+func (d *Deployer) cleanupStaleContainers(ctx context.Context, host, role, currentContainer string, previous *state.ActiveTarget) error {
+	prefix := fmt.Sprintf("%s-%s-", d.cfg.Service, role)
+	containers, err := d.remoteDocker.ListContainers(ctx, host, prefix)
+	if err != nil {
+		return err
+	}
+	activeName := ""
+	if previous != nil {
+		activeName = previous.Container
+	}
+	for _, name := range containers {
+		if name == "" || name == currentContainer || name == activeName {
+			continue
+		}
+		if err := d.remoteDocker.StopAndRemove(ctx, host, name); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (d *Deployer) appPort(role string, server config.Server) int {
+	if server.AppPort > 0 {
+		return server.AppPort
+	}
 	if server.Port > 0 {
 		return server.Port
 	}
