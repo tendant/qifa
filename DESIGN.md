@@ -62,8 +62,7 @@ qifa app exec <command> # docker exec in the active container
 qifa app containers     # list labeled containers per role/host (rollback targets)
 qifa app maintenance    # put service into maintenance mode (kamal-proxy stop)
 qifa app live           # take service out of maintenance mode (kamal-proxy resume)
-qifa accessory boot <name>
-qifa accessory logs <name>
+qifa accessory <boot|stop|start|restart|remove|logs|exec> <name> [args...]
 ```
 
 ## Config
@@ -367,9 +366,21 @@ accessories:
     host: 10.0.0.13
 ```
 
-`qifa accessory boot redis` pulls the image, removes any prior container with
-the same name, and runs it with `--restart unless-stopped`. Accessories do not
-get qifa labels and are not affected by `prune` or `remove`.
+Accessories support a parallel set of lifecycle verbs to the main app:
+
+```bash
+qifa accessory boot <name>     # docker pull, remove any prior, docker run
+qifa accessory stop <name>     # docker stop
+qifa accessory start <name>    # docker start (the existing container)
+qifa accessory restart <name>  # stop then start
+qifa accessory remove <name>   # docker rm -f
+qifa accessory logs <name>     # docker logs
+qifa accessory exec <name> <command>   # docker exec
+```
+
+Container name is `<service>-accessory-<name>`. Accessories run with
+`--restart unless-stopped` and do not carry qifa.* labels — they are not
+affected by `qifa remove`, `qifa prune`, or `qifa sweep`.
 
 ## SSH Layer
 

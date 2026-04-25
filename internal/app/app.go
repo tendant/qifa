@@ -156,17 +156,31 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		}
 	case "accessory":
 		if len(args) < 3 {
-			return errors.New("usage: qifa accessory <boot|logs> <name>")
+			return errors.New("usage: qifa accessory <boot|stop|start|restart|remove|logs|exec> <name> [args...]")
 		}
+		verb := args[1]
 		name := args[2]
 		return withRuntime(ctx, stdout, stderr, func(rt *runtime) error {
-			switch args[1] {
+			switch verb {
 			case "boot":
 				return rt.deployer.AccessoryBoot(ctx, name)
+			case "stop":
+				return rt.deployer.AccessoryStop(ctx, name)
+			case "start":
+				return rt.deployer.AccessoryStart(ctx, name)
+			case "restart":
+				return rt.deployer.AccessoryRestart(ctx, name)
+			case "remove":
+				return rt.deployer.AccessoryRemove(ctx, name)
 			case "logs":
 				return rt.deployer.AccessoryLogs(ctx, name, stdout)
+			case "exec":
+				if len(args) < 4 {
+					return errors.New("usage: qifa accessory exec <name> <command>")
+				}
+				return rt.deployer.AccessoryExec(ctx, name, strings.Join(args[3:], " "), stdout)
 			default:
-				return errors.New("usage: qifa accessory <boot|logs> <name>")
+				return errors.New("usage: qifa accessory <boot|stop|start|restart|remove|logs|exec> <name> [args...]")
 			}
 		})
 	default:
@@ -216,6 +230,5 @@ func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "  app containers")
 	fmt.Fprintln(w, "  app maintenance [--message <msg>] [--drain-timeout <duration>]")
 	fmt.Fprintln(w, "  app live")
-	fmt.Fprintln(w, "  accessory boot <name>")
-	fmt.Fprintln(w, "  accessory logs <name>")
+	fmt.Fprintln(w, "  accessory <boot|stop|start|restart|remove|logs|exec> <name> [args...]")
 }

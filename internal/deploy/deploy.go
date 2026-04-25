@@ -818,11 +818,11 @@ func (d *Deployer) Exec(ctx context.Context, command string, out io.Writer) erro
 }
 
 func (d *Deployer) AccessoryBoot(ctx context.Context, name string) error {
-	accessory, ok := d.cfg.Accessories[name]
-	if !ok {
-		return fmt.Errorf("unknown accessory %s", name)
+	accessory, _, err := d.accessoryTarget(name)
+	if err != nil {
+		return err
 	}
-	containerName := d.cfg.Service + "-accessory-" + name
+	containerName := accessoryContainer(d.cfg.Service, name)
 	if err := d.remoteDocker.Pull(ctx, accessory.Host, "", accessory.Image); err != nil {
 		return err
 	}
@@ -833,17 +833,84 @@ func (d *Deployer) AccessoryBoot(ctx context.Context, name string) error {
 }
 
 func (d *Deployer) AccessoryLogs(ctx context.Context, name string, out io.Writer) error {
-	accessory, ok := d.cfg.Accessories[name]
-	if !ok {
-		return fmt.Errorf("unknown accessory %s", name)
+	accessory, _, err := d.accessoryTarget(name)
+	if err != nil {
+		return err
 	}
-	containerName := d.cfg.Service + "-accessory-" + name
-	result, err := d.remoteDocker.Logs(ctx, accessory.Host, containerName)
+	result, err := d.remoteDocker.Logs(ctx, accessory.Host, accessoryContainer(d.cfg.Service, name))
 	if err != nil {
 		return err
 	}
 	_, err = fmt.Fprintln(out, result)
 	return err
+}
+
+func (d *Deployer) AccessoryStop(ctx context.Context, name string) error {
+	accessory, _, err := d.accessoryTarget(name)
+	if err != nil {
+		return err
+	}
+	if err := d.remoteDocker.StopContainer(ctx, accessory.Host, accessoryContainer(d.cfg.Service, name)); err != nil {
+		return err
+	}
+	d.log.Printf("stopped accessory %s on %s", name, accessory.Host)
+	return nil
+}
+
+func (d *Deployer) AccessoryStart(ctx context.Context, name string) error {
+	accessory, _, err := d.accessoryTarget(name)
+	if err != nil {
+		return err
+	}
+	if err := d.remoteDocker.StartContainer(ctx, accessory.Host, accessoryContainer(d.cfg.Service, name)); err != nil {
+		return err
+	}
+	d.log.Printf("started accessory %s on %s", name, accessory.Host)
+	return nil
+}
+
+func (d *Deployer) AccessoryRestart(ctx context.Context, name string) error {
+	if err := d.AccessoryStop(ctx, name); err != nil {
+		return err
+	}
+	return d.AccessoryStart(ctx, name)
+}
+
+func (d *Deployer) AccessoryRemove(ctx context.Context, name string) error {
+	accessory, _, err := d.accessoryTarget(name)
+	if err != nil {
+		return err
+	}
+	if err := d.remoteDocker.StopAndRemove(ctx, accessory.Host, accessoryContainer(d.cfg.Service, name)); err != nil {
+		return err
+	}
+	d.log.Printf("removed accessory %s on %s", name, accessory.Host)
+	return nil
+}
+
+func (d *Deployer) AccessoryExec(ctx context.Context, name, command string, out io.Writer) error {
+	accessory, _, err := d.accessoryTarget(name)
+	if err != nil {
+		return err
+	}
+	result, err := d.remoteDocker.Exec(ctx, accessory.Host, accessoryContainer(d.cfg.Service, name), command)
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintln(out, result)
+	return err
+}
+
+func (d *Deployer) accessoryTarget(name string) (config.Accessory, string, error) {
+	accessory, ok := d.cfg.Accessories[name]
+	if !ok {
+		return config.Accessory{}, "", fmt.Errorf("unknown accessory %s", name)
+	}
+	return accessory, accessory.Host, nil
+}
+
+func accessoryContainer(service, name string) string {
+	return service + "-accessory-" + name
 }
 
 func (d *Deployer) healthCheck(ctx context.Context, host, targetHost string, targetPort int, containerName string, useProxy bool) error {
