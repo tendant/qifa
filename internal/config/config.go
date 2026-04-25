@@ -38,6 +38,11 @@ type Proxy struct {
 	AppPort         int           `yaml:"app_port"`
 	HTTPPort        int           `yaml:"http_port"`
 	HTTPSPort       int           `yaml:"https_port"`
+	Image           string        `yaml:"image"`
+	Version         string        `yaml:"version"`
+	Network         string        `yaml:"network"`
+	StateVolume     string        `yaml:"state_volume"`
+	AppsConfigDir   string        `yaml:"apps_config_dir"`
 	Healthcheck     Healthcheck   `yaml:"healthcheck"`
 	DeployTimeout   time.Duration `yaml:"deploy_timeout"`
 	DrainTimeout    time.Duration `yaml:"drain_timeout"`
@@ -170,6 +175,21 @@ func applyDefaults(cfg *Config) {
 	if cfg.Proxy.HTTPSPort == 0 {
 		cfg.Proxy.HTTPSPort = 443
 	}
+	if cfg.Proxy.Image == "" {
+		cfg.Proxy.Image = "basecamp/kamal-proxy"
+	}
+	if cfg.Proxy.Version == "" {
+		cfg.Proxy.Version = "v0.9.2"
+	}
+	if cfg.Proxy.Network == "" {
+		cfg.Proxy.Network = "kamal"
+	}
+	if cfg.Proxy.StateVolume == "" {
+		cfg.Proxy.StateVolume = "kamal-proxy-config"
+	}
+	if cfg.Proxy.AppsConfigDir == "" {
+		cfg.Proxy.AppsConfigDir = ".kamal/proxy/apps-config"
+	}
 	if cfg.Proxy.DeployTimeout == 0 {
 		cfg.Proxy.DeployTimeout = 30 * time.Second
 	}
@@ -210,6 +230,11 @@ proxy:
   app_port: 3000
   http_port: 80
   https_port: 443
+  image: basecamp/kamal-proxy
+  version: v0.9.2
+  network: kamal
+  state_volume: kamal-proxy-config
+  apps_config_dir: .kamal/proxy/apps-config
   deploy_timeout: 30s
   drain_timeout: 30s
   target_timeout: 30s

@@ -68,17 +68,28 @@ func TestDeployCommandIncludesConfiguredFlags(t *testing.T) {
 func TestBootCommandUsesConfiguredPorts(t *testing.T) {
 	p := &KamalProxy{
 		cfg: config.Proxy{
-			HTTPPort:  8080,
-			HTTPSPort: 8443,
+			HTTPPort:      8080,
+			HTTPSPort:     8443,
+			Image:         "basecamp/kamal-proxy",
+			Version:       "v0.9.2",
+			Network:       "kamal",
+			StateVolume:   "kamal-proxy-config",
+			AppsConfigDir: ".kamal/proxy/apps-config",
 		},
 	}
 
 	command := p.bootCommand()
 	for _, fragment := range []string{
+		"docker network create 'kamal'",
+		"mkdir -p '.kamal/proxy/apps-config'",
 		"-p 8080:80",
 		"-p 8443:443",
-		"qifa-proxy",
-		"basecamp/kamal-proxy:latest",
+		"--network 'kamal'",
+		"--volume 'kamal-proxy-config:/home/kamal-proxy/.config/kamal-proxy'",
+		"--volume '.kamal/proxy/apps-config:/home/kamal-proxy/.apps-config'",
+		"--log-opt max-size=10m",
+		"kamal-proxy run",
+		"basecamp/kamal-proxy:v0.9.2",
 	} {
 		if !strings.Contains(command, fragment) {
 			t.Fatalf("missing fragment %q in %q", fragment, command)

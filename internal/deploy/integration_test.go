@@ -486,6 +486,13 @@ case "$cmd" in
   build|push|info|pull|login)
     exit 0
     ;;
+  network)
+    if [ "${1:-}" = "create" ]; then
+      exit 0
+    fi
+    echo "unsupported docker network command: $*" >&2
+    exit 1
+    ;;
   ps)
     while [ "$#" -gt 0 ]; do
       case "$1" in
@@ -530,7 +537,7 @@ case "$cmd" in
     ipoctet=$(($(find "$state/containers" -maxdepth 1 -type f | wc -l) + 10))
     while [ "$#" -gt 0 ]; do
       case "$1" in
-        --restart|--name|--env-file|-p)
+        --restart|--name|--env-file|-p|--network|--volume|--log-opt)
           key="$1"
           val="$2"
           if [ "$key" = "--name" ]; then name="$val"; fi
@@ -563,7 +570,7 @@ case "$cmd" in
   exec)
     name="$1"
     shift
-    if [ "$name" = "qifa-proxy" ] && [ "${1:-}" = "kamal-proxy" ]; then
+    if [ "$name" = "kamal-proxy" ] && [ "${1:-}" = "kamal-proxy" ]; then
       echo "$*" >> "$state/proxy_calls.log"
       exit 0
     fi

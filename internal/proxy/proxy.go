@@ -28,8 +28,7 @@ type KamalProxy struct {
 }
 
 const (
-	proxyContainerName = "qifa-proxy"
-	proxyImage         = "basecamp/kamal-proxy:latest"
+	proxyContainerName = "kamal-proxy"
 )
 
 func New(client *ssh.Client, cfg config.Proxy) *KamalProxy {
@@ -51,8 +50,29 @@ func (k *KamalProxy) bootCommand() string {
 	if httpsPort == 0 {
 		httpsPort = 443
 	}
+	imageRef := k.cfg.Image
+	if imageRef == "" {
+		imageRef = "basecamp/kamal-proxy"
+	}
+	if k.cfg.Version != "" {
+		imageRef = imageRef + ":" + k.cfg.Version
+	}
+	network := k.cfg.Network
+	if network == "" {
+		network = "kamal"
+	}
+	stateVolume := k.cfg.StateVolume
+	if stateVolume == "" {
+		stateVolume = "kamal-proxy-config"
+	}
+	appsConfigDir := k.cfg.AppsConfigDir
+	if appsConfigDir == "" {
+		appsConfigDir = ".kamal/proxy/apps-config"
+	}
 	command := strings.Join([]string{
-		"docker ps --filter " + shellQuote("name=^"+proxyContainerName) + " --format '{{.Names}}' | grep -qx " + shellQuote(proxyContainerName) + " || (docker rm -f " + shellQuote(proxyContainerName) + " >/dev/null 2>&1 || true; docker run -d --restart unless-stopped --name " + shellQuote(proxyContainerName) + " -p " + fmt.Sprintf("%d:80", httpPort) + " -p " + fmt.Sprintf("%d:443", httpsPort) + " " + shellQuote(proxyImage) + ")",
+		"docker network create " + shellQuote(network) + " >/dev/null 2>&1 || true",
+		"mkdir -p " + shellQuote(appsConfigDir),
+		"docker ps --filter " + shellQuote("name=^"+proxyContainerName) + " --format '{{.Names}}' | grep -qx " + shellQuote(proxyContainerName) + " || (docker rm -f " + shellQuote(proxyContainerName) + " >/dev/null 2>&1 || true; docker run -d --restart unless-stopped --name " + shellQuote(proxyContainerName) + " --network " + shellQuote(network) + " --volume " + shellQuote(stateVolume+":/home/kamal-proxy/.config/kamal-proxy") + " --volume " + shellQuote(appsConfigDir+":/home/kamal-proxy/.apps-config") + " -p " + fmt.Sprintf("%d:80", httpPort) + " -p " + fmt.Sprintf("%d:443", httpsPort) + " --log-opt max-size=10m " + shellQuote(imageRef) + " kamal-proxy run)",
 		"for i in 1 2 3 4 5; do docker ps --filter " + shellQuote("name=^"+proxyContainerName) + " --format '{{.Names}}' | grep -qx " + shellQuote(proxyContainerName) + " && exit 0; sleep 1; done; exit 1",
 	}, " && ")
 	return command
