@@ -127,6 +127,10 @@ func TestDeployerEndToEndWithLocalSSH(t *testing.T) {
 					readIfExists(filepath.Join(env.root, "sshd.log")),
 				)
 			}
+			time.Sleep(1100 * time.Millisecond) // ensure resolveVersion timestamp differs
+			if err := deployer.Deploy(ctx); err != nil {
+				t.Fatalf("second deploy failed: %v", err)
+			}
 
 			var execOut bytes.Buffer
 			if err := deployer.Exec(ctx, "printf hello", &execOut); err != nil {
@@ -211,8 +215,8 @@ func TestDeployerEndToEndWithLocalSSH(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(deployments) != 2 {
-				t.Fatalf("expected deploy and rollback records, got %d", len(deployments))
+			if len(deployments) != 3 {
+				t.Fatalf("expected two deploys and a rollback record, got %d", len(deployments))
 			}
 			var sawSucceeded bool
 			var sawRolledBack bool
@@ -323,8 +327,8 @@ func TestDeployerNonProxyRedeployReplacesActiveContainer(t *testing.T) {
 	}
 
 	dockerCalls := readIfExists(filepath.Join(env.stateDir, "docker_calls.log"))
-	if !strings.Contains(dockerCalls, "rm -f testapp-web-") {
-		t.Fatalf("expected previous non-proxy container cleanup before redeploy, got %q", dockerCalls)
+	if !strings.Contains(dockerCalls, "stop testapp-web-") {
+		t.Fatalf("expected previous non-proxy container stop before redeploy, got %q", dockerCalls)
 	}
 }
 
@@ -494,36 +498,46 @@ case "$cmd" in
     exit 1
     ;;
   ps)
+    name_filters=""
+    label_filters=""
+    format=""
     while [ "$#" -gt 0 ]; do
       case "$1" in
-        -a)
-          shift
-          ;;
+        -a) shift ;;
         --filter)
-          filter="$2"
+          case "$2" in
+            name=^*) name_filters="$name_filters ${2#name=^}" ;;
+            label=*) label_filters="$label_filters ${2#label=}" ;;
+          esac
           shift 2
           ;;
-        --format)
-          format="$2"
-          shift 2
-          ;;
-        *)
-          shift
-          ;;
+        --format) format="$2"; shift 2 ;;
+        *) shift ;;
       esac
     done
-    prefix=""
-    case "${filter:-}" in
-      name=^*)
-        prefix="${filter#name=^}"
-        ;;
-    esac
     for path in "$state"/containers/*; do
       [ -e "$path" ] || continue
       name="$(basename "$path")"
-      case "$name" in
-        "$prefix"*)
+      match=1
+      for nf in $name_filters; do
+        case "$name" in "$nf"*) ;; *) match=0 ;; esac
+      done
+      for lf in $label_filters; do
+        key="${lf%%=*}"
+        val="${lf#*=}"
+        if ! grep -qx "label.${key}=${val}" "$path"; then match=0; fi
+      done
+      [ "$match" = 1 ] || continue
+      case "$format" in
+        ""|"{{.Names}}")
           printf '%%s\n' "$name"
+          ;;
+        *)
+          version="$(awk -F= '/^label.qifa.version=/{print $2}' "$path")"
+          state_val="$(awk -F= '/^state=/{print $2}' "$path")"
+          created="$(awk -F= '/^created=/{print $2}' "$path")"
+          image="$(awk -F= '/^image=/{print $2}' "$path")"
+          printf '%%s\037%%s\037%%s\037%%s\037%%s\n' "$name" "$version" "$state_val" "$created" "$image"
           ;;
       esac
     done
@@ -533,30 +547,37 @@ case "$cmd" in
     envfile=""
     image=""
     usercmd=""
-    ipfile=""
-    ipoctet=$(($(find "$state/containers" -maxdepth 1 -type f | wc -l) + 10))
+    labels=""
+    count=$(find "$state/containers" -maxdepth 1 -type f 2>/dev/null | wc -l)
+    ipoctet=$((count + 10))
+    seq=$((count + 1))
     while [ "$#" -gt 0 ]; do
       case "$1" in
         --restart|--name|--env-file|-p|--network|--volume|--log-opt)
-          key="$1"
-          val="$2"
+          key="$1"; val="$2"
           if [ "$key" = "--name" ]; then name="$val"; fi
           if [ "$key" = "--env-file" ]; then envfile="$val"; fi
           shift 2
           ;;
-        -d)
-          shift
-          ;;
+        --label) labels="$labels $2"; shift 2 ;;
+        -d) shift ;;
         *)
-          image="$1"
-          shift
-          usercmd="$*"
-          break
+          image="$1"; shift; usercmd="$*"; break
           ;;
       esac
     done
-    ipfile="$state/containers/$name"
-    printf 'image=%%s\nenvfile=%%s\ncmd=%%s\nip=172.18.0.%%s\n' "$image" "$envfile" "$usercmd" "$ipoctet" > "$ipfile"
+    file="$state/containers/$name"
+    {
+      printf 'image=%%s\n' "$image"
+      printf 'envfile=%%s\n' "$envfile"
+      printf 'cmd=%%s\n' "$usercmd"
+      printf 'ip=172.18.0.%%s\n' "$ipoctet"
+      printf 'state=running\n'
+      printf 'created=2026-04-25 10:00:%%02d +0000 UTC\n' "$seq"
+      for l in $labels; do
+        printf 'label.%%s\n' "$l"
+      done
+    } > "$file"
     ;;
   inspect)
     if [ "${1:-}" = "-f" ]; then shift 2; fi
@@ -581,6 +602,13 @@ case "$cmd" in
     fi
     echo "unsupported exec invocation for $name" >&2
     exit 1
+    ;;
+  stop)
+    name="$1"
+    file="$state/containers/$name"
+    if [ -f "$file" ]; then
+      sed -i 's/^state=.*/state=exited/' "$file"
+    fi
     ;;
   rm)
     if [ "${1:-}" = "-f" ]; then shift; fi

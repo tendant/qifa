@@ -22,6 +22,11 @@ type Config struct {
 	SSH         SSH                  `yaml:"ssh"`
 	Hooks       Hooks                `yaml:"hooks"`
 	Accessories map[string]Accessory `yaml:"accessories"`
+	Prune       Prune                `yaml:"prune"`
+}
+
+type Prune struct {
+	RetainContainers int `yaml:"retain_containers"`
 }
 
 type Server struct {
@@ -186,6 +191,9 @@ func applyDefaults(cfg *Config) {
 	}
 	if cfg.Proxy.AppsConfigDir == "" {
 		cfg.Proxy.AppsConfigDir = ".kamal/proxy/apps-config"
+	}
+	if cfg.Prune.RetainContainers == 0 {
+		cfg.Prune.RetainContainers = 5
 	}
 	if cfg.Proxy.DeployTimeout == 0 {
 		cfg.Proxy.DeployTimeout = 30 * time.Second

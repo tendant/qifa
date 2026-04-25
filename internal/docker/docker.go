@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -138,12 +139,15 @@ func (r *Remote) Build(ctx context.Context, host string, cfg *config.Config, ima
 	}
 }
 
-func (r *Remote) RunContainer(ctx context.Context, host, name, imageRef, envFile, command, network string, hostPort, containerPort int) error {
+func (r *Remote) RunContainer(ctx context.Context, host, name, imageRef, envFile, command, network string, labels map[string]string, hostPort, containerPort int) error {
 	var args []string
 	args = append(args, "docker run -d --restart unless-stopped")
 	args = append(args, "--name "+shellQuote(name))
 	if network != "" {
 		args = append(args, "--network "+shellQuote(network))
+	}
+	for _, key := range sortedKeys(labels) {
+		args = append(args, "--label "+shellQuote(key+"="+labels[key]))
 	}
 	if envFile != "" {
 		args = append(args, "--env-file "+shellQuote(envFile))
@@ -160,6 +164,88 @@ func (r *Remote) RunContainer(ctx context.Context, host, name, imageRef, envFile
 	return err
 }
 
+type ContainerInfo struct {
+	Name      string
+	Version   string
+	State     string
+	CreatedAt time.Time
+	Image     string
+}
+
+const (
+	LabelService = "qifa.service"
+	LabelRole    = "qifa.role"
+	LabelVersion = "qifa.version"
+)
+
+func (r *Remote) ListContainersByService(ctx context.Context, host, service, role string) ([]ContainerInfo, error) {
+	const sep = "\x1f"
+	format := strings.Join([]string{
+		"{{.Names}}",
+		"{{.Label \"" + LabelVersion + "\"}}",
+		"{{.State}}",
+		"{{.CreatedAt}}",
+		"{{.Image}}",
+	}, sep)
+	cmd := "docker ps -a --filter " + shellQuote("label="+LabelService+"="+service)
+	if role != "" {
+		cmd += " --filter " + shellQuote("label="+LabelRole+"="+role)
+	}
+	cmd += " --format " + shellQuote(format)
+	out, err := r.client.Run(ctx, host, cmd)
+	if err != nil {
+		return nil, err
+	}
+	var infos []ContainerInfo
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		parts := strings.Split(line, sep)
+		if len(parts) < 5 {
+			continue
+		}
+		created, _ := parseDockerTime(parts[3])
+		infos = append(infos, ContainerInfo{
+			Name:      parts[0],
+			Version:   parts[1],
+			State:     parts[2],
+			CreatedAt: created,
+			Image:     parts[4],
+		})
+	}
+	sort.Slice(infos, func(i, j int) bool {
+		return infos[i].CreatedAt.After(infos[j].CreatedAt)
+	})
+	return infos, nil
+}
+
+func parseDockerTime(s string) (time.Time, error) {
+	s = strings.TrimSpace(s)
+	layouts := []string{
+		"2006-01-02 15:04:05 -0700 MST",
+		"2006-01-02 15:04:05 -0700",
+		time.RFC3339Nano,
+		time.RFC3339,
+	}
+	for _, layout := range layouts {
+		if t, err := time.Parse(layout, s); err == nil {
+			return t, nil
+		}
+	}
+	return time.Time{}, fmt.Errorf("unrecognized docker time %q", s)
+}
+
+func sortedKeys(m map[string]string) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
 func (r *Remote) ContainerIP(ctx context.Context, host, name string) (string, error) {
 	return r.client.Run(ctx, host, "docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "+shellQuote(name))
 }
@@ -169,26 +255,20 @@ func (r *Remote) StopAndRemove(ctx context.Context, host, name string) error {
 	return err
 }
 
-func (r *Remote) ListContainers(ctx context.Context, host, namePrefix string) ([]string, error) {
-	command := "docker ps -a --format '{{.Names}}'"
-	if namePrefix != "" {
-		command = "docker ps -a --filter " + shellQuote("name=^"+namePrefix) + " --format '{{.Names}}'"
-	}
-	result, err := r.client.Run(ctx, host, command)
-	if err != nil {
-		return nil, err
-	}
-	if strings.TrimSpace(result) == "" {
-		return nil, nil
-	}
-	var names []string
-	for _, line := range strings.Split(result, "\n") {
-		line = strings.TrimSpace(line)
-		if line != "" {
-			names = append(names, line)
-		}
-	}
-	return names, nil
+func (r *Remote) StopContainer(ctx context.Context, host, name string) error {
+	_, err := r.client.Run(ctx, host, "docker stop "+shellQuote(name)+" >/dev/null 2>&1 || true")
+	return err
+}
+
+func (r *Remote) StartContainer(ctx context.Context, host, name string) error {
+	_, err := r.client.Run(ctx, host, "docker start "+shellQuote(name))
+	return err
+}
+
+func (r *Remote) PruneDanglingImages(ctx context.Context, host, service string) error {
+	cmd := "docker image prune --force --filter " + shellQuote("label="+LabelService+"="+service) + " >/dev/null"
+	_, err := r.client.Run(ctx, host, cmd)
+	return err
 }
 
 func (r *Remote) Logs(ctx context.Context, host, name string) (string, error) {

@@ -37,6 +37,26 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		return withRuntime(ctx, stdout, stderr, func(rt *runtime) error {
 			return rt.deployer.Rollback(ctx)
 		})
+	case "stop":
+		return withRuntime(ctx, stdout, stderr, func(rt *runtime) error {
+			return rt.deployer.Stop(ctx)
+		})
+	case "start":
+		return withRuntime(ctx, stdout, stderr, func(rt *runtime) error {
+			return rt.deployer.Start(ctx)
+		})
+	case "restart":
+		return withRuntime(ctx, stdout, stderr, func(rt *runtime) error {
+			return rt.deployer.Restart(ctx)
+		})
+	case "remove":
+		return withRuntime(ctx, stdout, stderr, func(rt *runtime) error {
+			return rt.deployer.Remove(ctx)
+		})
+	case "prune":
+		return withRuntime(ctx, stdout, stderr, func(rt *runtime) error {
+			return rt.deployer.Prune(ctx)
+		})
 	case "status":
 		return withRuntime(ctx, stdout, stderr, func(rt *runtime) error {
 			return rt.deployer.Status(ctx, stdout)
@@ -104,6 +124,11 @@ func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "  init [path]")
 	fmt.Fprintln(w, "  deploy")
 	fmt.Fprintln(w, "  rollback")
+	fmt.Fprintln(w, "  stop")
+	fmt.Fprintln(w, "  start")
+	fmt.Fprintln(w, "  restart")
+	fmt.Fprintln(w, "  remove")
+	fmt.Fprintln(w, "  prune")
 	fmt.Fprintln(w, "  status")
 	fmt.Fprintln(w, "  logs")
 	fmt.Fprintln(w, "  app exec <command>")
