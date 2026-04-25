@@ -93,6 +93,7 @@ env:
 
 builder:
   mode: local
+  source: local
   context: .
   dockerfile: Dockerfile
   platform: linux/amd64
@@ -109,7 +110,7 @@ Separate the machine that builds an image from the machines that run it.
 - builder machine: the machine that runs `docker build`
 - deployment target: any host in `servers.*.hosts` that runs the container
 
-The config stays small and models only build location plus optional registry usage:
+The config stays small and models build location, code source, and optional registry usage:
 
 ```yaml
 service: myapp
@@ -118,7 +119,11 @@ image: registry.example.com/myapp
 builder:
   mode: local # local | remote | per_target
   host: 10.0.0.21 # required only for mode=remote
+  source: local # local | git, default local
   context: .
+  repo: git@github.com:org/app.git
+  ref: v1.2.3
+  subdir: . # default .
   dockerfile: Dockerfile
   platform: linux/amd64
 
@@ -150,6 +155,36 @@ registry:
 - `builder.host` must not be set
 - each host runs the image it built locally
 
+### Builder Source
+
+`source=local`
+
+- use files from the machine running `qifa`
+- `builder.context` selects the local build context directory
+- `builder.dockerfile` is relative to that context
+- `local` mode builds directly from that local path
+- `remote` and `per_target` upload that local path before building
+
+`source=git`
+
+- clone a repository at a pinned `builder.ref`
+- `builder.repo` is the clone URL
+- `builder.subdir` selects the build context inside the checked out repo
+- `builder.dockerfile` is relative to that subdirectory
+- the clone happens on the machine that runs the build
+
+### Source Resolution By Mode
+
+- `builder.mode=local`
+  - `source=local`: read files locally and build locally
+  - `source=git`: clone locally and build locally
+- `builder.mode=remote`
+  - `source=local`: upload local files to `builder.host` and build there
+  - `source=git`: clone on `builder.host` and build there
+- `builder.mode=per_target`
+  - `source=local`: upload local files to each deployment target and build there
+  - `source=git`: clone on each deployment target and build there
+
 ### Validation Rules
 
 - `builder.mode` must be one of `local`, `remote`, `per_target`
@@ -158,6 +193,21 @@ registry:
 - `builder.mode=remote` requires `builder.host`
 - `builder.mode=per_target` forbids `registry`
 - `builder.mode=per_target` forbids `builder.host`
+- `builder.source` must be one of `local`, `git`
+- `builder.source=local` requires `builder.context`
+- `builder.source=local` forbids `builder.repo`, `builder.ref`, and `builder.subdir`
+- `builder.source=git` requires `builder.repo` and `builder.ref`
+- `builder.source=git` defaults `builder.subdir` to `.`
+- `builder.source=git` forbids `builder.context`
+- `builder.dockerfile` is always relative to the active build context
+
+### Git Authentication
+
+When `builder.source=git`, the machine doing the build must already have git access configured.
+
+- `builder.mode=local`: local machine must be able to clone
+- `builder.mode=remote`: `builder.host` must be able to clone
+- `builder.mode=per_target`: each deployment target must be able to clone
 
 ### Image Semantics
 
@@ -175,7 +225,7 @@ registry:
 
 `remote + registry`
 
-1. upload build context to `builder.host`
+1. materialize the build context on `builder.host`
 2. build once on `builder.host`
 3. push once to registry from `builder.host`
 4. each target logs into registry
@@ -183,7 +233,7 @@ registry:
 
 `per_target + no registry`
 
-1. upload build context to each deployment target
+1. materialize the build context on each deployment target
 2. each target builds the image locally
 3. each target runs its locally built image
 
@@ -195,19 +245,20 @@ registry:
 
 1. Load config
 2. Resolve version (git SHA or timestamp)
-3. Build the Docker image according to `builder.mode`
-4. If `registry` is configured, push the image once
-5. SSH into each deployment target
-6. Ensure Docker is installed/running
-7. Ensure kamal-proxy is installed/running
-8. If `registry` is configured, install per-host Docker auth and pull the image
-9. If `builder.mode=per_target`, build the image on the target host
-10. Start new container with unique name
-11. Health-check new container
-12. Switch traffic
-13. Stop old container
-14. Record deployment state
-15. Prune old resources
+3. Materialize the build context according to `builder.source`
+4. Build the Docker image according to `builder.mode`
+5. If `registry` is configured, push the image once
+6. SSH into each deployment target
+7. Ensure Docker is installed/running
+8. Ensure kamal-proxy is installed/running
+9. If `registry` is configured, install per-host Docker auth and pull the image
+10. If `builder.mode=per_target`, build the image on the target host
+11. Start new container with unique name
+12. Health-check new container
+13. Switch traffic
+14. Stop old container
+15. Record deployment state
+16. Prune old resources
 
 ## State Model
 
@@ -415,4 +466,3 @@ godeploy/
 ## Positioning
 
 **A Go-native, Kamal-inspired deployer for Docker apps on plain Linux servers using kamal-proxy for zero-downtime deploys.**
-
