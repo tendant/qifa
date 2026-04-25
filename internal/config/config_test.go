@@ -22,186 +22,157 @@ func TestLoadConfig(t *testing.T) {
 	if cfg.Service != "myapp" {
 		t.Fatalf("unexpected service: %s", cfg.Service)
 	}
-	if cfg.Proxy.Healthcheck.Path != "/up" {
-		t.Fatalf("unexpected path: %s", cfg.Proxy.Healthcheck.Path)
+	if cfg.Builder == nil {
+		t.Fatal("expected builder block to be loaded")
 	}
-	if !cfg.Proxy.TLS {
-		t.Fatal("expected tls to be enabled in sample config")
+	if cfg.Builder.Context != "." {
+		t.Fatalf("unexpected context: %q", cfg.Builder.Context)
 	}
-	if cfg.Proxy.TLSRedirect == nil || !*cfg.Proxy.TLSRedirect {
-		t.Fatalf("unexpected tls redirect setting: %#v", cfg.Proxy.TLSRedirect)
+	if cfg.Builder.Dockerfile != "Dockerfile" {
+		t.Fatalf("unexpected dockerfile: %q", cfg.Builder.Dockerfile)
 	}
-	if len(cfg.Proxy.PathPrefixes) != 1 || cfg.Proxy.PathPrefixes[0] != "/" {
-		t.Fatalf("unexpected path prefixes: %#v", cfg.Proxy.PathPrefixes)
+	if cfg.Builder.IsRemote() || cfg.Builder.IsPerTarget() {
+		t.Fatalf("expected local build, got host=%q", cfg.Builder.Host)
 	}
-	if cfg.Proxy.DeployTimeout != 30*time.Second || cfg.Proxy.DrainTimeout != 30*time.Second || cfg.Proxy.TargetTimeout != 30*time.Second {
-		t.Fatalf("unexpected proxy timeouts: %#v", cfg.Proxy)
+	if cfg.Prune.RetainContainers != 5 {
+		t.Fatalf("unexpected retain_containers default: %d", cfg.Prune.RetainContainers)
 	}
-	if cfg.Builder.Mode != "local" {
-		t.Fatalf("unexpected builder mode: %s", cfg.Builder.Mode)
-	}
-	if cfg.Builder.Source != "local" {
-		t.Fatalf("unexpected builder source: %s", cfg.Builder.Source)
+	if cfg.Proxy.Healthcheck.Interval != 2*time.Second {
+		t.Fatalf("unexpected healthcheck interval default: %v", cfg.Proxy.Healthcheck.Interval)
 	}
 	if cfg.SSH.StrictHostKeyChecking != nil {
 		t.Fatalf("expected nil strict host key setting by default, got %#v", cfg.SSH.StrictHostKeyChecking)
 	}
 }
 
-func TestWriteSampleCreatesParents(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "nested", "qifa.yml")
-	if err := WriteSample(path); err != nil {
-		t.Fatal(err)
+func TestParseImageVersion(t *testing.T) {
+	tests := []struct {
+		image   string
+		want    string
+		wantErr bool
+	}{
+		{"nginx:alpine", "alpine", false},
+		{"nginx:latest", "latest", false},
+		{"ghcr.io/org/app:v1.2.3", "v1.2.3", false},
+		{"ghcr.io:5000/org/app:v1.2.3", "v1.2.3", false},
+		{"ghcr.io/org/app@sha256:abc", "sha256:abc", false},
+		{"nginx", "", true},
+		{"nginx:", "", true},
+		{"ghcr.io/org/app", "", true},
+		{"", "", true},
 	}
-	if _, err := os.Stat(path); err != nil {
-		t.Fatal(err)
+	for _, tt := range tests {
+		got, err := ParseImageVersion(tt.image)
+		if tt.wantErr {
+			if err == nil {
+				t.Errorf("ParseImageVersion(%q) = %q, want error", tt.image, got)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("ParseImageVersion(%q) error: %v", tt.image, err)
+			continue
+		}
+		if got != tt.want {
+			t.Errorf("ParseImageVersion(%q) = %q, want %q", tt.image, got, tt.want)
+		}
 	}
 }
 
-func TestValidateBuilderModes(t *testing.T) {
+func TestValidateBuilderShapes(t *testing.T) {
 	tests := []struct {
 		name    string
-		cfg     Config
+		mutate  func(*Config)
 		wantErr string
 	}{
 		{
-			name: "local with registry",
-			cfg:  validConfig(),
+			name:   "local build with registry",
+			mutate: func(c *Config) {},
 		},
 		{
-			name: "ssh user and key optional",
-			cfg: func() Config {
-				cfg := validConfig()
-				cfg.SSH = SSH{}
-				return cfg
-			}(),
+			name: "remote build with registry",
+			mutate: func(c *Config) {
+				c.Builder.Host = "10.0.0.99"
+			},
 		},
 		{
-			name: "ssh strict host key setting optional",
-			cfg: func() Config {
-				cfg := validConfig()
-				value := false
-				cfg.SSH.StrictHostKeyChecking = &value
-				return cfg
-			}(),
+			name: "git source",
+			mutate: func(c *Config) {
+				c.Builder.Context = ""
+				c.Builder.Repo = "git@example.com:org/app.git"
+				c.Builder.Ref = "v1.2.3"
+				c.Builder.Subdir = "."
+			},
 		},
 		{
-			name: "remote with registry",
-			cfg: func() Config {
-				cfg := validConfig()
-				cfg.Builder.Mode = "remote"
-				cfg.Builder.Host = "10.0.0.99"
-				return cfg
-			}(),
+			name: "per_target builds without registry",
+			mutate: func(c *Config) {
+				c.Builder.Host = BuilderHostPerTarget
+				c.Registry = Registry{}
+				c.Image = "myapp"
+			},
 		},
 		{
-			name: "git source with registry",
-			cfg: func() Config {
-				cfg := validConfig()
-				cfg.Builder.Source = "git"
-				cfg.Builder.Context = ""
-				cfg.Builder.Repo = "git@example.com:org/app.git"
-				cfg.Builder.Ref = "v1.2.3"
-				cfg.Builder.Subdir = "."
-				return cfg
-			}(),
+			name: "external image (no builder) with tagged image",
+			mutate: func(c *Config) {
+				c.Builder = nil
+				c.Image = "nginx:1.27"
+				c.Registry = Registry{}
+			},
 		},
 		{
-			name: "per target without registry",
-			cfg: func() Config {
-				cfg := validConfig()
-				cfg.Builder.Mode = "per_target"
-				cfg.Registry = Registry{}
-				cfg.Image = "myapp"
-				return cfg
-			}(),
+			name: "local build requires registry",
+			mutate: func(c *Config) {
+				c.Registry = Registry{}
+			},
+			wantErr: "config.registry is required",
 		},
 		{
-			name: "local requires registry",
-			cfg: func() Config {
-				cfg := validConfig()
-				cfg.Registry = Registry{}
-				return cfg
-			}(),
-			wantErr: "config.registry is required when config.builder.mode=local",
+			name: "per_target forbids registry",
+			mutate: func(c *Config) {
+				c.Builder.Host = BuilderHostPerTarget
+			},
+			wantErr: "config.registry must not be set",
 		},
 		{
-			name: "remote requires host",
-			cfg: func() Config {
-				cfg := validConfig()
-				cfg.Builder.Mode = "remote"
-				return cfg
-			}(),
-			wantErr: "config.builder.host is required when config.builder.mode=remote",
+			name: "git requires ref",
+			mutate: func(c *Config) {
+				c.Builder.Context = ""
+				c.Builder.Repo = "git@example.com:org/app.git"
+			},
+			wantErr: "config.builder.ref is required",
 		},
 		{
-			name: "per target forbids registry",
-			cfg: func() Config {
-				cfg := validConfig()
-				cfg.Builder.Mode = "per_target"
-				return cfg
-			}(),
-			wantErr: "config.registry must not be set when config.builder.mode=per_target",
+			name: "git forbids context",
+			mutate: func(c *Config) {
+				c.Builder.Repo = "git@example.com:org/app.git"
+				c.Builder.Ref = "v1"
+			},
+			wantErr: "config.builder.context must not be set",
 		},
 		{
-			name: "per target forbids host",
-			cfg: func() Config {
-				cfg := validConfig()
-				cfg.Builder.Mode = "per_target"
-				cfg.Registry = Registry{}
-				cfg.Builder.Host = "10.0.0.99"
-				cfg.Image = "myapp"
-				return cfg
-			}(),
-			wantErr: "config.builder.host must not be set when config.builder.mode=per_target",
+			name: "external image must be tagged",
+			mutate: func(c *Config) {
+				c.Builder = nil
+				c.Image = "nginx"
+				c.Registry = Registry{}
+			},
+			wantErr: "config.image",
 		},
 		{
-			name: "local source requires context",
-			cfg: func() Config {
-				cfg := validConfig()
-				cfg.Builder.Context = ""
-				return cfg
-			}(),
-			wantErr: "config.builder.context is required when config.builder.source=local",
-		},
-		{
-			name: "git source requires repo",
-			cfg: func() Config {
-				cfg := validConfig()
-				cfg.Builder.Source = "git"
-				cfg.Builder.Context = ""
-				cfg.Builder.Ref = "main"
-				return cfg
-			}(),
-			wantErr: "config.builder.repo is required when config.builder.source=git",
-		},
-		{
-			name: "git source requires ref",
-			cfg: func() Config {
-				cfg := validConfig()
-				cfg.Builder.Source = "git"
-				cfg.Builder.Context = ""
-				cfg.Builder.Repo = "git@example.com:org/app.git"
-				return cfg
-			}(),
-			wantErr: "config.builder.ref is required when config.builder.source=git",
-		},
-		{
-			name: "git source forbids context",
-			cfg: func() Config {
-				cfg := validConfig()
-				cfg.Builder.Source = "git"
-				cfg.Builder.Repo = "git@example.com:org/app.git"
-				cfg.Builder.Ref = "main"
-				return cfg
-			}(),
-			wantErr: "config.builder.context must not be set when config.builder.source=git",
+			name: "external image accepts :latest (resolved to digest at deploy time)",
+			mutate: func(c *Config) {
+				c.Builder = nil
+				c.Image = "nginx:latest"
+				c.Registry = Registry{}
+			},
 		},
 	}
-
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := tt.cfg.Validate()
+			cfg := validConfig()
+			tt.mutate(&cfg)
+			err := cfg.Validate()
 			if tt.wantErr == "" {
 				if err != nil {
 					t.Fatal(err)
@@ -212,6 +183,16 @@ func TestValidateBuilderModes(t *testing.T) {
 				t.Fatalf("expected error containing %q, got %v", tt.wantErr, err)
 			}
 		})
+	}
+}
+
+func TestWriteSampleCreatesParents(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "nested", "qifa.yml")
+	if err := WriteSample(path); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -227,9 +208,7 @@ func validConfig() Config {
 			Username:    "reg",
 			PasswordEnv: "REGISTRY_PASSWORD",
 		},
-		Builder: Builder{
-			Mode:       "local",
-			Source:     "local",
+		Builder: &Builder{
 			Context:    ".",
 			Dockerfile: "Dockerfile",
 		},

@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"os/user"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -21,17 +22,15 @@ import (
 func TestDeployerEndToEndWithLocalSSH(t *testing.T) {
 	tests := []struct {
 		name     string
-		mode     string
+		host     string
 		source   string
 		image    string
 		registry config.Registry
-		host     string
 		expect   []string
 		reject   []string
 	}{
 		{
 			name:   "local registry",
-			mode:   "local",
 			source: "local",
 			image:  "registry.example.com/testapp",
 			registry: config.Registry{
@@ -43,7 +42,7 @@ func TestDeployerEndToEndWithLocalSSH(t *testing.T) {
 		},
 		{
 			name:   "remote registry",
-			mode:   "remote",
+			host:   "127.0.0.1:%PORT%",
 			source: "local",
 			image:  "registry.example.com/testapp",
 			registry: config.Registry{
@@ -51,12 +50,11 @@ func TestDeployerEndToEndWithLocalSSH(t *testing.T) {
 				Username:    "reg",
 				PasswordEnv: "REGISTRY_PASSWORD",
 			},
-			host:   "127.0.0.1:%PORT%",
 			expect: []string{"build", "push push registry.example.com/testapp:", "pull pull registry.example.com/testapp:", "run"},
 		},
 		{
 			name:   "per target local",
-			mode:   "per_target",
+			host:   config.BuilderHostPerTarget,
 			source: "local",
 			image:  "testapp",
 			expect: []string{"build", "run"},
@@ -64,7 +62,6 @@ func TestDeployerEndToEndWithLocalSSH(t *testing.T) {
 		},
 		{
 			name:   "local registry git",
-			mode:   "local",
 			source: "git",
 			image:  "registry.example.com/testapp",
 			registry: config.Registry{
@@ -76,7 +73,7 @@ func TestDeployerEndToEndWithLocalSSH(t *testing.T) {
 		},
 		{
 			name:   "remote registry git",
-			mode:   "remote",
+			host:   "127.0.0.1:%PORT%",
 			source: "git",
 			image:  "registry.example.com/testapp",
 			registry: config.Registry{
@@ -84,12 +81,11 @@ func TestDeployerEndToEndWithLocalSSH(t *testing.T) {
 				Username:    "reg",
 				PasswordEnv: "REGISTRY_PASSWORD",
 			},
-			host:   "127.0.0.1:%PORT%",
 			expect: []string{"clone", "checkout", "build", "push push registry.example.com/testapp:", "pull pull registry.example.com/testapp:", "run"},
 		},
 		{
 			name:   "per target git",
-			mode:   "per_target",
+			host:   config.BuilderHostPerTarget,
 			source: "git",
 			image:  "testapp",
 			expect: []string{"clone", "checkout", "build", "run"},
@@ -103,7 +99,7 @@ func TestDeployerEndToEndWithLocalSSH(t *testing.T) {
 			defer cancel()
 
 			env := newIntegrationEnv(t)
-			cfg := env.config(t, tt.mode, tt.source, tt.image, tt.registry, tt.host)
+			cfg := env.config(t, tt.host, tt.source, tt.image, tt.registry)
 			store, err := state.NewStore(filepath.Join(env.root, ".qifa", "state.jsonl"))
 			if err != nil {
 				t.Fatal(err)
@@ -235,12 +231,71 @@ func TestDeployerEndToEndWithLocalSSH(t *testing.T) {
 	}
 }
 
+func TestDeployerExternalImageSkipsBuild(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	env := newIntegrationEnv(t)
+	cfg := env.config(t, config.BuilderHostPerTarget, "local", "nginx:1.27-alpine", config.Registry{})
+	cfg.Builder = nil // external image — pull-only
+	proxyDisabled := false
+	web := cfg.Servers["web"]
+	web.Port = 19084
+	web.AppPort = 80
+	web.Proxy = &proxyDisabled
+	cfg.Servers["web"] = web
+	delete(cfg.Servers, "worker")
+
+	store, err := state.NewStore(filepath.Join(env.root, ".qifa", "state.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	deployer, err := New(cfg, store, &stdout, &stderr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := deployer.Deploy(ctx); err != nil {
+		t.Fatalf("deploy failed: %v\ndocker calls:\n%s", err, readIfExists(filepath.Join(env.stateDir, "docker_calls.log")))
+	}
+
+	calls := readIfExists(filepath.Join(env.stateDir, "docker_calls.log"))
+	if strings.Contains(calls, "build build") {
+		t.Fatalf("external-image deploy should not run docker build, got %q", calls)
+	}
+	if strings.Contains(calls, "push push") {
+		t.Fatalf("external-image deploy should not run docker push, got %q", calls)
+	}
+
+	deployments, _, err := store.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(deployments) == 0 {
+		t.Fatal("expected at least one deployment record")
+	}
+	last := deployments[len(deployments)-1]
+	if matched, _ := regexp.MatchString(`^[0-9a-f]{12}$`, last.Version); !matched {
+		t.Fatalf("expected version to be a 12-char short digest, got %q", last.Version)
+	}
+	wantImagePrefix := "nginx@sha256:"
+	if !strings.HasPrefix(last.Image, wantImagePrefix) {
+		t.Fatalf("expected image to be repo@digest, got %q", last.Image)
+	}
+	if !strings.Contains(calls, "run -d --restart unless-stopped --name testapp-web-"+last.Version) {
+		t.Fatalf("expected container name with short digest %q, got %q", last.Version, calls)
+	}
+	if !strings.Contains(calls, "--label qifa.version="+last.Version) {
+		t.Fatalf("expected version label %q, got %q", last.Version, calls)
+	}
+}
+
 func TestDeployerNonProxyHealthCheckUsesPublishedPort(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	env := newIntegrationEnv(t)
-	cfg := env.config(t, "per_target", "local", "testapp", config.Registry{}, "")
+	cfg := env.config(t, config.BuilderHostPerTarget, "local", "testapp", config.Registry{})
 	server := cfg.Servers["web"]
 	proxyEnabled := false
 	server.Proxy = &proxyEnabled
@@ -292,7 +347,7 @@ func TestDeployerNonProxyRedeployReplacesActiveContainer(t *testing.T) {
 	defer cancel()
 
 	env := newIntegrationEnv(t)
-	cfg := env.config(t, "per_target", "local", "testapp", config.Registry{}, "")
+	cfg := env.config(t, config.BuilderHostPerTarget, "local", "testapp", config.Registry{})
 	server := cfg.Servers["web"]
 	proxyEnabled := false
 	server.Proxy = &proxyEnabled
@@ -385,18 +440,12 @@ func newIntegrationEnv(t *testing.T) *integrationEnv {
 	return env
 }
 
-func (e *integrationEnv) config(t *testing.T, mode, source, image string, registryCfg config.Registry, builderHost string) *config.Config {
+func (e *integrationEnv) config(t *testing.T, host, source, image string, registryCfg config.Registry) *config.Config {
 	t.Helper()
+	host = strings.ReplaceAll(host, "%PORT%", fmt.Sprintf("%d", e.port))
 
-	if builderHost == "" && mode == "remote" {
-		builderHost = fmt.Sprintf("127.0.0.1:%d", e.port)
-	}
-	builderHost = strings.ReplaceAll(builderHost, "%PORT%", fmt.Sprintf("%d", e.port))
-
-	builder := config.Builder{
-		Mode:       mode,
-		Host:       builderHost,
-		Source:     source,
+	builder := &config.Builder{
+		Host:       host,
 		Dockerfile: "Dockerfile",
 		Platform:   "linux/amd64",
 	}
@@ -580,9 +629,23 @@ case "$cmd" in
     } > "$file"
     ;;
   inspect)
-    if [ "${1:-}" = "-f" ]; then shift 2; fi
+    fmt=""
+    if [ "${1:-}" = "-f" ] || [ "${1:-}" = "--format" ]; then
+      fmt="$2"
+      shift 2
+    fi
     name="$1"
-    awk -F= '/^ip=/{print $2}' "$state/containers/$name"
+    case "$fmt" in
+      *RepoDigests*)
+        digest="$(printf '%%s' "$name" | sha256sum | cut -c1-64)"
+        printf '%%s@sha256:%%s\n' "$name" "$digest"
+        ;;
+      *)
+        if [ -f "$state/containers/$name" ]; then
+          awk -F= '/^ip=/{print $2}' "$state/containers/$name"
+        fi
+        ;;
+    esac
     ;;
   logs)
     if [ "${1:-}" = "--tail" ]; then shift 2; fi

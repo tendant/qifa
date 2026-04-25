@@ -18,7 +18,7 @@ type Config struct {
 	Proxy       Proxy                `yaml:"proxy"`
 	Registry    Registry             `yaml:"registry"`
 	Env         Env                  `yaml:"env"`
-	Builder     Builder              `yaml:"builder"`
+	Builder     *Builder             `yaml:"builder"`
 	SSH         SSH                  `yaml:"ssh"`
 	Hooks       Hooks                `yaml:"hooks"`
 	Accessories map[string]Accessory `yaml:"accessories"`
@@ -77,10 +77,19 @@ type Env struct {
 	Secret []string          `yaml:"secret"`
 }
 
+// Builder describes how to produce the image. When nil, the image is treated
+// as externally produced and qifa just pulls it.
+//
+// Host:
+//   ""           build locally (where qifa runs); requires registry.
+//   "per_target" build on each deployment target; forbids registry.
+//   anything else  treated as an SSH-reachable host to build on; requires registry.
+//
+// Source is inferred from the presence of Repo:
+//   Repo set     git source; requires Ref; forbids Context.
+//   Repo unset   local source; requires Context (defaults to ".").
 type Builder struct {
-	Mode       string `yaml:"mode"`
 	Host       string `yaml:"host"`
-	Source     string `yaml:"source"`
 	Context    string `yaml:"context"`
 	Repo       string `yaml:"repo"`
 	Ref        string `yaml:"ref"`
@@ -88,6 +97,15 @@ type Builder struct {
 	Dockerfile string `yaml:"dockerfile"`
 	Platform   string `yaml:"platform"`
 }
+
+const BuilderHostPerTarget = "per_target"
+
+func (b *Builder) IsPerTarget() bool { return b != nil && b.Host == BuilderHostPerTarget }
+func (b *Builder) IsRemote() bool {
+	return b != nil && b.Host != "" && b.Host != BuilderHostPerTarget
+}
+func (b *Builder) IsLocal() bool { return b != nil && b.Host == "" }
+func (b *Builder) IsGit() bool   { return b != nil && b.Repo != "" }
 
 type SSH struct {
 	User                  string `yaml:"user"`
@@ -143,27 +161,24 @@ func (c *Config) Validate() error {
 	if c.Proxy.HTTPSPort < 0 {
 		return errors.New("config.proxy.https_port must not be negative")
 	}
-	if err := c.validateBuilder(); err != nil {
-		return err
+	if c.Registry.Server != "" && (c.Registry.Username == "" || c.Registry.PasswordEnv == "") {
+		return errors.New("config.registry.username and config.registry.password_env are required when config.registry.server is set")
 	}
-	return nil
+	return c.validateBuilder()
 }
 
 func applyDefaults(cfg *Config) {
-	if cfg.Builder.Mode == "" {
-		cfg.Builder.Mode = "local"
-	}
-	if cfg.Builder.Source == "" {
-		cfg.Builder.Source = "local"
-	}
-	if cfg.Builder.Source == "local" && cfg.Builder.Context == "" {
-		cfg.Builder.Context = "."
-	}
-	if cfg.Builder.Source == "git" && cfg.Builder.Subdir == "" {
-		cfg.Builder.Subdir = "."
-	}
-	if cfg.Builder.Dockerfile == "" {
-		cfg.Builder.Dockerfile = "Dockerfile"
+	if cfg.Builder != nil {
+		if cfg.Builder.Dockerfile == "" {
+			cfg.Builder.Dockerfile = "Dockerfile"
+		}
+		if cfg.Builder.IsGit() {
+			if cfg.Builder.Subdir == "" {
+				cfg.Builder.Subdir = "."
+			}
+		} else if cfg.Builder.Context == "" {
+			cfg.Builder.Context = "."
+		}
 	}
 	if cfg.Proxy.Healthcheck.Interval == 0 {
 		cfg.Proxy.Healthcheck.Interval = 2 * time.Second
@@ -233,20 +248,6 @@ servers:
 proxy:
   host: app.example.com
   app_port: 3000
-  http_port: 80
-  https_port: 443
-  image: basecamp/kamal-proxy
-  version: v0.9.2
-  network: kamal
-  state_volume: kamal-proxy-config
-  apps_config_dir: .kamal/proxy/apps-config
-  deploy_timeout: 30s
-  drain_timeout: 30s
-  target_timeout: 30s
-  tls: true
-  tls_redirect: true
-  path_prefixes:
-    - /
   healthcheck:
     path: /up
     interval: 2s
@@ -260,14 +261,13 @@ registry:
 env:
   clear:
     APP_ENV: production
-    LOG_LEVEL: info
   secret:
     - DATABASE_URL
-    - REDIS_URL
 
+# Omit the builder block to deploy an externally built image (image must
+# include a :tag or @digest). Set host: per_target to build on each target,
+# or host: <ip> to build on a remote host.
 builder:
-  mode: local
-  source: local
   context: .
   dockerfile: Dockerfile
   platform: linux/amd64
@@ -275,49 +275,39 @@ builder:
 ssh:
   user: ubuntu
   key: ~/.ssh/id_ed25519
-
-hooks:
-  pre_build: ./scripts/pre_build.sh
-  post_deploy: ./scripts/post_deploy.sh
-  pre_rollback: ./scripts/pre_rollback.sh
-
-accessories:
-  redis:
-    image: redis:7
-    host: 10.0.0.13
 `
 
 func (c *Config) validateBuilder() error {
-	switch c.Builder.Mode {
-	case "local":
-		if c.Builder.Host != "" {
-			return errors.New("config.builder.host must not be set when config.builder.mode=local")
+	if c.Builder == nil {
+		if _, err := ParseImageVersion(c.Image); err != nil {
+			return fmt.Errorf("config.image: %w (set config.builder to build the image, or pin a tag like image:1.2.3)", err)
 		}
-		if !c.Registry.Enabled() {
-			return errors.New("config.registry is required when config.builder.mode=local")
-		}
-	case "remote":
-		if c.Builder.Host == "" {
-			return errors.New("config.builder.host is required when config.builder.mode=remote")
-		}
-		if !c.Registry.Enabled() {
-			return errors.New("config.registry is required when config.builder.mode=remote")
-		}
-	case "per_target":
-		if c.Builder.Host != "" {
-			return errors.New("config.builder.host must not be set when config.builder.mode=per_target")
-		}
+		return nil
+	}
+	switch {
+	case c.Builder.IsPerTarget():
 		if c.Registry.Enabled() {
-			return errors.New("config.registry must not be set when config.builder.mode=per_target")
+			return errors.New("config.registry must not be set when config.builder.host=per_target")
 		}
-	default:
-		return fmt.Errorf("config.builder.mode must be one of local, remote, per_target, got %q", c.Builder.Mode)
+	case c.Builder.IsLocal(), c.Builder.IsRemote():
+		if !c.Registry.Enabled() {
+			return errors.New("config.registry is required when building locally or remotely (omit config.builder to deploy an external image)")
+		}
 	}
-	if c.Registry.Server != "" && (c.Registry.Username == "" || c.Registry.PasswordEnv == "") {
-		return errors.New("config.registry.username and config.registry.password_env are required when config.registry.server is set")
-	}
-	if err := c.validateBuilderSource(); err != nil {
-		return err
+	if c.Builder.IsGit() {
+		if strings.TrimSpace(c.Builder.Ref) == "" {
+			return errors.New("config.builder.ref is required when config.builder.repo is set")
+		}
+		if c.Builder.Context != "" {
+			return errors.New("config.builder.context must not be set when config.builder.repo is set")
+		}
+	} else {
+		if strings.TrimSpace(c.Builder.Context) == "" {
+			return errors.New("config.builder.context is required when config.builder.repo is not set")
+		}
+		if c.Builder.Ref != "" || c.Builder.Subdir != "" {
+			return errors.New("config.builder.ref and config.builder.subdir must not be set when config.builder.repo is not set")
+		}
 	}
 	return nil
 }
@@ -326,27 +316,42 @@ func (r Registry) Enabled() bool {
 	return strings.TrimSpace(r.Server) != ""
 }
 
-func (c *Config) validateBuilderSource() error {
-	switch c.Builder.Source {
-	case "local":
-		if strings.TrimSpace(c.Builder.Context) == "" {
-			return errors.New("config.builder.context is required when config.builder.source=local")
-		}
-		if c.Builder.Repo != "" || c.Builder.Ref != "" || c.Builder.Subdir != "" {
-			return errors.New("config.builder.repo, config.builder.ref, and config.builder.subdir must not be set when config.builder.source=local")
-		}
-	case "git":
-		if strings.TrimSpace(c.Builder.Repo) == "" {
-			return errors.New("config.builder.repo is required when config.builder.source=git")
-		}
-		if strings.TrimSpace(c.Builder.Ref) == "" {
-			return errors.New("config.builder.ref is required when config.builder.source=git")
-		}
-		if c.Builder.Context != "" {
-			return errors.New("config.builder.context must not be set when config.builder.source=git")
-		}
-	default:
-		return fmt.Errorf("config.builder.source must be one of local, git, got %q", c.Builder.Source)
+// ParseImageVersion extracts the tag or digest from an image reference.
+// Returns an error only if the image has no tag and no digest. The actual
+// version label used at deploy time is the registry digest (resolved at
+// deploy), not the tag — so :latest is accepted here.
+func ParseImageVersion(image string) (string, error) {
+	image = strings.TrimSpace(image)
+	if image == "" {
+		return "", errors.New("image is empty")
 	}
-	return nil
+	if at := strings.LastIndex(image, "@"); at > 0 {
+		digest := image[at+1:]
+		if digest == "" {
+			return "", errors.New("image digest is empty")
+		}
+		return digest, nil
+	}
+	colon := strings.LastIndex(image, ":")
+	if colon < 0 || strings.Contains(image[colon:], "/") {
+		return "", errors.New("image must include a :tag or @digest")
+	}
+	tag := image[colon+1:]
+	if tag == "" {
+		return "", errors.New("image tag is empty")
+	}
+	return tag, nil
+}
+
+// ImageRepo returns the registry/repository portion of an image reference,
+// stripping any :tag or @digest suffix.
+func ImageRepo(image string) string {
+	if at := strings.LastIndex(image, "@"); at > 0 {
+		return image[:at]
+	}
+	colon := strings.LastIndex(image, ":")
+	if colon < 0 || strings.Contains(image[colon:], "/") {
+		return image
+	}
+	return image[:colon]
 }
