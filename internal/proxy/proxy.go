@@ -37,12 +37,25 @@ func New(client *ssh.Client, cfg config.Proxy) *KamalProxy {
 }
 
 func (k *KamalProxy) EnsureInstalled(ctx context.Context, host string) error {
-	command := strings.Join([]string{
-		"docker ps --filter " + shellQuote("name=^"+proxyContainerName) + " --format '{{.Names}}' | grep -qx " + shellQuote(proxyContainerName) + " || (docker rm -f " + shellQuote(proxyContainerName) + " >/dev/null 2>&1 || true; docker run -d --restart unless-stopped --name " + shellQuote(proxyContainerName) + " -p 80:80 -p 443:443 " + shellQuote(proxyImage) + ")",
-		"for i in 1 2 3 4 5; do docker ps --filter " + shellQuote("name=^"+proxyContainerName) + " --format '{{.Names}}' | grep -qx " + shellQuote(proxyContainerName) + " && exit 0; sleep 1; done; exit 1",
-	}, " && ")
+	command := k.bootCommand()
 	_, err := k.client.Run(ctx, host, command)
 	return err
+}
+
+func (k *KamalProxy) bootCommand() string {
+	httpPort := k.cfg.HTTPPort
+	if httpPort == 0 {
+		httpPort = 80
+	}
+	httpsPort := k.cfg.HTTPSPort
+	if httpsPort == 0 {
+		httpsPort = 443
+	}
+	command := strings.Join([]string{
+		"docker ps --filter " + shellQuote("name=^"+proxyContainerName) + " --format '{{.Names}}' | grep -qx " + shellQuote(proxyContainerName) + " || (docker rm -f " + shellQuote(proxyContainerName) + " >/dev/null 2>&1 || true; docker run -d --restart unless-stopped --name " + shellQuote(proxyContainerName) + " -p " + fmt.Sprintf("%d:80", httpPort) + " -p " + fmt.Sprintf("%d:443", httpsPort) + " " + shellQuote(proxyImage) + ")",
+		"for i in 1 2 3 4 5; do docker ps --filter " + shellQuote("name=^"+proxyContainerName) + " --format '{{.Names}}' | grep -qx " + shellQuote(proxyContainerName) + " && exit 0; sleep 1; done; exit 1",
+	}, " && ")
+	return command
 }
 
 func (k *KamalProxy) Deploy(ctx context.Context, host string, target Target) error {

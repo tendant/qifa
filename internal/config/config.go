@@ -36,6 +36,8 @@ type Proxy struct {
 	Host            string        `yaml:"host"`
 	Hosts           []string      `yaml:"hosts"`
 	AppPort         int           `yaml:"app_port"`
+	HTTPPort        int           `yaml:"http_port"`
+	HTTPSPort       int           `yaml:"https_port"`
 	Healthcheck     Healthcheck   `yaml:"healthcheck"`
 	DeployTimeout   time.Duration `yaml:"deploy_timeout"`
 	DrainTimeout    time.Duration `yaml:"drain_timeout"`
@@ -125,6 +127,12 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("config.servers.%s.hosts is required", role)
 		}
 	}
+	if c.Proxy.HTTPPort < 0 {
+		return errors.New("config.proxy.http_port must not be negative")
+	}
+	if c.Proxy.HTTPSPort < 0 {
+		return errors.New("config.proxy.https_port must not be negative")
+	}
 	if err := c.validateBuilder(); err != nil {
 		return err
 	}
@@ -155,6 +163,12 @@ func applyDefaults(cfg *Config) {
 	}
 	if cfg.Proxy.Healthcheck.Timeout == 0 {
 		cfg.Proxy.Healthcheck.Timeout = 5 * time.Second
+	}
+	if cfg.Proxy.HTTPPort == 0 {
+		cfg.Proxy.HTTPPort = 80
+	}
+	if cfg.Proxy.HTTPSPort == 0 {
+		cfg.Proxy.HTTPSPort = 443
 	}
 	if cfg.Proxy.DeployTimeout == 0 {
 		cfg.Proxy.DeployTimeout = 30 * time.Second
@@ -194,6 +208,8 @@ servers:
 proxy:
   host: app.example.com
   app_port: 3000
+  http_port: 80
+  https_port: 443
   deploy_timeout: 30s
   drain_timeout: 30s
   target_timeout: 30s

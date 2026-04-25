@@ -64,3 +64,24 @@ func TestDeployCommandIncludesConfiguredFlags(t *testing.T) {
 		}
 	}
 }
+
+func TestBootCommandUsesConfiguredPorts(t *testing.T) {
+	p := &KamalProxy{
+		cfg: config.Proxy{
+			HTTPPort:  8080,
+			HTTPSPort: 8443,
+		},
+	}
+
+	command := p.bootCommand()
+	for _, fragment := range []string{
+		"-p 8080:80",
+		"-p 8443:443",
+		"qifa-proxy",
+		"basecamp/kamal-proxy:latest",
+	} {
+		if !strings.Contains(command, fragment) {
+			t.Fatalf("missing fragment %q in %q", fragment, command)
+		}
+	}
+}
