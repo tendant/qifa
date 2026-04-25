@@ -68,6 +68,9 @@ func (d *Deployer) Deploy(ctx context.Context) error {
 	if err := hooks.Run(ctx, d.cfg.Hooks.PreBuild, map[string]string{"QIFA_VERSION": version}); err != nil {
 		return err
 	}
+	if err := d.SweepStaleContainers(ctx); err != nil {
+		return d.failDeployment(deployment, err)
+	}
 	if d.cfg.Builder != nil {
 		if err := d.updateStatus(deployment, state.StatusBuilding); err != nil {
 			return err
@@ -234,9 +237,6 @@ func (d *Deployer) deployHost(ctx context.Context, deployment state.Deployment, 
 		return err
 	}
 	if err := d.ssh.Upload(ctx, host, remoteEnv, envFile, 0o600); err != nil {
-		return err
-	}
-	if err := d.cleanupStaleContainers(ctx, host, role, containerName, previousContainer); err != nil {
 		return err
 	}
 	if buildOnHost {
@@ -808,24 +808,32 @@ func (d *Deployer) cleanupPriorContainer(ctx context.Context, host, previousCont
 	return d.remoteDocker.StopContainer(ctx, host, previousContainer)
 }
 
-// cleanupStaleContainers stops and removes orphaned RUNNING labeled
-// containers — anything still running that isn't the new container or the
-// previous active. Stopped containers are left in place: they are valid
-// rollback candidates and are managed by Prune (via prune.retain_containers).
-func (d *Deployer) cleanupStaleContainers(ctx context.Context, host, role, currentContainer, previousContainer string) error {
-	containers, err := d.remoteDocker.ListContainersByService(ctx, host, d.cfg.Service, role)
-	if err != nil {
-		return err
-	}
-	for _, c := range containers {
-		if c.Name == "" || c.Name == currentContainer || c.Name == previousContainer {
-			continue
-		}
-		if c.State != "running" && c.State != "restarting" {
-			continue
-		}
-		if err := d.remoteDocker.StopAndRemove(ctx, host, c.Name); err != nil {
-			return err
+// SweepStaleContainers walks every role/host and removes any orphan running
+// labeled container — defined as any running labeled container that isn't the
+// most-recently-created one (the legitimate active). Stopped containers are
+// left in place as rollback candidates (managed by Prune). Idempotent in the
+// happy case.
+func (d *Deployer) SweepStaleContainers(ctx context.Context) error {
+	for _, role := range orderedRoles(d.cfg.Servers) {
+		for _, host := range d.cfg.Servers[role].Hosts {
+			containers, err := d.remoteDocker.ListContainersByService(ctx, host, d.cfg.Service, role)
+			if err != nil {
+				return err
+			}
+			sawActive := false
+			for _, c := range containers {
+				if c.State != "running" && c.State != "restarting" {
+					continue
+				}
+				if !sawActive {
+					sawActive = true
+					continue
+				}
+				d.log.Printf("sweeping orphan container %s on %s", c.Name, host)
+				if err := d.remoteDocker.StopAndRemove(ctx, host, c.Name); err != nil {
+					return err
+				}
+			}
 		}
 	}
 	return nil

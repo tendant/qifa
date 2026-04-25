@@ -349,6 +349,64 @@ func TestDeployerRollbackToExplicitVersion(t *testing.T) {
 	}
 }
 
+func TestSweepStaleContainersRemovesOrphanRunning(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	env := newIntegrationEnv(t)
+	cfg := env.config(t, config.BuilderHostPerTarget, "local", "testapp", config.Registry{})
+	proxyDisabled := false
+	web := cfg.Servers["web"]
+	web.Port = 19088
+	web.AppPort = 80
+	web.Proxy = &proxyDisabled
+	cfg.Servers["web"] = web
+	delete(cfg.Servers, "worker")
+
+	store, err := state.NewStore(filepath.Join(env.root, ".qifa", "state.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	deployer, err := New(cfg, store, &stdout, &stderr)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := deployer.Deploy(ctx); err != nil {
+		t.Fatalf("first deploy: %v", err)
+	}
+
+	// Forge an orphan: write a second running labeled container directly into
+	// the fake's container store with a NEWER created timestamp so sweep treats
+	// the legitimate one as the orphan when both are running. Easier: use an
+	// older timestamp so the legitimate active stays first and the forged one
+	// is the orphan.
+	containerDir := filepath.Join(env.stateDir, "containers")
+	orphanPath := filepath.Join(containerDir, "testapp-web-orphan")
+	orphan := "image=testapp:orphan\nenvfile=\ncmd=\nip=172.18.0.99\nstate=running\ncreated=2026-04-25 09:00:00 +0000 UTC\nlabel.qifa.role=web\nlabel.qifa.service=testapp\nlabel.qifa.version=orphan\n"
+	if err := os.WriteFile(orphanPath, []byte(orphan), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := deployer.SweepStaleContainers(ctx); err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+
+	if _, err := os.Stat(orphanPath); !os.IsNotExist(err) {
+		t.Fatalf("expected orphan container file removed, stat err = %v", err)
+	}
+	// The legitimate active should remain.
+	entries, _ := os.ReadDir(containerDir)
+	if len(entries) != 1 {
+		names := []string{}
+		for _, e := range entries {
+			names = append(names, e.Name())
+		}
+		t.Fatalf("expected exactly one container after sweep, got %v", names)
+	}
+}
+
 func TestDeployerNonProxyHealthCheckUsesPublishedPort(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()

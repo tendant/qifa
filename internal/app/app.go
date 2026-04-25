@@ -61,6 +61,10 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		return withRuntime(ctx, stdout, stderr, func(rt *runtime) error {
 			return rt.deployer.Prune(ctx)
 		})
+	case "sweep":
+		return withRuntime(ctx, stdout, stderr, func(rt *runtime) error {
+			return rt.deployer.SweepStaleContainers(ctx)
+		})
 	case "status":
 		return withRuntime(ctx, stdout, stderr, func(rt *runtime) error {
 			return rt.deployer.Status(ctx, stdout)
@@ -133,6 +137,7 @@ func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "  restart")
 	fmt.Fprintln(w, "  remove")
 	fmt.Fprintln(w, "  prune")
+	fmt.Fprintln(w, "  sweep")
 	fmt.Fprintln(w, "  status")
 	fmt.Fprintln(w, "  logs")
 	fmt.Fprintln(w, "  app exec <command>")

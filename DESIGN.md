@@ -51,6 +51,7 @@ qifa start              # start the most recent labeled container
 qifa restart            # stop then start
 qifa remove             # tear down all labeled containers + deregister proxy
 qifa prune              # keep last N stopped containers; prune dangling images
+qifa sweep              # stop+remove orphan running labeled containers (also runs at the start of every deploy)
 qifa status             # deployment history (audit) + active containers (live)
 qifa logs               # docker logs from the active container
 qifa app exec <command> # docker exec in the active container
@@ -206,12 +207,15 @@ active set. Removing or losing the file does not break any other command.
    - Built: `image:resolveVersion()`
    - External: pull on first host → read digest → `image@sha256:...`, version = short digest
 2. Run `pre_build` hook
-3. Prepare image
+3. Sweep stale containers across all role/host pairs (stop+remove any running
+   labeled container that isn't the most-recently-created one — defends
+   against half-finished prior deploys)
+4. Prepare image
    - `builder == nil` or `per_target`: no-op (per-target builds happen on each host)
    - `local`: build locally + push
    - `remote`: build on `builder.host` + push
-4. Render env file (clear + secret env vars)
-5. For each role (web first), batch the role's hosts according to `rollout.batch_size`
+5. Render env file (clear + secret env vars)
+6. For each role (web first), batch the role's hosts according to `rollout.batch_size`
    (default 1 = strict rolling; 0 = all hosts in one batch). Hosts within a batch
    run in parallel; batches run sequentially with `rollout.batch_wait` between them.
    On any host failure, remaining batches are skipped and the deploy errors out.
@@ -221,20 +225,19 @@ active set. Removing or losing the file does not break any other command.
    3. If proxy is used: ensure shared kamal-proxy container, network, volume
    4. Find currently running container by labels (= previous version)
    5. Upload env file
-   6. Stop and remove any orphan labeled containers
-   7. Build on host (if `per_target`) OR pull (if registry / external)
-   8. For non-proxy: stop the previous container in place (port collision)
-   9. Remove any same-named container (rollback case)
-   10. `docker run` the new container with `--network <proxy.network>` (if proxy),
-       `--restart unless-stopped`, and the three qifa labels
-   11. Health-check (curl from host into the container)
-   12. If proxy: `kamal-proxy deploy <service> --target <ip:port>` (atomic
+   6. Build on host (if `per_target`) OR pull (if registry / external)
+   7. For non-proxy: stop the previous container in place (port collision)
+   8. Remove any same-named container (rollback case)
+   9. `docker run` the new container with `--network <proxy.network>` (if proxy),
+      `--restart unless-stopped`, and the three qifa labels
+   10. Health-check (curl from host into the container)
+   11. If proxy: `kamal-proxy deploy <service> --target <ip:port>` (atomic
        traffic switch performed by kamal-proxy)
-   13. `deployed` event
-   14. For proxy: stop (don't remove) the previous container so rollback can
+   12. `deployed` event
+   13. For proxy: stop (don't remove) the previous container so rollback can
        find it later
-6. Run `post_deploy` hook
-7. Auto-prune: keep last `prune.retain_containers` stopped containers per role,
+7. Run `post_deploy` hook
+8. Auto-prune: keep last `prune.retain_containers` stopped containers per role,
    prune dangling service images
 
 ### Rollback Flow
