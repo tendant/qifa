@@ -8,7 +8,7 @@ Build a **Go-native deployment CLI** that works like Kamal but reuses the existi
 Go deploy CLI
   -> SSH into servers
   -> Docker build/push/pull/run
-  -> configure kamal-proxy
+  -> configure kamal-proxy container
   -> health check
   -> switch traffic
   -> rollback if needed
@@ -73,6 +73,13 @@ servers:
 proxy:
   host: app.example.com
   app_port: 3000
+  http_port: 80
+  https_port: 443
+  image: basecamp/kamal-proxy
+  version: v0.9.2
+  network: kamal
+  state_volume: kamal-proxy-config
+  apps_config_dir: .kamal/proxy/apps-config
   healthcheck:
     path: /up
     interval: 2s
@@ -215,6 +222,18 @@ When `builder.source=git`, the machine doing the build must already have git acc
 - with `registry`, `image` is the registry reference that gets pushed and pulled
 - without `registry`, `image` is a host-local Docker tag used independently on each deployment target
 
+## Proxy Model
+
+The proxy is a shared container per host, not per app.
+
+- proxy boot uses a persistent Docker volume for runtime route state
+- proxy boot also uses a shared Docker network
+- app deploys register or update their route in the shared proxy container
+- if the proxy container is restarted, routes survive as long as the volume is preserved
+- if the proxy volume is deleted, the routes must be replayed from deployment state
+
+Proxy boot is configured at the root `proxy` section and is application-specific only for the route registration step, not for the container boot itself.
+
 ### Supported Combinations
 
 `local + registry`
@@ -251,7 +270,7 @@ When `builder.source=git`, the machine doing the build must already have git acc
 5. If `registry` is configured, push the image once
 6. SSH into each deployment target
 7. Ensure Docker is installed/running
-8. Ensure kamal-proxy is installed/running
+8. Ensure the shared kamal-proxy container is running, creating the Docker network and persistent state volume if needed
 9. If `registry` is configured, install per-host Docker auth and pull the image
 10. If `builder.mode=per_target`, build the image on the target host
 11. Start new container with unique name
