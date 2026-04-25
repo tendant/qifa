@@ -19,6 +19,12 @@ import (
 
 type Local struct{}
 
+type BuildSpec struct {
+	ContextDir string
+	Dockerfile string
+	Platform   string
+}
+
 func NewLocal() *Local {
 	return &Local{}
 }
@@ -31,13 +37,22 @@ func (l *Local) BuildAndPush(ctx context.Context, cfg *config.Config, imageRef s
 }
 
 func (l *Local) Build(ctx context.Context, cfg *config.Config, imageRef string) error {
-	args := []string{"build", "-f", cfg.Builder.Dockerfile, "-t", imageRef}
-	if cfg.Builder.Platform != "" {
-		args = append(args, "--platform", cfg.Builder.Platform)
+	spec, cleanup, err := localBuildSpec(ctx, cfg)
+	if err != nil {
+		return err
 	}
-	args = append(args, cfg.Builder.Context)
+	defer cleanup()
+	return l.BuildSpec(ctx, spec, imageRef)
+}
+
+func (l *Local) BuildSpec(ctx context.Context, spec BuildSpec, imageRef string) error {
+	args := []string{"build", "-f", spec.Dockerfile, "-t", imageRef}
+	if spec.Platform != "" {
+		args = append(args, "--platform", spec.Platform)
+	}
+	args = append(args, spec.ContextDir)
 	extraEnv := map[string]string{}
-	if cfg.Builder.Platform == "" {
+	if spec.Platform == "" {
 		extraEnv["DOCKER_BUILDKIT"] = "0"
 	}
 	return runLocalEnv(ctx, extraEnv, "docker", args...)
@@ -76,25 +91,51 @@ func (r *Remote) Push(ctx context.Context, host, dockerConfigDir, imageRef strin
 }
 
 func (r *Remote) Build(ctx context.Context, host string, cfg *config.Config, imageRef string) error {
-	archive, err := buildContextArchive(cfg.Builder.Context)
-	if err != nil {
+	switch cfg.Builder.Source {
+	case "local":
+		archive, err := buildContextArchive(cfg.Builder.Context)
+		if err != nil {
+			return err
+		}
+		remoteRoot := fmt.Sprintf("/tmp/qifa-build-%d", time.Now().UTC().UnixNano())
+		remoteArchive := filepath.Join(remoteRoot, "context.tar")
+		remoteContext := filepath.Join(remoteRoot, "context")
+		if err := r.client.Upload(ctx, host, remoteArchive, archive, 0o600); err != nil {
+			return err
+		}
+		command := strings.Join([]string{
+			"rm -rf " + shellQuote(remoteContext),
+			"mkdir -p " + shellQuote(remoteContext),
+			"tar -xf " + shellQuote(remoteArchive) + " -C " + shellQuote(remoteContext),
+			buildCommand(BuildSpec{
+				ContextDir: remoteContext,
+				Dockerfile: filepath.Join(remoteContext, cfg.Builder.Dockerfile),
+				Platform:   cfg.Builder.Platform,
+			}, imageRef),
+			"rm -f " + shellQuote(remoteArchive),
+		}, " && ")
+		_, err = r.client.Run(ctx, host, command)
 		return err
-	}
-	remoteRoot := fmt.Sprintf("/tmp/qifa-build-%d", time.Now().UTC().UnixNano())
-	remoteArchive := filepath.Join(remoteRoot, "context.tar")
-	remoteContext := filepath.Join(remoteRoot, "context")
-	if err := r.client.Upload(ctx, host, remoteArchive, archive, 0o600); err != nil {
+	case "git":
+		remoteRoot := fmt.Sprintf("/tmp/qifa-build-%d", time.Now().UTC().UnixNano())
+		repoDir := filepath.Join(remoteRoot, "repo")
+		contextDir := filepath.Join(repoDir, cfg.Builder.Subdir)
+		command := strings.Join([]string{
+			"rm -rf " + shellQuote(remoteRoot),
+			"mkdir -p " + shellQuote(remoteRoot),
+			"git clone " + shellQuote(cfg.Builder.Repo) + " " + shellQuote(repoDir),
+			"git -C " + shellQuote(repoDir) + " checkout " + shellQuote(cfg.Builder.Ref),
+			buildCommand(BuildSpec{
+				ContextDir: contextDir,
+				Dockerfile: filepath.Join(contextDir, cfg.Builder.Dockerfile),
+				Platform:   cfg.Builder.Platform,
+			}, imageRef),
+		}, " && ")
+		_, err := r.client.Run(ctx, host, command)
 		return err
+	default:
+		return fmt.Errorf("unsupported builder source %q", cfg.Builder.Source)
 	}
-	command := strings.Join([]string{
-		"rm -rf " + shellQuote(remoteContext),
-		"mkdir -p " + shellQuote(remoteContext),
-		"tar -xf " + shellQuote(remoteArchive) + " -C " + shellQuote(remoteContext),
-		buildCommand(cfg, imageRef, remoteContext),
-		"rm -f " + shellQuote(remoteArchive),
-	}, " && ")
-	_, err = r.client.Run(ctx, host, command)
-	return err
 }
 
 func (r *Remote) RunContainer(ctx context.Context, host, name, imageRef, envFile, command string, port int) error {
@@ -159,12 +200,12 @@ func withDockerConfig(dir, command string) string {
 	return "DOCKER_CONFIG=" + shellQuote(dir) + " " + command
 }
 
-func buildCommand(cfg *config.Config, imageRef, contextDir string) string {
-	args := []string{"docker build", "-f", shellQuote(filepath.Join(contextDir, cfg.Builder.Dockerfile)), "-t", shellQuote(imageRef)}
-	if cfg.Builder.Platform != "" {
-		args = append(args, "--platform", shellQuote(cfg.Builder.Platform))
+func buildCommand(spec BuildSpec, imageRef string) string {
+	args := []string{"docker build", "-f", shellQuote(spec.Dockerfile), "-t", shellQuote(imageRef)}
+	if spec.Platform != "" {
+		args = append(args, "--platform", shellQuote(spec.Platform))
 	}
-	args = append(args, shellQuote(contextDir))
+	args = append(args, shellQuote(spec.ContextDir))
 	return strings.Join(args, " ")
 }
 
@@ -218,4 +259,39 @@ func buildContextArchive(root string) ([]byte, error) {
 		return nil, err
 	}
 	return buf.Bytes(), nil
+}
+
+func localBuildSpec(ctx context.Context, cfg *config.Config) (BuildSpec, func(), error) {
+	switch cfg.Builder.Source {
+	case "local":
+		contextDir := filepath.Clean(cfg.Builder.Context)
+		return BuildSpec{
+			ContextDir: contextDir,
+			Dockerfile: filepath.Join(contextDir, cfg.Builder.Dockerfile),
+			Platform:   cfg.Builder.Platform,
+		}, func() {}, nil
+	case "git":
+		root, err := os.MkdirTemp("", "qifa-git-build-")
+		if err != nil {
+			return BuildSpec{}, nil, err
+		}
+		cleanup := func() { _ = os.RemoveAll(root) }
+		repoDir := filepath.Join(root, "repo")
+		if err := runLocal(ctx, "git", "clone", cfg.Builder.Repo, repoDir); err != nil {
+			cleanup()
+			return BuildSpec{}, nil, err
+		}
+		if err := runLocal(ctx, "git", "-C", repoDir, "checkout", cfg.Builder.Ref); err != nil {
+			cleanup()
+			return BuildSpec{}, nil, err
+		}
+		contextDir := filepath.Join(repoDir, cfg.Builder.Subdir)
+		return BuildSpec{
+			ContextDir: contextDir,
+			Dockerfile: filepath.Join(contextDir, cfg.Builder.Dockerfile),
+			Platform:   cfg.Builder.Platform,
+		}, cleanup, nil
+	default:
+		return BuildSpec{}, nil, fmt.Errorf("unsupported builder source %q", cfg.Builder.Source)
+	}
 }

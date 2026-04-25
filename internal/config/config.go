@@ -66,7 +66,11 @@ type Env struct {
 type Builder struct {
 	Mode       string `yaml:"mode"`
 	Host       string `yaml:"host"`
+	Source     string `yaml:"source"`
 	Context    string `yaml:"context"`
+	Repo       string `yaml:"repo"`
+	Ref        string `yaml:"ref"`
+	Subdir     string `yaml:"subdir"`
 	Dockerfile string `yaml:"dockerfile"`
 	Platform   string `yaml:"platform"`
 }
@@ -134,8 +138,14 @@ func applyDefaults(cfg *Config) {
 	if cfg.Builder.Mode == "" {
 		cfg.Builder.Mode = "local"
 	}
-	if cfg.Builder.Context == "" {
+	if cfg.Builder.Source == "" {
+		cfg.Builder.Source = "local"
+	}
+	if cfg.Builder.Source == "local" && cfg.Builder.Context == "" {
 		cfg.Builder.Context = "."
+	}
+	if cfg.Builder.Source == "git" && cfg.Builder.Subdir == "" {
+		cfg.Builder.Subdir = "."
 	}
 	if cfg.Builder.Dockerfile == "" {
 		cfg.Builder.Dockerfile = "Dockerfile"
@@ -214,6 +224,7 @@ env:
 
 builder:
   mode: local
+  source: local
   context: .
   dockerfile: Dockerfile
   platform: linux/amd64
@@ -262,9 +273,37 @@ func (c *Config) validateBuilder() error {
 	if c.Registry.Server != "" && (c.Registry.Username == "" || c.Registry.PasswordEnv == "") {
 		return errors.New("config.registry.username and config.registry.password_env are required when config.registry.server is set")
 	}
+	if err := c.validateBuilderSource(); err != nil {
+		return err
+	}
 	return nil
 }
 
 func (r Registry) Enabled() bool {
 	return strings.TrimSpace(r.Server) != ""
+}
+
+func (c *Config) validateBuilderSource() error {
+	switch c.Builder.Source {
+	case "local":
+		if strings.TrimSpace(c.Builder.Context) == "" {
+			return errors.New("config.builder.context is required when config.builder.source=local")
+		}
+		if c.Builder.Repo != "" || c.Builder.Ref != "" || c.Builder.Subdir != "" {
+			return errors.New("config.builder.repo, config.builder.ref, and config.builder.subdir must not be set when config.builder.source=local")
+		}
+	case "git":
+		if strings.TrimSpace(c.Builder.Repo) == "" {
+			return errors.New("config.builder.repo is required when config.builder.source=git")
+		}
+		if strings.TrimSpace(c.Builder.Ref) == "" {
+			return errors.New("config.builder.ref is required when config.builder.source=git")
+		}
+		if c.Builder.Context != "" {
+			return errors.New("config.builder.context must not be set when config.builder.source=git")
+		}
+	default:
+		return fmt.Errorf("config.builder.source must be one of local, git, got %q", c.Builder.Source)
+	}
+	return nil
 }

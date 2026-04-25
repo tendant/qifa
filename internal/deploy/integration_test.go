@@ -22,6 +22,7 @@ func TestDeployerEndToEndWithLocalSSH(t *testing.T) {
 	tests := []struct {
 		name     string
 		mode     string
+		source   string
 		image    string
 		registry config.Registry
 		host     string
@@ -29,9 +30,10 @@ func TestDeployerEndToEndWithLocalSSH(t *testing.T) {
 		reject   []string
 	}{
 		{
-			name:  "local registry",
-			mode:  "local",
-			image: "registry.example.com/testapp",
+			name:   "local registry",
+			mode:   "local",
+			source: "local",
+			image:  "registry.example.com/testapp",
 			registry: config.Registry{
 				Server:      "registry.example.com",
 				Username:    "reg",
@@ -40,9 +42,10 @@ func TestDeployerEndToEndWithLocalSSH(t *testing.T) {
 			expect: []string{"build", "push push registry.example.com/testapp:", "pull pull registry.example.com/testapp:", "run"},
 		},
 		{
-			name:  "remote registry",
-			mode:  "remote",
-			image: "registry.example.com/testapp",
+			name:   "remote registry",
+			mode:   "remote",
+			source: "local",
+			image:  "registry.example.com/testapp",
 			registry: config.Registry{
 				Server:      "registry.example.com",
 				Username:    "reg",
@@ -54,8 +57,42 @@ func TestDeployerEndToEndWithLocalSSH(t *testing.T) {
 		{
 			name:   "per target local",
 			mode:   "per_target",
+			source: "local",
 			image:  "testapp",
 			expect: []string{"build", "run"},
+			reject: []string{"push push testapp:", "pull pull testapp:"},
+		},
+		{
+			name:   "local registry git",
+			mode:   "local",
+			source: "git",
+			image:  "registry.example.com/testapp",
+			registry: config.Registry{
+				Server:      "registry.example.com",
+				Username:    "reg",
+				PasswordEnv: "REGISTRY_PASSWORD",
+			},
+			expect: []string{"clone", "checkout", "build", "push push registry.example.com/testapp:", "pull pull registry.example.com/testapp:", "run"},
+		},
+		{
+			name:   "remote registry git",
+			mode:   "remote",
+			source: "git",
+			image:  "registry.example.com/testapp",
+			registry: config.Registry{
+				Server:      "registry.example.com",
+				Username:    "reg",
+				PasswordEnv: "REGISTRY_PASSWORD",
+			},
+			host:   "127.0.0.1:%PORT%",
+			expect: []string{"clone", "checkout", "build", "push push registry.example.com/testapp:", "pull pull registry.example.com/testapp:", "run"},
+		},
+		{
+			name:   "per target git",
+			mode:   "per_target",
+			source: "git",
+			image:  "testapp",
+			expect: []string{"clone", "checkout", "build", "run"},
 			reject: []string{"push push testapp:", "pull pull testapp:"},
 		},
 	}
@@ -66,7 +103,7 @@ func TestDeployerEndToEndWithLocalSSH(t *testing.T) {
 			defer cancel()
 
 			env := newIntegrationEnv(t)
-			cfg := env.config(t, tt.mode, tt.image, tt.registry, tt.host)
+			cfg := env.config(t, tt.mode, tt.source, tt.image, tt.registry, tt.host)
 			store, err := state.NewStore(filepath.Join(env.root, ".qifa", "state.jsonl"))
 			if err != nil {
 				t.Fatal(err)
@@ -145,7 +182,7 @@ func TestDeployerEndToEndWithLocalSSH(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			calls := string(dockerCalls)
+			calls := string(dockerCalls) + readIfExists(filepath.Join(env.stateDir, "git_calls.log"))
 			for _, expected := range tt.expect {
 				if !strings.Contains(calls, expected) {
 					t.Fatalf("missing docker call %q in %q", expected, calls)
@@ -200,6 +237,7 @@ type integrationEnv struct {
 	stateDir   string
 	fakeBin    string
 	buildDir   string
+	repoDir    string
 	port       int
 	sshdConfig string
 }
@@ -212,10 +250,11 @@ func newIntegrationEnv(t *testing.T) *integrationEnv {
 	stateDir := filepath.Join(root, "state")
 	fakeBin := filepath.Join(root, "fakebin")
 	buildDir := filepath.Join(root, "buildctx")
+	repoDir := filepath.Join(root, "repo-src")
 	if err := os.MkdirAll(filepath.Join(home, ".ssh"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	for _, dir := range []string{stateDir, fakeBin, buildDir} {
+	for _, dir := range []string{stateDir, fakeBin, buildDir, repoDir} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -232,10 +271,12 @@ func newIntegrationEnv(t *testing.T) *integrationEnv {
 		stateDir: stateDir,
 		fakeBin:  fakeBin,
 		buildDir: buildDir,
+		repoDir:  repoDir,
 		port:     freePort(t),
 	}
 
 	env.writeBuildContext(t)
+	env.writeGitRepo(t)
 	env.writeFakeExecutables(t)
 	env.generateKeys(t)
 	env.startSSHD(t)
@@ -243,13 +284,28 @@ func newIntegrationEnv(t *testing.T) *integrationEnv {
 	return env
 }
 
-func (e *integrationEnv) config(t *testing.T, mode, image string, registryCfg config.Registry, builderHost string) *config.Config {
+func (e *integrationEnv) config(t *testing.T, mode, source, image string, registryCfg config.Registry, builderHost string) *config.Config {
 	t.Helper()
 
 	if builderHost == "" && mode == "remote" {
 		builderHost = fmt.Sprintf("127.0.0.1:%d", e.port)
 	}
 	builderHost = strings.ReplaceAll(builderHost, "%PORT%", fmt.Sprintf("%d", e.port))
+
+	builder := config.Builder{
+		Mode:       mode,
+		Host:       builderHost,
+		Source:     source,
+		Dockerfile: "Dockerfile",
+		Platform:   "linux/amd64",
+	}
+	if source == "git" {
+		builder.Repo = e.repoDir
+		builder.Ref = "main"
+		builder.Subdir = "."
+	} else {
+		builder.Context = e.buildDir
+	}
 
 	return &config.Config{
 		Service: "testapp",
@@ -280,13 +336,7 @@ func (e *integrationEnv) config(t *testing.T, mode, image string, registryCfg co
 			},
 			Secret: []string{"DATABASE_URL"},
 		},
-		Builder: config.Builder{
-			Mode:       mode,
-			Host:       builderHost,
-			Context:    e.buildDir,
-			Dockerfile: "Dockerfile",
-			Platform:   "linux/amd64",
-		},
+		Builder: builder,
 		SSH: config.SSH{
 			User: currentUsername(t),
 			Key:  "~/id_ed25519",
@@ -311,6 +361,16 @@ func (e *integrationEnv) writeBuildContext(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(e.buildDir, "app.txt"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func (e *integrationEnv) writeGitRepo(t *testing.T) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(e.repoDir, "Dockerfile"), []byte("FROM scratch\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(e.repoDir, "app.txt"), []byte("hello from git\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -406,6 +466,41 @@ fi
 set -eu
 echo "$*" >> %q/curl_calls.log
 echo ok
+`, e.stateDir))
+
+	writeExecutable(t, filepath.Join(e.fakeBin, "git"), fmt.Sprintf(`#!/bin/sh
+set -eu
+state=%q
+echo "$*" >> "$state/git_calls.log"
+cmd="$1"
+shift
+case "$cmd" in
+  clone)
+    src="$1"
+    dst="$2"
+    mkdir -p "$dst"
+    cp -R "$src"/. "$dst"/
+    ;;
+  -C)
+    repo="$1"
+    shift
+    subcmd="$1"
+    shift
+    case "$subcmd" in
+      checkout)
+        printf 'ref=%%s\n' "$1" > "$repo/.git-checkout"
+        ;;
+      *)
+        echo "unsupported git subcommand: $subcmd" >&2
+        exit 1
+        ;;
+    esac
+    ;;
+  *)
+    echo "unsupported git command: $cmd" >&2
+    exit 1
+    ;;
+esac
 `, e.stateDir))
 
 	for _, hook := range []string{"pre_build", "post_deploy", "pre_rollback"} {

@@ -40,6 +40,9 @@ func TestLoadConfig(t *testing.T) {
 	if cfg.Builder.Mode != "local" {
 		t.Fatalf("unexpected builder mode: %s", cfg.Builder.Mode)
 	}
+	if cfg.Builder.Source != "local" {
+		t.Fatalf("unexpected builder source: %s", cfg.Builder.Source)
+	}
 }
 
 func TestWriteSampleCreatesParents(t *testing.T) {
@@ -68,6 +71,18 @@ func TestValidateBuilderModes(t *testing.T) {
 				cfg := validConfig()
 				cfg.Builder.Mode = "remote"
 				cfg.Builder.Host = "10.0.0.99"
+				return cfg
+			}(),
+		},
+		{
+			name: "git source with registry",
+			cfg: func() Config {
+				cfg := validConfig()
+				cfg.Builder.Source = "git"
+				cfg.Builder.Context = ""
+				cfg.Builder.Repo = "git@example.com:org/app.git"
+				cfg.Builder.Ref = "v1.2.3"
+				cfg.Builder.Subdir = "."
 				return cfg
 			}(),
 		},
@@ -120,6 +135,48 @@ func TestValidateBuilderModes(t *testing.T) {
 			}(),
 			wantErr: "config.builder.host must not be set when config.builder.mode=per_target",
 		},
+		{
+			name: "local source requires context",
+			cfg: func() Config {
+				cfg := validConfig()
+				cfg.Builder.Context = ""
+				return cfg
+			}(),
+			wantErr: "config.builder.context is required when config.builder.source=local",
+		},
+		{
+			name: "git source requires repo",
+			cfg: func() Config {
+				cfg := validConfig()
+				cfg.Builder.Source = "git"
+				cfg.Builder.Context = ""
+				cfg.Builder.Ref = "main"
+				return cfg
+			}(),
+			wantErr: "config.builder.repo is required when config.builder.source=git",
+		},
+		{
+			name: "git source requires ref",
+			cfg: func() Config {
+				cfg := validConfig()
+				cfg.Builder.Source = "git"
+				cfg.Builder.Context = ""
+				cfg.Builder.Repo = "git@example.com:org/app.git"
+				return cfg
+			}(),
+			wantErr: "config.builder.ref is required when config.builder.source=git",
+		},
+		{
+			name: "git source forbids context",
+			cfg: func() Config {
+				cfg := validConfig()
+				cfg.Builder.Source = "git"
+				cfg.Builder.Repo = "git@example.com:org/app.git"
+				cfg.Builder.Ref = "main"
+				return cfg
+			}(),
+			wantErr: "config.builder.context must not be set when config.builder.source=git",
+		},
 	}
 
 	for _, tt := range tests {
@@ -152,6 +209,7 @@ func validConfig() Config {
 		},
 		Builder: Builder{
 			Mode:       "local",
+			Source:     "local",
 			Context:    ".",
 			Dockerfile: "Dockerfile",
 		},
