@@ -205,7 +205,10 @@ func (r *Remote) Build(ctx context.Context, host string, cfg *config.Config, ima
 	return r.client.Stream(ctx, host, command, r.out)
 }
 
-func (r *Remote) RunContainer(ctx context.Context, host, name, imageRef, envFile, command, network string, labels map[string]string, hostPort, containerPort int) error {
+func (r *Remote) RunContainer(ctx context.Context, host, name, imageRef, envFile, command, network string, labels map[string]string, volumes []string, hostPort, containerPort int) error {
+	if err := r.ensureVolumeHostDirs(ctx, host, volumes); err != nil {
+		return err
+	}
 	var args []string
 	args = append(args, "docker run -d --restart unless-stopped")
 	args = append(args, "--name "+shellQuote(name))
@@ -214,6 +217,9 @@ func (r *Remote) RunContainer(ctx context.Context, host, name, imageRef, envFile
 	}
 	for _, key := range sortedKeys(labels) {
 		args = append(args, "--label "+shellQuote(key+"="+labels[key]))
+	}
+	for _, v := range volumes {
+		args = append(args, "--volume "+shellQuote(v))
 	}
 	if envFile != "" {
 		args = append(args, "--env-file "+shellQuote(envFile))
@@ -227,6 +233,34 @@ func (r *Remote) RunContainer(ctx context.Context, host, name, imageRef, envFile
 		args = append(args, shellQuote(imageRef))
 	}
 	_, err := r.client.Run(ctx, host, strings.Join(args, " "))
+	return err
+}
+
+// ensureVolumeHostDirs runs mkdir -p on the host side of each bind-mount
+// volume. Named volumes (e.g. "myvol:/data") are skipped — Docker creates
+// those automatically.
+func (r *Remote) ensureVolumeHostDirs(ctx context.Context, host string, volumes []string) error {
+	var dirs []string
+	for _, v := range volumes {
+		parts := strings.SplitN(v, ":", 2)
+		if len(parts) < 2 {
+			continue
+		}
+		host_path := parts[0]
+		// Bind mount: starts with / or . or ~. Named volume: doesn't.
+		if !strings.HasPrefix(host_path, "/") && !strings.HasPrefix(host_path, ".") && !strings.HasPrefix(host_path, "~") {
+			continue
+		}
+		dirs = append(dirs, host_path)
+	}
+	if len(dirs) == 0 {
+		return nil
+	}
+	quoted := make([]string, 0, len(dirs))
+	for _, d := range dirs {
+		quoted = append(quoted, shellQuote(d))
+	}
+	_, err := r.client.Run(ctx, host, "mkdir -p "+strings.Join(quoted, " "))
 	return err
 }
 

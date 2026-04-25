@@ -296,7 +296,7 @@ func (d *Deployer) deployHost(ctx context.Context, deployment state.Deployment, 
 	if err := d.remoteDocker.StopAndRemove(ctx, host, containerName); err != nil {
 		return err
 	}
-	if err := d.remoteDocker.RunContainer(ctx, host, containerName, imageRef, remoteEnv, server.Cmd, containerNetwork, labels, publishedPort, containerPort); err != nil {
+	if err := d.remoteDocker.RunContainer(ctx, host, containerName, imageRef, remoteEnv, server.Cmd, containerNetwork, labels, server.Volumes, publishedPort, containerPort); err != nil {
 		_ = d.remoteDocker.StopAndRemove(ctx, host, containerName)
 		return err
 	}
@@ -922,7 +922,18 @@ func (d *Deployer) AccessoryBoot(ctx context.Context, name string) error {
 	if err := d.remoteDocker.StopAndRemove(ctx, accessory.Host, containerName); err != nil {
 		return err
 	}
-	return d.remoteDocker.RunContainer(ctx, accessory.Host, containerName, accessory.Image, "", "", "", nil, 0, 0)
+	envFile, err := secrets.Render(accessory.Env, nil, "")
+	if err != nil {
+		return err
+	}
+	remoteEnv := ""
+	if len(envFile) > 0 {
+		remoteEnv = fmt.Sprintf("/tmp/%s.env", containerName)
+		if err := d.ssh.Upload(ctx, accessory.Host, remoteEnv, envFile, 0o600); err != nil {
+			return err
+		}
+	}
+	return d.remoteDocker.RunContainer(ctx, accessory.Host, containerName, accessory.Image, remoteEnv, "", "", nil, accessory.Volumes, accessory.Port, accessory.AppPort)
 }
 
 func (d *Deployer) AccessoryLogs(ctx context.Context, name string, out io.Writer) error {

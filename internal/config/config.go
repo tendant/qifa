@@ -44,6 +44,9 @@ type Server struct {
 	AppPort int      `yaml:"app_port"`
 	Cmd     string   `yaml:"cmd"`
 	Proxy   *bool    `yaml:"proxy"`
+	// Volumes are docker -v mounts in the form host_path:container_path[:options].
+	// Host paths are created with mkdir -p before docker run.
+	Volumes []string `yaml:"volumes"`
 }
 
 type Proxy struct {
@@ -135,8 +138,12 @@ type Hooks struct {
 }
 
 type Accessory struct {
-	Image string `yaml:"image"`
-	Host  string `yaml:"host"`
+	Image   string            `yaml:"image"`
+	Host    string            `yaml:"host"`
+	Volumes []string          `yaml:"volumes"`
+	Env     map[string]string `yaml:"env"`
+	Port    int               `yaml:"port"`     // host port to publish
+	AppPort int               `yaml:"app_port"` // container port to publish
 }
 
 func Load(path string) (*Config, error) {
