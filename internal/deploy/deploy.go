@@ -69,7 +69,7 @@ func (d *Deployer) Deploy(ctx context.Context) error {
 		return err
 	}
 	d.log.Printf("building image %s", imageRef)
-	if err := d.localDocker.BuildAndPush(ctx, d.cfg, imageRef); err != nil {
+	if err := d.prepareImage(ctx, deployment, imageRef); err != nil {
 		return d.failDeployment(deployment, err)
 	}
 
@@ -81,7 +81,7 @@ func (d *Deployer) Deploy(ctx context.Context) error {
 	for _, role := range orderedRoles(d.cfg.Servers) {
 		server := d.cfg.Servers[role]
 		for _, host := range server.Hosts {
-			if err := d.deployHost(ctx, deployment, role, host, server, imageRef, envFile); err != nil {
+			if err := d.deployHost(ctx, deployment, role, host, server, imageRef, envFile, d.cfg.Builder.Mode == "per_target"); err != nil {
 				return d.failDeployment(deployment, err)
 			}
 		}
@@ -97,7 +97,7 @@ func (d *Deployer) Deploy(ctx context.Context) error {
 	return nil
 }
 
-func (d *Deployer) deployHost(ctx context.Context, deployment state.Deployment, role, host string, server config.Server, imageRef string, envFile []byte) error {
+func (d *Deployer) deployHost(ctx context.Context, deployment state.Deployment, role, host string, server config.Server, imageRef string, envFile []byte, buildOnHost bool) error {
 	containerName := d.containerName(role, deployment.Version)
 	remoteEnv := fmt.Sprintf("/tmp/%s.env", containerName)
 	appPort := d.appPort(role, server)
@@ -115,18 +115,27 @@ func (d *Deployer) deployHost(ctx context.Context, deployment state.Deployment, 
 	if err := d.proxy.EnsureInstalled(ctx, host); err != nil && role == "web" {
 		return err
 	}
-	dockerConfigDir, err := registry.Login(ctx, d.ssh, d.cfg.Registry, host)
-	if err != nil {
-		return err
-	}
 	if err := d.ssh.Upload(ctx, host, remoteEnv, envFile, 0o600); err != nil {
 		return err
 	}
-	if err := d.updateStatus(deployment, state.StatusPulling); err != nil {
-		return err
-	}
-	if err := d.remoteDocker.Pull(ctx, host, dockerConfigDir, imageRef); err != nil {
-		return err
+	if buildOnHost {
+		if err := d.updateStatus(deployment, state.StatusBuilding); err != nil {
+			return err
+		}
+		if err := d.remoteDocker.Build(ctx, host, d.cfg, imageRef); err != nil {
+			return err
+		}
+	} else if d.cfg.Registry.Enabled() {
+		dockerConfigDir, err := registry.Login(ctx, d.ssh, d.cfg.Registry, host)
+		if err != nil {
+			return err
+		}
+		if err := d.updateStatus(deployment, state.StatusPulling); err != nil {
+			return err
+		}
+		if err := d.remoteDocker.Pull(ctx, host, dockerConfigDir, imageRef); err != nil {
+			return err
+		}
 	}
 	if err := d.updateStatus(deployment, state.StatusStarting); err != nil {
 		return err
@@ -214,7 +223,7 @@ func (d *Deployer) Rollback(ctx context.Context) error {
 	for _, role := range orderedRoles(d.cfg.Servers) {
 		server := d.cfg.Servers[role]
 		for _, host := range server.Hosts {
-			if err := d.deployHost(ctx, deployment, role, host, server, prev.Image, envFile); err != nil {
+			if err := d.deployHost(ctx, deployment, role, host, server, prev.Image, envFile, false); err != nil {
 				return err
 			}
 		}
@@ -224,6 +233,38 @@ func (d *Deployer) Rollback(ctx context.Context) error {
 	}
 	d.log.Printf("rolled back to %s", prev.Image)
 	return nil
+}
+
+func (d *Deployer) prepareImage(ctx context.Context, deployment state.Deployment, imageRef string) error {
+	switch d.cfg.Builder.Mode {
+	case "local":
+		if err := d.localDocker.Build(ctx, d.cfg, imageRef); err != nil {
+			return err
+		}
+		if err := d.updateStatus(deployment, state.StatusPushing); err != nil {
+			return err
+		}
+		return d.localDocker.Push(ctx, d.cfg.Registry, imageRef)
+	case "remote":
+		if err := d.remoteDocker.EnsureDocker(ctx, d.cfg.Builder.Host); err != nil {
+			return err
+		}
+		if err := d.remoteDocker.Build(ctx, d.cfg.Builder.Host, d.cfg, imageRef); err != nil {
+			return err
+		}
+		dockerConfigDir, err := registry.Login(ctx, d.ssh, d.cfg.Registry, d.cfg.Builder.Host)
+		if err != nil {
+			return err
+		}
+		if err := d.updateStatus(deployment, state.StatusPushing); err != nil {
+			return err
+		}
+		return d.remoteDocker.Push(ctx, d.cfg.Builder.Host, dockerConfigDir, imageRef)
+	case "per_target":
+		return nil
+	default:
+		return fmt.Errorf("unsupported builder mode %q", d.cfg.Builder.Mode)
+	}
 }
 
 func (d *Deployer) Status(ctx context.Context, out io.Writer) error {

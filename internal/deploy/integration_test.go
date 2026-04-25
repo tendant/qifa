@@ -19,128 +19,178 @@ import (
 )
 
 func TestDeployerEndToEndWithLocalSSH(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	env := newIntegrationEnv(t)
-	cfg := env.config(t)
-	store, err := state.NewStore(filepath.Join(env.root, ".qifa", "state.jsonl"))
-	if err != nil {
-		t.Fatal(err)
+	tests := []struct {
+		name     string
+		mode     string
+		image    string
+		registry config.Registry
+		host     string
+		expect   []string
+		reject   []string
+	}{
+		{
+			name:  "local registry",
+			mode:  "local",
+			image: "registry.example.com/testapp",
+			registry: config.Registry{
+				Server:      "registry.example.com",
+				Username:    "reg",
+				PasswordEnv: "REGISTRY_PASSWORD",
+			},
+			expect: []string{"build", "push push registry.example.com/testapp:", "pull pull registry.example.com/testapp:", "run"},
+		},
+		{
+			name:  "remote registry",
+			mode:  "remote",
+			image: "registry.example.com/testapp",
+			registry: config.Registry{
+				Server:      "registry.example.com",
+				Username:    "reg",
+				PasswordEnv: "REGISTRY_PASSWORD",
+			},
+			host:   "127.0.0.1:%PORT%",
+			expect: []string{"build", "push push registry.example.com/testapp:", "pull pull registry.example.com/testapp:", "run"},
+		},
+		{
+			name:   "per target local",
+			mode:   "per_target",
+			image:  "testapp",
+			expect: []string{"build", "run"},
+			reject: []string{"push push testapp:", "pull pull testapp:"},
+		},
 	}
 
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-	deployer, err := New(cfg, store, &stdout, &stderr)
-	if err != nil {
-		t.Fatal(err)
-	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
 
-	if err := deployer.Deploy(ctx); err != nil {
-		t.Fatalf(
-			"deploy failed: %v\nstdout:\n%s\nstderr:\n%s\ndocker calls:\n%s\nproxy calls:\n%s\nsshd log:\n%s",
-			err,
-			stdout.String(),
-			stderr.String(),
-			readIfExists(filepath.Join(env.stateDir, "docker_calls.log")),
-			readIfExists(filepath.Join(env.stateDir, "proxy_calls.log")),
-			readIfExists(filepath.Join(env.root, "sshd.log")),
-		)
-	}
+			env := newIntegrationEnv(t)
+			cfg := env.config(t, tt.mode, tt.image, tt.registry, tt.host)
+			store, err := state.NewStore(filepath.Join(env.root, ".qifa", "state.jsonl"))
+			if err != nil {
+				t.Fatal(err)
+			}
 
-	var execOut bytes.Buffer
-	if err := deployer.Exec(ctx, "printf hello", &execOut); err != nil {
-		t.Fatal(err)
-	}
-	if strings.TrimSpace(execOut.String()) != "hello" {
-		t.Fatalf("unexpected exec output: %q", execOut.String())
-	}
+			var stdout bytes.Buffer
+			var stderr bytes.Buffer
+			deployer, err := New(cfg, store, &stdout, &stderr)
+			if err != nil {
+				t.Fatal(err)
+			}
 
-	var logsOut bytes.Buffer
-	if err := deployer.Logs(ctx, &logsOut); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(logsOut.String(), "image=registry.example.com/testapp:") {
-		t.Fatalf("unexpected logs output: %q", logsOut.String())
-	}
+			if err := deployer.Deploy(ctx); err != nil {
+				t.Fatalf(
+					"deploy failed: %v\nstdout:\n%s\nstderr:\n%s\ndocker calls:\n%s\nproxy calls:\n%s\nsshd log:\n%s",
+					err,
+					stdout.String(),
+					stderr.String(),
+					readIfExists(filepath.Join(env.stateDir, "docker_calls.log")),
+					readIfExists(filepath.Join(env.stateDir, "proxy_calls.log")),
+					readIfExists(filepath.Join(env.root, "sshd.log")),
+				)
+			}
 
-	if err := deployer.AccessoryBoot(ctx, "redis"); err != nil {
-		t.Fatal(err)
-	}
-	var accessoryLogs bytes.Buffer
-	if err := deployer.AccessoryLogs(ctx, "redis", &accessoryLogs); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(accessoryLogs.String(), "image=redis:7") {
-		t.Fatalf("unexpected accessory logs: %q", accessoryLogs.String())
-	}
+			var execOut bytes.Buffer
+			if err := deployer.Exec(ctx, "printf hello", &execOut); err != nil {
+				t.Fatal(err)
+			}
+			if strings.TrimSpace(execOut.String()) != "hello" {
+				t.Fatalf("unexpected exec output: %q", execOut.String())
+			}
 
-	var statusOut bytes.Buffer
-	if err := deployer.Status(ctx, &statusOut); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(statusOut.String(), "Succeeded") {
-		t.Fatalf("unexpected status output: %q", statusOut.String())
-	}
+			var logsOut bytes.Buffer
+			if err := deployer.Logs(ctx, &logsOut); err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(logsOut.String(), "image="+tt.image+":") {
+				t.Fatalf("unexpected logs output: %q", logsOut.String())
+			}
 
-	if err := deployer.Rollback(ctx); err != nil {
-		t.Fatal(err)
-	}
+			if err := deployer.AccessoryBoot(ctx, "redis"); err != nil {
+				t.Fatal(err)
+			}
+			var accessoryLogs bytes.Buffer
+			if err := deployer.AccessoryLogs(ctx, "redis", &accessoryLogs); err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(accessoryLogs.String(), "image=redis:7") {
+				t.Fatalf("unexpected accessory logs: %q", accessoryLogs.String())
+			}
 
-	hookCalls, err := os.ReadFile(filepath.Join(env.stateDir, "hook_calls.log"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	hooks := string(hookCalls)
-	for _, expected := range []string{"pre_build", "post_deploy", "pre_rollback"} {
-		if !strings.Contains(hooks, expected) {
-			t.Fatalf("missing hook call %q in %q", expected, hooks)
-		}
-	}
+			var statusOut bytes.Buffer
+			if err := deployer.Status(ctx, &statusOut); err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(statusOut.String(), "Succeeded") {
+				t.Fatalf("unexpected status output: %q", statusOut.String())
+			}
 
-	dockerCalls, err := os.ReadFile(filepath.Join(env.stateDir, "docker_calls.log"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	calls := string(dockerCalls)
-	for _, expected := range []string{"build", "push", "pull", "run"} {
-		if !strings.Contains(calls, expected) {
-			t.Fatalf("missing docker call %q in %q", expected, calls)
-		}
-	}
+			if err := deployer.Rollback(ctx); err != nil {
+				t.Fatal(err)
+			}
 
-	registryConfig, err := os.ReadFile(filepath.Join(env.root, "home", ".docker", "config.json"))
-	if err == nil && len(registryConfig) > 0 {
-		t.Fatalf("expected auth to avoid mutating home docker config, found %q", string(registryConfig))
-	}
+			hookCalls, err := os.ReadFile(filepath.Join(env.stateDir, "hook_calls.log"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			hooks := string(hookCalls)
+			for _, expected := range []string{"pre_build", "post_deploy", "pre_rollback"} {
+				if !strings.Contains(hooks, expected) {
+					t.Fatalf("missing hook call %q in %q", expected, hooks)
+				}
+			}
 
-	proxyCalls, err := os.ReadFile(filepath.Join(env.stateDir, "proxy_calls.log"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(proxyCalls), "deploy") {
-		t.Fatalf("expected proxy deploy call, got %q", string(proxyCalls))
-	}
+			dockerCalls, err := os.ReadFile(filepath.Join(env.stateDir, "docker_calls.log"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			calls := string(dockerCalls)
+			for _, expected := range tt.expect {
+				if !strings.Contains(calls, expected) {
+					t.Fatalf("missing docker call %q in %q", expected, calls)
+				}
+			}
+			for _, rejected := range tt.reject {
+				if strings.Contains(calls, rejected) {
+					t.Fatalf("unexpected docker call %q in %q", rejected, calls)
+				}
+			}
 
-	deployments, _, err := store.Snapshot()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(deployments) != 2 {
-		t.Fatalf("expected deploy and rollback records, got %d", len(deployments))
-	}
-	var sawSucceeded bool
-	var sawRolledBack bool
-	for _, deployment := range deployments {
-		if deployment.Status == state.StatusSucceeded {
-			sawSucceeded = true
-		}
-		if deployment.Status == state.StatusRolledBack {
-			sawRolledBack = true
-		}
-	}
-	if !sawSucceeded || !sawRolledBack {
-		t.Fatalf("expected succeeded and rolled back states, got %#v", deployments)
+			registryConfig, err := os.ReadFile(filepath.Join(env.root, "home", ".docker", "config.json"))
+			if err == nil && len(registryConfig) > 0 {
+				t.Fatalf("expected auth to avoid mutating home docker config, found %q", string(registryConfig))
+			}
+
+			proxyCalls, err := os.ReadFile(filepath.Join(env.stateDir, "proxy_calls.log"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(proxyCalls), "deploy") {
+				t.Fatalf("expected proxy deploy call, got %q", string(proxyCalls))
+			}
+
+			deployments, _, err := store.Snapshot()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(deployments) != 2 {
+				t.Fatalf("expected deploy and rollback records, got %d", len(deployments))
+			}
+			var sawSucceeded bool
+			var sawRolledBack bool
+			for _, deployment := range deployments {
+				if deployment.Status == state.StatusSucceeded {
+					sawSucceeded = true
+				}
+				if deployment.Status == state.StatusRolledBack {
+					sawRolledBack = true
+				}
+			}
+			if !sawSucceeded || !sawRolledBack {
+				t.Fatalf("expected succeeded and rolled back states, got %#v", deployments)
+			}
+		})
 	}
 }
 
@@ -149,6 +199,7 @@ type integrationEnv struct {
 	home       string
 	stateDir   string
 	fakeBin    string
+	buildDir   string
 	port       int
 	sshdConfig string
 }
@@ -160,10 +211,11 @@ func newIntegrationEnv(t *testing.T) *integrationEnv {
 	home := filepath.Join(root, "home")
 	stateDir := filepath.Join(root, "state")
 	fakeBin := filepath.Join(root, "fakebin")
+	buildDir := filepath.Join(root, "buildctx")
 	if err := os.MkdirAll(filepath.Join(home, ".ssh"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	for _, dir := range []string{stateDir, fakeBin} {
+	for _, dir := range []string{stateDir, fakeBin, buildDir} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -179,9 +231,11 @@ func newIntegrationEnv(t *testing.T) *integrationEnv {
 		home:     home,
 		stateDir: stateDir,
 		fakeBin:  fakeBin,
+		buildDir: buildDir,
 		port:     freePort(t),
 	}
 
+	env.writeBuildContext(t)
 	env.writeFakeExecutables(t)
 	env.generateKeys(t)
 	env.startSSHD(t)
@@ -189,12 +243,17 @@ func newIntegrationEnv(t *testing.T) *integrationEnv {
 	return env
 }
 
-func (e *integrationEnv) config(t *testing.T) *config.Config {
+func (e *integrationEnv) config(t *testing.T, mode, image string, registryCfg config.Registry, builderHost string) *config.Config {
 	t.Helper()
+
+	if builderHost == "" && mode == "remote" {
+		builderHost = fmt.Sprintf("127.0.0.1:%d", e.port)
+	}
+	builderHost = strings.ReplaceAll(builderHost, "%PORT%", fmt.Sprintf("%d", e.port))
 
 	return &config.Config{
 		Service: "testapp",
-		Image:   "registry.example.com/testapp",
+		Image:   image,
 		Servers: map[string]config.Server{
 			"web": {
 				Hosts: []string{fmt.Sprintf("127.0.0.1:%d", e.port)},
@@ -214,11 +273,7 @@ func (e *integrationEnv) config(t *testing.T) *config.Config {
 				Timeout:  time.Second,
 			},
 		},
-		Registry: config.Registry{
-			Server:      "registry.example.com",
-			Username:    "reg",
-			PasswordEnv: "REGISTRY_PASSWORD",
-		},
+		Registry: registryCfg,
 		Env: config.Env{
 			Clear: map[string]string{
 				"APP_ENV": "production",
@@ -226,7 +281,9 @@ func (e *integrationEnv) config(t *testing.T) *config.Config {
 			Secret: []string{"DATABASE_URL"},
 		},
 		Builder: config.Builder{
-			Context:    ".",
+			Mode:       mode,
+			Host:       builderHost,
+			Context:    e.buildDir,
 			Dockerfile: "Dockerfile",
 			Platform:   "linux/amd64",
 		},
@@ -245,6 +302,16 @@ func (e *integrationEnv) config(t *testing.T) *config.Config {
 				Host:  fmt.Sprintf("127.0.0.1:%d", e.port),
 			},
 		},
+	}
+}
+
+func (e *integrationEnv) writeBuildContext(t *testing.T) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(e.buildDir, "Dockerfile"), []byte("FROM scratch\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(e.buildDir, "app.txt"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatal(err)
 	}
 }
 

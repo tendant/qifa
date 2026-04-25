@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -63,6 +64,8 @@ type Env struct {
 }
 
 type Builder struct {
+	Mode       string `yaml:"mode"`
+	Host       string `yaml:"host"`
 	Context    string `yaml:"context"`
 	Dockerfile string `yaml:"dockerfile"`
 	Platform   string `yaml:"platform"`
@@ -121,10 +124,16 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("config.servers.%s.hosts is required", role)
 		}
 	}
+	if err := c.validateBuilder(); err != nil {
+		return err
+	}
 	return nil
 }
 
 func applyDefaults(cfg *Config) {
+	if cfg.Builder.Mode == "" {
+		cfg.Builder.Mode = "local"
+	}
 	if cfg.Builder.Context == "" {
 		cfg.Builder.Context = "."
 	}
@@ -204,6 +213,7 @@ env:
     - REDIS_URL
 
 builder:
+  mode: local
   context: .
   dockerfile: Dockerfile
   platform: linux/amd64
@@ -222,3 +232,39 @@ accessories:
     image: redis:7
     host: 10.0.0.13
 `
+
+func (c *Config) validateBuilder() error {
+	switch c.Builder.Mode {
+	case "local":
+		if c.Builder.Host != "" {
+			return errors.New("config.builder.host must not be set when config.builder.mode=local")
+		}
+		if !c.Registry.Enabled() {
+			return errors.New("config.registry is required when config.builder.mode=local")
+		}
+	case "remote":
+		if c.Builder.Host == "" {
+			return errors.New("config.builder.host is required when config.builder.mode=remote")
+		}
+		if !c.Registry.Enabled() {
+			return errors.New("config.registry is required when config.builder.mode=remote")
+		}
+	case "per_target":
+		if c.Builder.Host != "" {
+			return errors.New("config.builder.host must not be set when config.builder.mode=per_target")
+		}
+		if c.Registry.Enabled() {
+			return errors.New("config.registry must not be set when config.builder.mode=per_target")
+		}
+	default:
+		return fmt.Errorf("config.builder.mode must be one of local, remote, per_target, got %q", c.Builder.Mode)
+	}
+	if c.Registry.Server != "" && (c.Registry.Username == "" || c.Registry.PasswordEnv == "") {
+		return errors.New("config.registry.username and config.registry.password_env are required when config.registry.server is set")
+	}
+	return nil
+}
+
+func (r Registry) Enabled() bool {
+	return strings.TrimSpace(r.Server) != ""
+}

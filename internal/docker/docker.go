@@ -1,11 +1,16 @@
 package docker
 
 import (
+	"archive/tar"
+	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/gokamal/gocart/internal/config"
 	"github.com/gokamal/gocart/internal/registry"
@@ -19,6 +24,13 @@ func NewLocal() *Local {
 }
 
 func (l *Local) BuildAndPush(ctx context.Context, cfg *config.Config, imageRef string) error {
+	if err := l.Build(ctx, cfg, imageRef); err != nil {
+		return err
+	}
+	return l.Push(ctx, cfg.Registry, imageRef)
+}
+
+func (l *Local) Build(ctx context.Context, cfg *config.Config, imageRef string) error {
 	args := []string{"build", "-f", cfg.Builder.Dockerfile, "-t", imageRef}
 	if cfg.Builder.Platform != "" {
 		args = append(args, "--platform", cfg.Builder.Platform)
@@ -28,18 +40,16 @@ func (l *Local) BuildAndPush(ctx context.Context, cfg *config.Config, imageRef s
 	if cfg.Builder.Platform == "" {
 		extraEnv["DOCKER_BUILDKIT"] = "0"
 	}
-	registryEnv, cleanup, err := registry.LocalEnv(cfg.Registry)
+	return runLocalEnv(ctx, extraEnv, "docker", args...)
+}
+
+func (l *Local) Push(ctx context.Context, registryCfg config.Registry, imageRef string) error {
+	registryEnv, cleanup, err := registry.LocalEnv(registryCfg)
 	if err != nil {
 		return err
 	}
 	defer cleanup()
-	for key, value := range registryEnv {
-		extraEnv[key] = value
-	}
-	if err := runLocalEnv(ctx, extraEnv, "docker", args...); err != nil {
-		return err
-	}
-	return runLocalEnv(ctx, extraEnv, "docker", "push", imageRef)
+	return runLocalEnv(ctx, registryEnv, "docker", "push", imageRef)
 }
 
 type Remote struct {
@@ -57,6 +67,33 @@ func (r *Remote) EnsureDocker(ctx context.Context, host string) error {
 
 func (r *Remote) Pull(ctx context.Context, host, dockerConfigDir, imageRef string) error {
 	_, err := r.client.Run(ctx, host, withDockerConfig(dockerConfigDir, "docker pull "+shellQuote(imageRef)))
+	return err
+}
+
+func (r *Remote) Push(ctx context.Context, host, dockerConfigDir, imageRef string) error {
+	_, err := r.client.Run(ctx, host, withDockerConfig(dockerConfigDir, "docker push "+shellQuote(imageRef)))
+	return err
+}
+
+func (r *Remote) Build(ctx context.Context, host string, cfg *config.Config, imageRef string) error {
+	archive, err := buildContextArchive(cfg.Builder.Context)
+	if err != nil {
+		return err
+	}
+	remoteRoot := fmt.Sprintf("/tmp/qifa-build-%d", time.Now().UTC().UnixNano())
+	remoteArchive := filepath.Join(remoteRoot, "context.tar")
+	remoteContext := filepath.Join(remoteRoot, "context")
+	if err := r.client.Upload(ctx, host, remoteArchive, archive, 0o600); err != nil {
+		return err
+	}
+	command := strings.Join([]string{
+		"rm -rf " + shellQuote(remoteContext),
+		"mkdir -p " + shellQuote(remoteContext),
+		"tar -xf " + shellQuote(remoteArchive) + " -C " + shellQuote(remoteContext),
+		buildCommand(cfg, imageRef, remoteContext),
+		"rm -f " + shellQuote(remoteArchive),
+	}, " && ")
+	_, err = r.client.Run(ctx, host, command)
 	return err
 }
 
@@ -120,4 +157,65 @@ func withDockerConfig(dir, command string) string {
 		return command
 	}
 	return "DOCKER_CONFIG=" + shellQuote(dir) + " " + command
+}
+
+func buildCommand(cfg *config.Config, imageRef, contextDir string) string {
+	args := []string{"docker build", "-f", shellQuote(filepath.Join(contextDir, cfg.Builder.Dockerfile)), "-t", shellQuote(imageRef)}
+	if cfg.Builder.Platform != "" {
+		args = append(args, "--platform", shellQuote(cfg.Builder.Platform))
+	}
+	args = append(args, shellQuote(contextDir))
+	return strings.Join(args, " ")
+}
+
+func buildContextArchive(root string) ([]byte, error) {
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+
+	root = filepath.Clean(root)
+	if err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		if rel == "." {
+			return nil
+		}
+		header, err := tar.FileInfoHeader(info, "")
+		if err != nil {
+			return err
+		}
+		header.Name = filepath.ToSlash(rel)
+		if info.IsDir() {
+			header.Name += "/"
+		}
+		if err := tw.WriteHeader(header); err != nil {
+			return err
+		}
+		if !info.Mode().IsRegular() {
+			return nil
+		}
+		file, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		_, copyErr := io.Copy(tw, file)
+		closeErr := file.Close()
+		if copyErr != nil {
+			return copyErr
+		}
+		if closeErr != nil {
+			return closeErr
+		}
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	if err := tw.Close(); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
 }

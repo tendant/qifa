@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -36,6 +37,9 @@ func TestLoadConfig(t *testing.T) {
 	if cfg.Proxy.DeployTimeout != 30*time.Second || cfg.Proxy.DrainTimeout != 30*time.Second || cfg.Proxy.TargetTimeout != 30*time.Second {
 		t.Fatalf("unexpected proxy timeouts: %#v", cfg.Proxy)
 	}
+	if cfg.Builder.Mode != "local" {
+		t.Fatalf("unexpected builder mode: %s", cfg.Builder.Mode)
+	}
 }
 
 func TestWriteSampleCreatesParents(t *testing.T) {
@@ -45,5 +49,115 @@ func TestWriteSampleCreatesParents(t *testing.T) {
 	}
 	if _, err := os.Stat(path); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestValidateBuilderModes(t *testing.T) {
+	tests := []struct {
+		name    string
+		cfg     Config
+		wantErr string
+	}{
+		{
+			name: "local with registry",
+			cfg:  validConfig(),
+		},
+		{
+			name: "remote with registry",
+			cfg: func() Config {
+				cfg := validConfig()
+				cfg.Builder.Mode = "remote"
+				cfg.Builder.Host = "10.0.0.99"
+				return cfg
+			}(),
+		},
+		{
+			name: "per target without registry",
+			cfg: func() Config {
+				cfg := validConfig()
+				cfg.Builder.Mode = "per_target"
+				cfg.Registry = Registry{}
+				cfg.Image = "myapp"
+				return cfg
+			}(),
+		},
+		{
+			name: "local requires registry",
+			cfg: func() Config {
+				cfg := validConfig()
+				cfg.Registry = Registry{}
+				return cfg
+			}(),
+			wantErr: "config.registry is required when config.builder.mode=local",
+		},
+		{
+			name: "remote requires host",
+			cfg: func() Config {
+				cfg := validConfig()
+				cfg.Builder.Mode = "remote"
+				return cfg
+			}(),
+			wantErr: "config.builder.host is required when config.builder.mode=remote",
+		},
+		{
+			name: "per target forbids registry",
+			cfg: func() Config {
+				cfg := validConfig()
+				cfg.Builder.Mode = "per_target"
+				return cfg
+			}(),
+			wantErr: "config.registry must not be set when config.builder.mode=per_target",
+		},
+		{
+			name: "per target forbids host",
+			cfg: func() Config {
+				cfg := validConfig()
+				cfg.Builder.Mode = "per_target"
+				cfg.Registry = Registry{}
+				cfg.Builder.Host = "10.0.0.99"
+				cfg.Image = "myapp"
+				return cfg
+			}(),
+			wantErr: "config.builder.host must not be set when config.builder.mode=per_target",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.cfg.Validate()
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatal(err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("expected error containing %q, got %v", tt.wantErr, err)
+			}
+		})
+	}
+}
+
+func validConfig() Config {
+	return Config{
+		Service: "app",
+		Image:   "registry.example.com/app",
+		Servers: map[string]Server{
+			"web": {Hosts: []string{"10.0.0.11"}},
+		},
+		Registry: Registry{
+			Server:      "registry.example.com",
+			Username:    "reg",
+			PasswordEnv: "REGISTRY_PASSWORD",
+		},
+		Builder: Builder{
+			Mode:       "local",
+			Context:    ".",
+			Dockerfile: "Dockerfile",
+		},
+		SSH: SSH{
+			User: "ubuntu",
+			Key:  "~/.ssh/id_ed25519",
+		},
 	}
 }
