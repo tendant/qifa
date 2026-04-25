@@ -45,6 +45,7 @@ qifa/
 
 ```bash
 qifa init [path]        # write a starter qifa.yml
+qifa version            # print build version, commit, build date
 qifa config             # print loaded+defaulted config as YAML
 qifa deploy             # build (if needed) + ship + healthcheck + switch
 qifa rollback [version] # roll back to the previous version (or a specific one)

@@ -271,6 +271,19 @@ func TestWriteSampleCreatesParents(t *testing.T) {
 	}
 }
 
+// TestWriteSampleParses guards against schema drift: whatever `qifa init`
+// writes must Load cleanly, so new users don't hit a validation error on
+// day one.
+func TestWriteSampleParses(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "qifa.yml")
+	if err := WriteSample(path); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path); err != nil {
+		t.Fatalf("sample config from `qifa init` does not parse: %v", err)
+	}
+}
+
 func validConfig() Config {
 	return Config{
 		Service: "app",

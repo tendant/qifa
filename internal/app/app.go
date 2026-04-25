@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"runtime/debug"
 	"strings"
 	"time"
 
@@ -13,6 +14,53 @@ import (
 	"github.com/gokamal/gocart/internal/state"
 )
 
+var buildVersion, buildCommit, buildDate string
+
+// SetVersion is called from main with linker-injected build metadata.
+func SetVersion(version, commit, date string) {
+	buildVersion = version
+	buildCommit = commit
+	buildDate = date
+}
+
+func versionString() string {
+	v := buildVersion
+	c := buildCommit
+	d := buildDate
+	if v == "" || c == "" {
+		if info, ok := debug.ReadBuildInfo(); ok {
+			if v == "" {
+				v = info.Main.Version
+			}
+			for _, s := range info.Settings {
+				switch s.Key {
+				case "vcs.revision":
+					if c == "" {
+						c = s.Value
+					}
+				case "vcs.time":
+					if d == "" {
+						d = s.Value
+					}
+				}
+			}
+		}
+	}
+	if v == "" {
+		v = "(devel)"
+	}
+	if c == "" {
+		c = "unknown"
+	}
+	if d == "" {
+		d = "unknown"
+	}
+	if len(c) > 12 {
+		c = c[:12]
+	}
+	return fmt.Sprintf("qifa %s (commit %s, built %s)", v, c, d)
+}
+
 func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	if len(args) == 0 {
 		printUsage(stdout)
@@ -20,6 +68,9 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	}
 
 	switch args[0] {
+	case "version", "--version", "-v":
+		_, err := fmt.Fprintln(stdout, versionString())
+		return err
 	case "config":
 		cfg, err := config.Load("qifa.yml")
 		if err != nil {
@@ -214,6 +265,7 @@ func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "")
 	fmt.Fprintln(w, "commands:")
 	fmt.Fprintln(w, "  init [path]")
+	fmt.Fprintln(w, "  version")
 	fmt.Fprintln(w, "  config")
 	fmt.Fprintln(w, "  deploy")
 	fmt.Fprintln(w, "  rollback [version]")
