@@ -84,6 +84,12 @@ type Registry struct {
 type Env struct {
 	Clear  map[string]string `yaml:"clear"`
 	Secret []string          `yaml:"secret"`
+	// SecretCommand is a shell command run on the deployer at deploy time.
+	// Its stdout is parsed as KEY=VALUE lines (dotenv format) and merged
+	// into the env file passed to containers. Use this to integrate with
+	// SOPS, Vault, 1Password, AWS Secrets Manager, etc. without qifa
+	// depending on any of them.
+	SecretCommand string `yaml:"secret_command"`
 }
 
 // Builder describes how to produce the image. When nil, the image is treated

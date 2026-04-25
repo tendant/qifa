@@ -90,7 +90,7 @@ func (d *Deployer) Deploy(ctx context.Context) error {
 		return d.failDeployment(deployment, err)
 	}
 
-	envFile, err := secrets.Render(d.cfg.Env.Clear, d.cfg.Env.Secret)
+	envFile, err := secrets.Render(d.cfg.Env.Clear, d.cfg.Env.Secret, d.cfg.Env.SecretCommand)
 	if err != nil {
 		return d.failDeployment(deployment, err)
 	}
@@ -376,7 +376,7 @@ func (d *Deployer) Rollback(ctx context.Context, version string) error {
 		return err
 	}
 
-	envFile, err := secrets.Render(d.cfg.Env.Clear, d.cfg.Env.Secret)
+	envFile, err := secrets.Render(d.cfg.Env.Clear, d.cfg.Env.Secret, d.cfg.Env.SecretCommand)
 	if err != nil {
 		return err
 	}

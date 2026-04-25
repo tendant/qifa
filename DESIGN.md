@@ -328,9 +328,35 @@ invoking qifa, not on target hosts.
 
 ## Secrets
 
-MVP: read from local environment (`env.secret: [VAR_NAME]`), render to a
-`.env` file, copy to each host with mode 0600, pass to docker via
-`--env-file`. No secret manager integration yet.
+Three sources, merged into a single `.env` file copied to each host with mode
+0600 and passed to docker via `--env-file`. Later sources override earlier on
+key collision:
+
+1. `env.clear`: cleartext key/value map in the config.
+2. `env.secret`: list of env var names, read from the deployer's local env
+   at deploy time. Use when secrets are injected by CI / direnv / shell.
+3. `env.secret_command`: arbitrary shell command run on the deployer.
+   Stdout is parsed as `KEY=VALUE` lines (dotenv format, supports quoted
+   values, `#` comments, blank lines). Use to integrate SOPS, Vault,
+   1Password, AWS Secrets Manager, etc. without qifa depending on any of
+   them.
+
+Examples:
+
+```yaml
+env:
+  secret_command: sops --decrypt secrets.enc.env
+```
+
+```yaml
+env:
+  secret_command: op inject -i secrets.tpl
+```
+
+```yaml
+env:
+  secret_command: vault kv get -format=json secret/myapp | jq -r '.data.data | to_entries[] | "\(.key)=\(.value)"'
+```
 
 ## Accessories
 
@@ -402,7 +428,8 @@ the host while it's intentionally offline.
 - Primary-role healthcheck barrier for multi-role apps (qifa serializes
   roles strictly, so the barrier kamal needs for parallel-role booting
   doesn't apply here)
-- Secret managers (SOPS, Vault, AWS Secrets Manager, 1Password)
+- Native adapters for individual secret backends (use `env.secret_command`
+  to integrate with any of them)
 - OpenTelemetry / web UI
 - GitHub Actions integration
 - Maintenance mode / explicit traffic on/off
