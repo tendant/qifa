@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"text/tabwriter"
 	"time"
 
 	"github.com/gokamal/gocart/internal/config"
@@ -662,6 +663,32 @@ func (d *Deployer) Status(ctx context.Context, out io.Writer) error {
 		}
 	}
 	return nil
+}
+
+// ListContainers prints labeled containers per role/host with their state and
+// version, sorted most-recent first. Useful for finding rollback targets.
+func (d *Deployer) ListContainers(ctx context.Context, out io.Writer) error {
+	tw := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "ROLE\tHOST\tVERSION\tSTATE\tCREATED\tCONTAINER")
+	for _, role := range orderedRoles(d.cfg.Servers) {
+		for _, host := range d.cfg.Servers[role].Hosts {
+			containers, err := d.remoteDocker.ListContainersByService(ctx, host, d.cfg.Service, role)
+			if err != nil {
+				fmt.Fprintf(tw, "%s\t%s\tERROR\t-\t-\t%v\n", role, host, err)
+				continue
+			}
+			if len(containers) == 0 {
+				fmt.Fprintf(tw, "%s\t%s\t-\t-\t-\t(no containers)\n", role, host)
+				continue
+			}
+			for _, c := range containers {
+				fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n",
+					role, host, c.Version, c.State,
+					c.CreatedAt.Format(time.RFC3339), c.Name)
+			}
+		}
+	}
+	return tw.Flush()
 }
 
 func (d *Deployer) Logs(ctx context.Context, out io.Writer) error {

@@ -55,6 +55,7 @@ qifa sweep              # stop+remove orphan running labeled containers (also ru
 qifa status             # deployment history (audit) + active containers (live)
 qifa logs               # docker logs from the active container
 qifa app exec <command> # docker exec in the active container
+qifa app containers     # list labeled containers per role/host (rollback targets)
 qifa accessory boot <name>
 qifa accessory logs <name>
 ```

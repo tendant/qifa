@@ -74,16 +74,25 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 			return rt.deployer.Logs(ctx, stdout)
 		})
 	case "app":
-		if len(args) < 2 || args[1] != "exec" {
-			return errors.New("usage: qifa app exec <command>")
+		if len(args) < 2 {
+			return errors.New("usage: qifa app <exec <command> | containers>")
 		}
-		if len(args) < 3 {
-			return errors.New("usage: qifa app exec <command>")
+		switch args[1] {
+		case "exec":
+			if len(args) < 3 {
+				return errors.New("usage: qifa app exec <command>")
+			}
+			command := strings.Join(args[2:], " ")
+			return withRuntime(ctx, stdout, stderr, func(rt *runtime) error {
+				return rt.deployer.Exec(ctx, command, stdout)
+			})
+		case "containers":
+			return withRuntime(ctx, stdout, stderr, func(rt *runtime) error {
+				return rt.deployer.ListContainers(ctx, stdout)
+			})
+		default:
+			return errors.New("usage: qifa app <exec <command> | containers>")
 		}
-		command := strings.Join(args[2:], " ")
-		return withRuntime(ctx, stdout, stderr, func(rt *runtime) error {
-			return rt.deployer.Exec(ctx, command, stdout)
-		})
 	case "accessory":
 		if len(args) < 3 {
 			return errors.New("usage: qifa accessory <boot|logs> <name>")
@@ -141,6 +150,7 @@ func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "  status")
 	fmt.Fprintln(w, "  logs")
 	fmt.Fprintln(w, "  app exec <command>")
+	fmt.Fprintln(w, "  app containers")
 	fmt.Fprintln(w, "  accessory boot <name>")
 	fmt.Fprintln(w, "  accessory logs <name>")
 }
