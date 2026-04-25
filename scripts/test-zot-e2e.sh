@@ -6,7 +6,7 @@ E2E_DIR="$ROOT_DIR/test/e2e"
 TMP_DIR="$E2E_DIR/.tmp"
 SSH_DIR="$TMP_DIR/ssh"
 BIN_DIR="$TMP_DIR/bin"
-RUN_ROOT=${RUN_ROOT:-$(mktemp -d /tmp/godeploy-zot-e2e-XXXXXX)}
+RUN_ROOT=${RUN_ROOT:-$(mktemp -d /tmp/qifa-zot-e2e-XXXXXX)}
 WEB_DIR="$RUN_ROOT/web-run"
 WORKER_DIR="$RUN_ROOT/worker-run"
 COMPOSE_FILE="$E2E_DIR/docker-compose.yml"
@@ -71,9 +71,9 @@ unset DOCKER_TLS_CERTDIR
 unset DOCKER_TLS_VERIFY
 unset DOCKER_CERT_PATH
 
-go build -o "$BIN_DIR/godeploy" "$ROOT_DIR/cmd/godeploy"
+go build -o "$BIN_DIR/qifa" "$ROOT_DIR/cmd/qifa"
 
-cat > "$WEB_DIR/godeploy.yml" <<EOF
+cat > "$WEB_DIR/qifa.yml" <<EOF
 service: demo-web
 image: $REGISTRY_HOST/demo-web
 
@@ -110,7 +110,7 @@ ssh:
   key: ~/.ssh/id_ed25519
 EOF
 
-cat > "$WORKER_DIR/godeploy.yml" <<EOF
+cat > "$WORKER_DIR/qifa.yml" <<EOF
 service: demo-worker
 image: $REGISTRY_HOST/demo-worker
 
@@ -148,25 +148,25 @@ EOF
 
 (
   cd "$WEB_DIR"
-  "$BIN_DIR/godeploy" deploy
+  "$BIN_DIR/qifa" deploy
   curl -fsS -H 'Host: localhost' http://127.0.0.1:8080/up
   curl -fsS -H 'Host: localhost' http://127.0.0.1:8080/version
-  "$BIN_DIR/godeploy" deploy
+  "$BIN_DIR/qifa" deploy
   curl -fsS -H 'Host: localhost' http://127.0.0.1:8080/up
-  "$BIN_DIR/godeploy" status
-  "$BIN_DIR/godeploy" logs
-  "$BIN_DIR/godeploy" app exec "echo web-ok"
+  "$BIN_DIR/qifa" status
+  "$BIN_DIR/qifa" logs
+  "$BIN_DIR/qifa" app exec "echo web-ok"
 )
 
 (
   cd "$WORKER_DIR"
-  "$BIN_DIR/godeploy" deploy
+  "$BIN_DIR/qifa" deploy
   sleep 1
-  "$BIN_DIR/godeploy" deploy
-  "$BIN_DIR/godeploy" rollback
-  "$BIN_DIR/godeploy" status
-  "$BIN_DIR/godeploy" logs
-  "$BIN_DIR/godeploy" app exec "echo worker-ok"
+  "$BIN_DIR/qifa" deploy
+  "$BIN_DIR/qifa" rollback
+  "$BIN_DIR/qifa" status
+  "$BIN_DIR/qifa" logs
+  "$BIN_DIR/qifa" app exec "echo worker-ok"
 )
 
 docker --host "$DOCKER_HOST" ps

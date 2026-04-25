@@ -28,7 +28,7 @@ func Login(ctx context.Context, client *ssh.Client, cfg config.Registry, host st
 	if err != nil {
 		return "", err
 	}
-	configDir := "/tmp/.godeploy-docker-config"
+	configDir := "/tmp/.qifa-docker-config"
 	configPath := filepath.Join(configDir, "config.json")
 	if err := client.Upload(ctx, host, configPath, contents, 0o600); err != nil {
 		return "", err
@@ -44,7 +44,7 @@ func LocalEnv(cfg config.Registry) (map[string]string, func(), error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	configDir, err := os.MkdirTemp("", "godeploy-docker-config-")
+	configDir, err := os.MkdirTemp("", "qifa-docker-config-")
 	if err != nil {
 		return nil, nil, fmt.Errorf("create docker config dir: %w", err)
 	}

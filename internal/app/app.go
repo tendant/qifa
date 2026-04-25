@@ -20,7 +20,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 
 	switch args[0] {
 	case "init":
-		path := "godeploy.yml"
+		path := "qifa.yml"
 		if len(args) > 1 {
 			path = args[1]
 		}
@@ -47,10 +47,10 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		})
 	case "app":
 		if len(args) < 2 || args[1] != "exec" {
-			return errors.New("usage: godeploy app exec <command>")
+			return errors.New("usage: qifa app exec <command>")
 		}
 		if len(args) < 3 {
-			return errors.New("usage: godeploy app exec <command>")
+			return errors.New("usage: qifa app exec <command>")
 		}
 		command := strings.Join(args[2:], " ")
 		return withRuntime(ctx, stdout, stderr, func(rt *runtime) error {
@@ -58,7 +58,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		})
 	case "accessory":
 		if len(args) < 3 {
-			return errors.New("usage: godeploy accessory <boot|logs> <name>")
+			return errors.New("usage: qifa accessory <boot|logs> <name>")
 		}
 		name := args[2]
 		return withRuntime(ctx, stdout, stderr, func(rt *runtime) error {
@@ -68,7 +68,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 			case "logs":
 				return rt.deployer.AccessoryLogs(ctx, name, stdout)
 			default:
-				return errors.New("usage: godeploy accessory <boot|logs> <name>")
+				return errors.New("usage: qifa accessory <boot|logs> <name>")
 			}
 		})
 	default:
@@ -82,11 +82,11 @@ type runtime struct {
 }
 
 func withRuntime(ctx context.Context, stdout, stderr io.Writer, fn func(*runtime) error) error {
-	cfg, err := config.Load("godeploy.yml")
+	cfg, err := config.Load("qifa.yml")
 	if err != nil {
 		return err
 	}
-	store, err := state.NewStore(".godeploy/state.jsonl")
+	store, err := state.NewStore(".qifa/state.jsonl")
 	if err != nil {
 		return err
 	}
@@ -98,7 +98,7 @@ func withRuntime(ctx context.Context, stdout, stderr io.Writer, fn func(*runtime
 }
 
 func printUsage(w io.Writer) {
-	fmt.Fprintln(w, "usage: godeploy <command>")
+	fmt.Fprintln(w, "usage: qifa <command>")
 	fmt.Fprintln(w, "")
 	fmt.Fprintln(w, "commands:")
 	fmt.Fprintln(w, "  init [path]")

@@ -24,7 +24,7 @@ func TestDeployerEndToEndWithLocalSSH(t *testing.T) {
 
 	env := newIntegrationEnv(t)
 	cfg := env.config(t)
-	store, err := state.NewStore(filepath.Join(env.root, ".godeploy", "state.jsonl"))
+	store, err := state.NewStore(filepath.Join(env.root, ".qifa", "state.jsonl"))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -62,7 +62,7 @@ func (d *Deployer) Deploy(ctx context.Context) error {
 		return err
 	}
 
-	if err := hooks.Run(ctx, d.cfg.Hooks.PreBuild, map[string]string{"GODEPLOY_VERSION": version}); err != nil {
+	if err := hooks.Run(ctx, d.cfg.Hooks.PreBuild, map[string]string{"QIFA_VERSION": version}); err != nil {
 		return err
 	}
 	if err := d.updateStatus(deployment, state.StatusBuilding); err != nil {
@@ -90,7 +90,7 @@ func (d *Deployer) Deploy(ctx context.Context) error {
 	if err := d.updateStatus(deployment, state.StatusSucceeded); err != nil {
 		return err
 	}
-	if err := hooks.Run(ctx, d.cfg.Hooks.PostDeploy, map[string]string{"GODEPLOY_VERSION": version}); err != nil {
+	if err := hooks.Run(ctx, d.cfg.Hooks.PostDeploy, map[string]string{"QIFA_VERSION": version}); err != nil {
 		return err
 	}
 	d.log.Printf("deployment %s succeeded", deployment.ID)

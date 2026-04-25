@@ -1,7 +1,7 @@
 .PHONY: test test-e2e ci build
 
 build:
-	go build ./cmd/godeploy
+	go build ./cmd/qifa
 
 test:
 	go test ./...

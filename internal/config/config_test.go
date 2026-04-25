@@ -9,7 +9,7 @@ import (
 
 func TestLoadConfig(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "godeploy.yml")
+	path := filepath.Join(dir, "qifa.yml")
 	if err := os.WriteFile(path, []byte(sampleConfig), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -39,7 +39,7 @@ func TestLoadConfig(t *testing.T) {
 }
 
 func TestWriteSampleCreatesParents(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "nested", "godeploy.yml")
+	path := filepath.Join(t.TempDir(), "nested", "qifa.yml")
 	if err := WriteSample(path); err != nil {
 		t.Fatal(err)
 	}

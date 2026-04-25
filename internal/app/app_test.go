@@ -15,14 +15,14 @@ func TestRunNoArgsPrintsUsage(t *testing.T) {
 	if err := Run(context.Background(), nil, &stdout, &stderr); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(stdout.String(), "usage: godeploy <command>") {
+	if !strings.Contains(stdout.String(), "usage: qifa <command>") {
 		t.Fatalf("unexpected stdout: %q", stdout.String())
 	}
 }
 
 func TestRunInitWritesSample(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "godeploy.yml")
+	path := filepath.Join(dir, "qifa.yml")
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer

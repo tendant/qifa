@@ -4,15 +4,15 @@ This repo includes a Docker-based integration harness for real build, authentica
 
 ## What It Tests
 
-- local Docker build through `godeploy`
+- local Docker build through `qifa`
 - authenticated push to `zot`
 - SSH into a simulated deploy host
 - authenticated remote Docker pull and container start
 - real `kamal-proxy` startup and target switching
 - web health check and app endpoint reachability through the proxy
-- `godeploy status`
-- `godeploy logs`
-- `godeploy app exec`
+- `qifa status`
+- `qifa logs`
+- `qifa app exec`
 - worker redeploy and rollback flow
 
 ## Run It
@@ -53,7 +53,7 @@ This allows the same image reference to be used for both:
 - local build and push
 - remote pull on the deploy host
 
-Authentication is exercised with a static `htpasswd` file mounted into `zot`, and `godeploy` now injects Docker auth config for the local build/push path as well as the remote pull path.
+Authentication is exercised with a static `htpasswd` file mounted into `zot`, and `qifa` now injects Docker auth config for the local build/push path as well as the remote pull path.
 
 ## Important Limitation
 
