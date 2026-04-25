@@ -95,10 +95,14 @@ func (l *Local) Push(ctx context.Context, registryCfg config.Registry, imageRef 
 
 type Remote struct {
 	client *ssh.Client
+	out    io.Writer
 }
 
-func NewRemote(client *ssh.Client) *Remote {
-	return &Remote{client: client}
+func NewRemote(client *ssh.Client, out io.Writer) *Remote {
+	if out == nil {
+		out = os.Stdout
+	}
+	return &Remote{client: client, out: out}
 }
 
 func (r *Remote) EnsureDocker(ctx context.Context, host string) error {
@@ -107,13 +111,11 @@ func (r *Remote) EnsureDocker(ctx context.Context, host string) error {
 }
 
 func (r *Remote) Pull(ctx context.Context, host, dockerConfigDir, imageRef string) error {
-	_, err := r.client.Run(ctx, host, withDockerConfig(dockerConfigDir, "docker pull "+shellQuote(imageRef)))
-	return err
+	return r.client.Stream(ctx, host, withDockerConfig(dockerConfigDir, "docker pull "+shellQuote(imageRef)), r.out)
 }
 
 func (r *Remote) Push(ctx context.Context, host, dockerConfigDir, imageRef string) error {
-	_, err := r.client.Run(ctx, host, withDockerConfig(dockerConfigDir, "docker push "+shellQuote(imageRef)))
-	return err
+	return r.client.Stream(ctx, host, withDockerConfig(dockerConfigDir, "docker push "+shellQuote(imageRef)), r.out)
 }
 
 // BuildxPush runs `docker buildx build --push` on the remote host: a single
@@ -135,8 +137,7 @@ func (r *Remote) BuildxPush(ctx context.Context, host string, cfg *config.Config
 				Platform:   cfg.Builder.Platform,
 			}, imageRef)),
 		}, " && ")
-		_, err := r.client.Run(ctx, host, command)
-		return err
+		return r.client.Stream(ctx, host, command, r.out)
 	}
 	archive, err := buildContextArchive(cfg.Builder.Context)
 	if err != nil {
@@ -159,8 +160,7 @@ func (r *Remote) BuildxPush(ctx context.Context, host string, cfg *config.Config
 		}, imageRef)),
 		"rm -f " + shellQuote(remoteArchive),
 	}, " && ")
-	_, err = r.client.Run(ctx, host, command)
-	return err
+	return r.client.Stream(ctx, host, command, r.out)
 }
 
 func (r *Remote) Build(ctx context.Context, host string, cfg *config.Config, imageRef string) error {
@@ -179,8 +179,7 @@ func (r *Remote) Build(ctx context.Context, host string, cfg *config.Config, ima
 				Platform:   cfg.Builder.Platform,
 			}, imageRef),
 		}, " && ")
-		_, err := r.client.Run(ctx, host, command)
-		return err
+		return r.client.Stream(ctx, host, command, r.out)
 	}
 	archive, err := buildContextArchive(cfg.Builder.Context)
 	if err != nil {
@@ -203,8 +202,7 @@ func (r *Remote) Build(ctx context.Context, host string, cfg *config.Config, ima
 		}, imageRef),
 		"rm -f " + shellQuote(remoteArchive),
 	}, " && ")
-	_, err = r.client.Run(ctx, host, command)
-	return err
+	return r.client.Stream(ctx, host, command, r.out)
 }
 
 func (r *Remote) RunContainer(ctx context.Context, host, name, imageRef, envFile, command, network string, labels map[string]string, hostPort, containerPort int) error {

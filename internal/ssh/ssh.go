@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -66,6 +67,41 @@ func (c *Client) Run(ctx context.Context, host, command string) (string, error) 
 			return "", formatRemoteError("remote command", host, command, err, stderr.String())
 		}
 		return strings.TrimSpace(stdout.String()), nil
+	}
+}
+
+// Stream runs command on host and pipes its stdout and stderr live to out
+// instead of buffering. Use for long-running commands (docker build, push,
+// pull) where the user benefits from seeing progress.
+func (c *Client) Stream(ctx context.Context, host, command string, out io.Writer) error {
+	conn, err := c.dial(host)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+
+	sess, err := conn.NewSession()
+	if err != nil {
+		return err
+	}
+	defer sess.Close()
+
+	var stderr bytes.Buffer
+	sess.Stdout = out
+	sess.Stderr = io.MultiWriter(out, &stderr)
+
+	done := make(chan error, 1)
+	go func() { done <- sess.Run(command) }()
+
+	select {
+	case <-ctx.Done():
+		_ = sess.Signal(gossh.SIGKILL)
+		return ctx.Err()
+	case err := <-done:
+		if err != nil {
+			return formatRemoteError("remote command", host, command, err, stderr.String())
+		}
+		return nil
 	}
 }
 

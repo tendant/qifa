@@ -44,7 +44,7 @@ func New(cfg *config.Config, store *state.Store, stdout, stderr io.Writer) (*Dep
 		log:          logs.New(stdout),
 		stderr:       stderr,
 		localDocker:  docker.NewLocal(),
-		remoteDocker: docker.NewRemote(sshClient),
+		remoteDocker: docker.NewRemote(sshClient, stdout),
 		ssh:          sshClient,
 		proxy:        proxy.New(sshClient, cfg.Proxy),
 	}, nil
