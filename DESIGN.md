@@ -1,14 +1,16 @@
-# Go Kamal-Compatible Deployer Design
+# qifa — Go Kamal-Compatible Deployer
 
 ## Goal
 
-Build a **Go-native deployment CLI** that works like Kamal but reuses the existing **kamal-proxy**.
+A Go-native deployment CLI for Docker apps on plain Linux servers. Reuses the
+existing **kamal-proxy** for zero-downtime traffic switching; everything else
+(orchestration, build, lifecycle) is qifa's own.
 
 ```text
-Go deploy CLI
+qifa CLI
   -> SSH into servers
   -> Docker build/push/pull/run
-  -> configure kamal-proxy container
+  -> register/deregister with kamal-proxy
   -> health check
   -> switch traffic
   -> rollback if needed
@@ -16,70 +18,71 @@ Go deploy CLI
 
 ## Non-goals
 
-Do **not** rebuild:
+Do not rebuild kamal-proxy, Docker, Kubernetes, Nomad, or a full PaaS control
+plane.
 
-- kamal-proxy
-- Docker
-- Kubernetes
-- Nomad
-- full PaaS control plane
-
-## Core Components
+## Repo Layout
 
 ```text
-cmd/godeploy
-internal/config
-internal/ssh
-internal/docker
-internal/registry
-internal/proxy
-internal/deploy
-internal/secrets
-internal/hooks
-internal/state
-internal/logs
+qifa/
+  cmd/qifa/            CLI entry point
+  internal/app/        CLI dispatch
+  internal/config/     YAML schema, validation, defaults
+  internal/deploy/     orchestrator (Deploy, Rollback, Stop, Start, ...)
+  internal/docker/     Docker shell wrappers (Local + Remote over SSH)
+  internal/proxy/      kamal-proxy boot + register/deregister
+  internal/registry/   per-host docker login isolation
+  internal/secrets/    env file rendering
+  internal/hooks/      pre/post hook execution
+  internal/state/      append-only audit log (deployments + events)
+  internal/ssh/        SSH client (parallel fanout, sudo, known_hosts)
+  internal/logs/       stdout/stderr formatting
+  DESIGN.md
 ```
 
 ## CLI
 
 ```bash
-godeploy init
-godeploy deploy
-godeploy rollback
-godeploy status
-godeploy logs
-godeploy app exec
-godeploy accessory boot
-godeploy accessory logs
+qifa init [path]        # write a starter qifa.yml
+qifa deploy             # build (if needed) + ship + healthcheck + switch
+qifa rollback           # roll back to the previous version
+qifa stop               # stop the running container per role/host
+qifa start              # start the most recent labeled container
+qifa restart            # stop then start
+qifa remove             # tear down all labeled containers + deregister proxy
+qifa prune              # keep last N stopped containers; prune dangling images
+qifa status             # deployment history (audit) + active containers (live)
+qifa logs               # docker logs from the active container
+qifa app exec <command> # docker exec in the active container
+qifa accessory boot <name>
+qifa accessory logs <name>
 ```
 
-## Config Example
+## Config
 
 ```yaml
 service: myapp
-image: registry.example.com/myapp
+image: registry.example.com/myapp     # built image: bare repo (tag computed)
+                                       # external image: must include :tag or @digest
 
 servers:
   web:
     hosts:
       - 10.0.0.11
       - 10.0.0.12
-    port: 3000
+    port: 3000          # host port to publish (only used when proxy: false)
+    app_port: 3000      # container port
   worker:
     hosts:
       - 10.0.0.13
     cmd: ./worker
+    proxy: false        # workers don't go behind the proxy
 
 proxy:
   host: app.example.com
   app_port: 3000
   http_port: 80
   https_port: 443
-  image: basecamp/kamal-proxy
-  version: v0.9.2
-  network: kamal
-  state_volume: kamal-proxy-config
-  apps_config_dir: .kamal/proxy/apps-config
   healthcheck:
     path: /up
     interval: 2s
@@ -93,342 +96,197 @@ registry:
 env:
   clear:
     APP_ENV: production
-    LOG_LEVEL: info
   secret:
     - DATABASE_URL
-    - REDIS_URL
 
+# Builder is OPTIONAL. Omit it entirely to deploy an externally produced
+# image (image must then carry :tag or @digest).
 builder:
-  mode: local
-  source: local
   context: .
   dockerfile: Dockerfile
   platform: linux/amd64
+
+prune:
+  retain_containers: 5  # default; how many stopped containers to keep per role
 
 ssh:
-  user: ubuntu # optional
-  key: ~/.ssh/id_ed25519 # optional
-  strict_host_key_checking: true # optional, defaults to true
+  user: ubuntu
+  key: ~/.ssh/id_ed25519
+
+hooks:
+  pre_build: ./scripts/pre_build.sh
+  post_deploy: ./scripts/post_deploy.sh
+  pre_rollback: ./scripts/pre_rollback.sh
+
+accessories:
+  redis:
+    image: redis:7
+    host: 10.0.0.13
 ```
 
-## Build And Distribution Model
+## Build & Distribution Model
 
-Separate the machine that builds an image from the machines that run it.
+`builder.host` encodes where (and whether) qifa builds the image:
 
-- builder machine: the machine that runs `docker build`
-- deployment target: any host in `servers.*.hosts` that runs the container
+| `builder.host`    | Behavior                                                | Registry  |
+|-------------------|---------------------------------------------------------|-----------|
+| (omitted block)   | External image — pull and run, never build              | optional  |
+| `""`              | Build locally where qifa runs, push to registry         | required  |
+| `"per_target"`    | Build on each deployment target (no shared artifact)    | forbidden |
+| `"<host-or-ip>"`  | Build on that SSH-reachable host, push to registry      | required  |
 
-The config stays small and models build location, code source, and optional registry usage:
-
-```yaml
-service: myapp
-image: registry.example.com/myapp
-
-builder:
-  mode: local # local | remote | per_target
-  host: 10.0.0.21 # required only for mode=remote
-  source: local # local | git, default local
-  context: .
-  repo: git@github.com:org/app.git
-  ref: v1.2.3
-  subdir: . # default .
-  dockerfile: Dockerfile
-  platform: linux/amd64
-
-registry:
-  server: registry.example.com
-  username: reg
-  password_env: REGISTRY_PASSWORD
-```
-
-### Builder Modes
-
-`local`
-
-- build on the machine running `qifa`
-- requires `registry`
-- produces one shared image that deployment targets pull
-
-`remote`
-
-- build on one SSH-reachable remote machine in `builder.host`
-- requires `registry`
-- that remote machine may be either a deploy target or a dedicated build host
-- produces one shared image that deployment targets pull
-
-`per_target`
-
-- build on each deployment target individually
-- requires no `registry`
-- `builder.host` must not be set
-- each host runs the image it built locally
-
-### Builder Source
-
-`source=local`
-
-- use files from the machine running `qifa`
-- `builder.context` selects the local build context directory
-- `builder.dockerfile` is relative to that context
-- `local` mode builds directly from that local path
-- `remote` and `per_target` upload that local path before building
-
-`source=git`
-
-- clone a repository at a pinned `builder.ref`
-- `builder.repo` is the clone URL
-- `builder.subdir` selects the build context inside the checked out repo
-- `builder.dockerfile` is relative to that subdirectory
-- the clone happens on the machine that runs the build
-
-### Source Resolution By Mode
-
-- `builder.mode=local`
-  - `source=local`: read files locally and build locally
-  - `source=git`: clone locally and build locally
-- `builder.mode=remote`
-  - `source=local`: upload local files to `builder.host` and build there
-  - `source=git`: clone on `builder.host` and build there
-- `builder.mode=per_target`
-  - `source=local`: upload local files to each deployment target and build there
-  - `source=git`: clone on each deployment target and build there
-
-### Validation Rules
-
-- `builder.mode` must be one of `local`, `remote`, `per_target`
-- `builder.mode=local` requires `registry`
-- `builder.mode=remote` requires `registry`
-- `builder.mode=remote` requires `builder.host`
-- `builder.mode=per_target` forbids `registry`
-- `builder.mode=per_target` forbids `builder.host`
-- `builder.source` must be one of `local`, `git`
-- `builder.source=local` requires `builder.context`
-- `builder.source=local` forbids `builder.repo`, `builder.ref`, and `builder.subdir`
-- `builder.source=git` requires `builder.repo` and `builder.ref`
-- `builder.source=git` defaults `builder.subdir` to `.`
-- `builder.source=git` forbids `builder.context`
-- `builder.dockerfile` is always relative to the active build context
-
-### Git Authentication
-
-When `builder.source=git`, the machine doing the build must already have git access configured.
-
-- `builder.mode=local`: local machine must be able to clone
-- `builder.mode=remote`: `builder.host` must be able to clone
-- `builder.mode=per_target`: each deployment target must be able to clone
+`builder.repo` (when set) makes the source git: qifa clones `repo` at `ref`,
+optionally descends into `subdir`, and uses that as the build context. Without
+`repo`, the source is local files at `builder.context` (uploaded to the build
+machine if it isn't local).
 
 ### Image Semantics
 
-- with `registry`, `image` is the registry reference that gets pushed and pulled
-- without `registry`, `image` is a host-local Docker tag used independently on each deployment target
+- **Built**: version is `git rev-parse --short HEAD` if available, else a
+  timestamp. The full image reference is `image:version`.
+- **External**: tag is informational. At deploy time qifa pulls the tag on the
+  first target host, reads the registry digest, and uses the first 12 hex chars
+  as the version label. Containers run by digest (`image@sha256:...`) so every
+  host in a single deploy runs identical bits. Two deploys of the same floating
+  tag (`:latest`, `:alpine`) either resolve to the same digest (idempotent) or
+  become distinct deploys with rollback between them.
 
 ## Proxy Model
 
-The proxy is a shared container per host, not per app.
+The proxy is one shared container per host, not per app.
 
-- proxy boot uses a persistent Docker volume for runtime route state
-- proxy boot also uses a shared Docker network
-- app deploys register or update their route in the shared proxy container
-- if the proxy container is restarted, routes survive as long as the volume is preserved
-- if the proxy volume is deleted, the routes must be replayed from deployment state
+- proxy boot creates a persistent Docker volume for runtime route state and a
+  shared Docker network (default `kamal`)
+- app containers attach to the same network so the proxy can reach them by IP
+- app deploys register/update their route in the shared proxy via
+  `docker exec kamal-proxy kamal-proxy deploy ...`
+- if the proxy container is restarted, routes survive as long as the volume is
+  preserved
+- if the proxy volume is deleted, routes must be replayed by redeploying
 
-Proxy boot is configured at the root `proxy` section and is application-specific only for the route registration step, not for the container boot itself.
+The root `proxy` block configures both the proxy container itself (image,
+network, ports, state volume) and per-app routing (host, healthcheck, TLS,
+path prefixes).
 
-### Supported Combinations
+## Discovery & State Model
 
-`local + registry`
-
-1. build locally
-2. push once to registry
-3. each target logs into registry
-4. each target pulls and runs the image
-
-`remote + registry`
-
-1. materialize the build context on `builder.host`
-2. build once on `builder.host`
-3. push once to registry from `builder.host`
-4. each target logs into registry
-5. each target pulls and runs the image
-
-`per_target + no registry`
-
-1. materialize the build context on each deployment target
-2. each target builds the image locally
-3. each target runs its locally built image
-
-### Reproducibility Note
-
-`per_target` does not create one shared artifact. Different hosts may build different images unless base images and build inputs are pinned tightly.
-
-## Deploy Flow
-
-1. Load config
-2. Resolve version (git SHA or timestamp)
-3. Materialize the build context according to `builder.source`
-4. Build the Docker image according to `builder.mode`
-5. If `registry` is configured, push the image once
-6. SSH into each deployment target
-7. Ensure Docker is installed/running
-8. Ensure the shared kamal-proxy container is running, creating the Docker network and persistent state volume if needed
-9. If `registry` is configured, install per-host Docker auth and pull the image
-10. If `builder.mode=per_target`, build the image on the target host
-11. Start new container with unique name
-12. Health-check new container
-13. Switch traffic
-14. Stop old container
-15. Record deployment state
-16. Prune old resources
-
-## State Model
-
-Use append-only facts.
-
-```sql
-deployments
-- id
-- service
-- version
-- image
-- status
-- started_at
-- finished_at
-
-deployment_events
-- id
-- deployment_id
-- host
-- role
-- event_type
-- message
-- created_at
-```
-
-MVP local storage:
+**Docker is the source of truth.** App containers are stamped with three
+labels:
 
 ```text
-.godeploy/state.jsonl
+qifa.service=<service>
+qifa.role=<role>
+qifa.version=<version>
 ```
 
-## Rollback Flow
+All runtime queries (which container is active for service+role+host, what was
+the previous version, what's stale) are answered by `docker ps` filtered by
+those labels. There is no on-disk index of what is running.
 
-1. Find last successful deployment
-2. Pull previous image if needed
-3. Start previous container
-4. Health-check
-5. Switch traffic back
-6. Stop failed/current container
-7. Record rollback event
-
-## SSH Layer
-
-Use Go SSH library:
+**`.qifa/state.jsonl`** is an append-only audit log only. It records:
 
 ```text
-golang.org/x/crypto/ssh
+deployments     id, service, version, image, status, started_at, finished_at
+deployment_events  id, deployment_id, host, role, event_type, message, created_at
 ```
 
-Features:
+`qifa status` reads the audit log for history (including failures that never
+produced a container, e.g. build/push errors) and queries Docker live for the
+active set. Removing or losing the file does not break any other command.
 
-- parallel fanout
-- per-host timeout
-- streaming logs
-- retries
-- sudo support
-- known_hosts verification
+## Lifecycle
 
-## Docker Layer
+### Deploy Flow
 
-MVP uses remote shell commands:
+1. Resolve image and version
+   - Built: `image:resolveVersion()`
+   - External: pull on first host → read digest → `image@sha256:...`, version = short digest
+2. Run `pre_build` hook
+3. Prepare image
+   - `builder == nil` or `per_target`: no-op (per-target builds happen on each host)
+   - `local`: build locally + push
+   - `remote`: build on `builder.host` + push
+4. Render env file (clear + secret env vars)
+5. For each role (web first), for each host:
+   1. `connecting` event
+   2. Ensure Docker is running on the host
+   3. If proxy is used: ensure shared kamal-proxy container, network, volume
+   4. Find currently running container by labels (= previous version)
+   5. Upload env file
+   6. Stop and remove any orphan labeled containers
+   7. Build on host (if `per_target`) OR pull (if registry / external)
+   8. For non-proxy: stop the previous container in place (port collision)
+   9. Remove any same-named container (rollback case)
+   10. `docker run` the new container with `--network <proxy.network>` (if proxy),
+       `--restart unless-stopped`, and the three qifa labels
+   11. Health-check (curl from host into the container)
+   12. If proxy: `kamal-proxy deploy <service> --target <ip:port>` (atomic
+       traffic switch performed by kamal-proxy)
+   13. `deployed` event
+   14. For proxy: stop (don't remove) the previous container so rollback can
+       find it later
+6. Run `post_deploy` hook
+7. Auto-prune: keep last `prune.retain_containers` stopped containers per role,
+   prune dangling service images
 
-```bash
-docker build
-docker push
-docker pull
-docker run
-docker ps
-docker stop
-docker rm
-docker logs
-```
+### Rollback Flow
 
-## Proxy Integration
+1. Run `pre_rollback` hook
+2. Find previous version from Docker: across all role/host pairs, walk
+   labeled containers (sorted by CreatedAt desc), skip the currently running
+   one, pick the most recent next-newest container with a different version.
+3. Re-run the deploy flow with that version's image.
 
-Reuse **kamal-proxy**.
+### Stop / Start / Restart
 
-Conceptual interface:
+- **Stop**: find the running container per role/host, `docker stop`. Old
+  container is left in place; proxy route is left registered (will 503 until
+  Start or Remove).
+- **Start**: find the most recently created labeled container per role/host,
+  `docker start`. If the role uses the proxy, re-register with kamal-proxy.
+- **Restart**: Stop then Start.
 
-```go
-type Proxy interface {
-    EnsureInstalled() error
-    Deploy() error
-    Remove() error
-}
-```
+### Remove
+
+For each host: deregister all labeled services from kamal-proxy, then
+`docker rm -f` every labeled container (running or stopped), then prune
+dangling service images.
+
+### Prune
+
+For each role/host: list labeled containers, drop the running ones, keep the
+most recent N stopped containers, `docker rm -f` the rest. Then
+`docker image prune --force --filter label=qifa.service=<service>`.
 
 ## Deployment State Machine
 
 ```text
-Pending
-Building
-Pushing
-Pulling
-Starting
-HealthChecking
-SwitchingTraffic
-CleaningUp
-Succeeded
-Failed
-RolledBack
+Pending → Building → Pushing → Pulling → Starting → HealthChecking
+       → SwitchingTraffic → Succeeded
+                         → Failed
+                         → RolledBack
 ```
 
-Each step should be idempotent.
-
-## Rollout Strategy
-
-### Web Role
-
-Rolling deploy:
-
-```text
-host1 -> deploy -> healthy -> switch
-host2 -> deploy -> healthy -> switch
-```
-
-### Worker Role
-
-Restart strategy:
-
-```text
-start new worker
-wait ready
-stop old worker
-```
+External-image deploys skip Building/Pushing. Per-target builds skip Pushing.
+Each step is idempotent.
 
 ## Hooks
 
 ```yaml
 hooks:
-  pre_build: ./scripts/pre_build.sh
-  post_deploy: ./scripts/post_deploy.sh
-  pre_rollback: ./scripts/pre_rollback.sh
+  pre_build: ./scripts/pre_build.sh   # before resolveImage / prepareImage
+  post_deploy: ./scripts/post_deploy.sh # after success, before auto-prune
+  pre_rollback: ./scripts/pre_rollback.sh # at start of rollback
 ```
+
+Hooks receive `QIFA_VERSION` in their environment and run on the machine
+invoking qifa, not on target hosts.
 
 ## Secrets
 
-MVP:
-
-- read local environment
-- render env file
-- copy to host
-- use docker --env-file
-
-Later:
-
-- SOPS + age
-- Vault
-- AWS Secrets Manager
-- 1Password
+MVP: read from local environment (`env.secret: [VAR_NAME]`), render to a
+`.env` file, copy to each host with mode 0600, pass to docker via
+`--env-file`. No secret manager integration yet.
 
 ## Accessories
 
@@ -439,50 +297,52 @@ accessories:
     host: 10.0.0.13
 ```
 
-Commands:
+`qifa accessory boot redis` pulls the image, removes any prior container with
+the same name, and runs it with `--restart unless-stopped`. Accessories do not
+get qifa labels and are not affected by `prune` or `remove`.
+
+## SSH Layer
+
+`golang.org/x/crypto/ssh` with parallel fanout, per-host timeout, streaming
+logs, sudo support, and known_hosts verification.
+
+## Docker Layer
+
+Shells out to `docker` over SSH on remote hosts and locally for the local
+build path. Methods used today:
 
 ```bash
-godeploy accessory boot redis
-godeploy accessory logs redis
+docker build / push / pull / run / stop / rm / start / ps / inspect / logs / exec / image prune
 ```
 
-## MVP Scope
+## Proxy Integration
 
-- single app
-- web + worker roles
-- multiple hosts
-- Docker registry
-- kamal-proxy integration
-- health checks
-- rollback
-- logs/status
-- env secrets
-- append-only state
+```go
+type Proxy interface {
+    EnsureInstalled(ctx, host) error           // boot kamal-proxy container
+    Deploy(ctx, host, target) error            // register service route
+    Remove(ctx, host, service) error           // deregister service
+}
+```
 
-## Later Features
+Implementation shells out: `docker run -d ... basecamp/kamal-proxy` for boot,
+`docker exec kamal-proxy kamal-proxy deploy ...` for register,
+`docker exec kamal-proxy kamal-proxy remove <service>` for deregister.
 
-- remote builders
-- multi-arch builds
-- maintenance mode
-- deploy locks
-- OpenTelemetry
-- web UI
+## Out of Scope (For Now)
+
+- Rolling/batched deploys across hosts (`boot.limit`, `boot.wait`)
+- Primary-role healthcheck barrier for multi-role apps
+- Maintenance mode / explicit traffic on/off
+- Deploy locks (multiple deployers racing)
+- Multi-arch builds
+- Secret managers (SOPS, Vault, AWS SM, 1Password)
+- OpenTelemetry / web UI
 - GitHub Actions integration
-
-## Suggested Repo Layout
-
-```text
-godeploy/
-  cmd/godeploy/
-  internal/config/
-  internal/deploy/
-  internal/ssh/
-  internal/docker/
-  internal/proxy/
-  internal/state/
-  docs/
-```
 
 ## Positioning
 
-**A Go-native, Kamal-inspired deployer for Docker apps on plain Linux servers using kamal-proxy for zero-downtime deploys.**
+A Go-native, Kamal-inspired deployer for Docker apps on plain Linux servers
+that uses kamal-proxy for zero-downtime traffic switching, Docker labels as
+the source of truth for what's running, and an append-only audit log for
+human debugging.
