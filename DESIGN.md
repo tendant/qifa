@@ -45,6 +45,7 @@ qifa/
 
 ```bash
 qifa init [path]        # write a starter qifa.yml
+qifa config             # print loaded+defaulted config as YAML
 qifa deploy             # build (if needed) + ship + healthcheck + switch
 qifa rollback [version] # roll back to the previous version (or a specific one)
 qifa stop               # stop the running container per role/host
@@ -59,6 +60,8 @@ qifa status             # deployment history (audit) + active containers (live)
 qifa logs               # docker logs from the active container
 qifa app exec <command> # docker exec in the active container
 qifa app containers     # list labeled containers per role/host (rollback targets)
+qifa app maintenance    # put service into maintenance mode (kamal-proxy stop)
+qifa app live           # take service out of maintenance mode (kamal-proxy resume)
 qifa accessory boot <name>
 qifa accessory logs <name>
 ```
@@ -364,9 +367,23 @@ If the lock is held when another deploy tries to start, the new deploy errors
 out with the existing holder's metadata. Stale locks (from a deploy that
 crashed without unwinding `defer`) can be cleared with `qifa lock release`.
 
+## Maintenance Mode
+
+`qifa app maintenance [--message <msg>] [--drain-timeout <duration>]` invokes
+`kamal-proxy stop <service>` on every host where the proxy is running. The
+proxy returns the configured message for incoming requests (default 503) and
+drains in-flight requests over `drain-timeout`. Note: requests to the
+configured `proxy.healthcheck.path` still return 200 OK during maintenance —
+this is kamal-proxy behavior to keep downstream load balancers from dropping
+the host while it's intentionally offline.
+
+`qifa app live` invokes `kamal-proxy resume <service>` to come back online.
+
 ## Out of Scope (For Now)
 
-- Primary-role healthcheck barrier for multi-role apps
+- Primary-role healthcheck barrier for multi-role apps (qifa serializes
+  roles strictly, so the barrier kamal needs for parallel-role booting
+  doesn't apply here)
 - Maintenance mode / explicit traffic on/off
 - Deploy locks (multiple deployers racing)
 - Multi-arch builds

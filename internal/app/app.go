@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"github.com/gokamal/gocart/internal/config"
 	"github.com/gokamal/gocart/internal/deploy"
@@ -19,6 +20,17 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	}
 
 	switch args[0] {
+	case "config":
+		cfg, err := config.Load("qifa.yml")
+		if err != nil {
+			return err
+		}
+		data, err := cfg.Marshal()
+		if err != nil {
+			return err
+		}
+		_, err = stdout.Write(data)
+		return err
 	case "init":
 		path := "qifa.yml"
 		if len(args) > 1 {
@@ -106,8 +118,41 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 			return withRuntime(ctx, stdout, stderr, func(rt *runtime) error {
 				return rt.deployer.ListContainers(ctx, stdout)
 			})
+		case "maintenance":
+			message := "Down for maintenance"
+			drainTimeout := 30 * time.Second
+			rest := args[2:]
+			for i := 0; i < len(rest); i++ {
+				switch rest[i] {
+				case "--message":
+					if i+1 >= len(rest) {
+						return errors.New("--message requires a value")
+					}
+					message = rest[i+1]
+					i++
+				case "--drain-timeout":
+					if i+1 >= len(rest) {
+						return errors.New("--drain-timeout requires a value")
+					}
+					d, err := time.ParseDuration(rest[i+1])
+					if err != nil {
+						return fmt.Errorf("--drain-timeout: %w", err)
+					}
+					drainTimeout = d
+					i++
+				default:
+					return fmt.Errorf("unknown flag %q", rest[i])
+				}
+			}
+			return withRuntime(ctx, stdout, stderr, func(rt *runtime) error {
+				return rt.deployer.Maintenance(ctx, message, drainTimeout)
+			})
+		case "live":
+			return withRuntime(ctx, stdout, stderr, func(rt *runtime) error {
+				return rt.deployer.Live(ctx)
+			})
 		default:
-			return errors.New("usage: qifa app <exec <command> | containers>")
+			return errors.New("usage: qifa app <exec <command> | containers | maintenance | live>")
 		}
 	case "accessory":
 		if len(args) < 3 {
@@ -155,6 +200,7 @@ func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "")
 	fmt.Fprintln(w, "commands:")
 	fmt.Fprintln(w, "  init [path]")
+	fmt.Fprintln(w, "  config")
 	fmt.Fprintln(w, "  deploy")
 	fmt.Fprintln(w, "  rollback [version]")
 	fmt.Fprintln(w, "  stop")
@@ -168,6 +214,8 @@ func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "  logs")
 	fmt.Fprintln(w, "  app exec <command>")
 	fmt.Fprintln(w, "  app containers")
+	fmt.Fprintln(w, "  app maintenance [--message <msg>] [--drain-timeout <duration>]")
+	fmt.Fprintln(w, "  app live")
 	fmt.Fprintln(w, "  accessory boot <name>")
 	fmt.Fprintln(w, "  accessory logs <name>")
 }

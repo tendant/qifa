@@ -676,6 +676,54 @@ func (d *Deployer) Status(ctx context.Context, out io.Writer) error {
 	return nil
 }
 
+// Maintenance puts the service into maintenance mode on every host where the
+// proxy is running. kamal-proxy returns `message` for incoming requests and
+// drains in-flight requests over drainTimeout. Use Live to come back.
+func (d *Deployer) Maintenance(ctx context.Context, message string, drainTimeout time.Duration) error {
+	for _, host := range d.proxyHosts() {
+		if err := d.proxy.EnsureInstalled(ctx, host); err != nil {
+			return err
+		}
+		if err := d.proxy.Stop(ctx, host, d.cfg.Service, message, drainTimeout); err != nil {
+			return err
+		}
+		d.log.Printf("maintenance enabled for %s on %s", d.cfg.Service, host)
+	}
+	return nil
+}
+
+// Live takes the service out of maintenance mode (kamal-proxy resume) on every
+// host where the proxy is running.
+func (d *Deployer) Live(ctx context.Context) error {
+	for _, host := range d.proxyHosts() {
+		if err := d.proxy.Resume(ctx, host, d.cfg.Service); err != nil {
+			return err
+		}
+		d.log.Printf("live: %s on %s", d.cfg.Service, host)
+	}
+	return nil
+}
+
+// proxyHosts returns the unique set of hosts where any role uses the proxy.
+func (d *Deployer) proxyHosts() []string {
+	seen := map[string]struct{}{}
+	var hosts []string
+	for _, role := range orderedRoles(d.cfg.Servers) {
+		server := d.cfg.Servers[role]
+		if !serverUsesProxy(role, server) {
+			continue
+		}
+		for _, host := range server.Hosts {
+			if _, ok := seen[host]; ok {
+				continue
+			}
+			seen[host] = struct{}{}
+			hosts = append(hosts, host)
+		}
+	}
+	return hosts
+}
+
 // LockStatus prints the lock holder per host (or "(free)" if not locked).
 func (d *Deployer) LockStatus(ctx context.Context, out io.Writer) error {
 	locker := lock.New(d.ssh, d.cfg.Service, d.uniqueHosts())

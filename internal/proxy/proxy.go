@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gokamal/gocart/internal/config"
 	"github.com/gokamal/gocart/internal/ssh"
@@ -14,6 +15,8 @@ type Proxy interface {
 	EnsureInstalled(context.Context, string) error
 	Deploy(context.Context, string, Target) error
 	Remove(context.Context, string, string) error
+	Stop(ctx context.Context, host, service, message string, drainTimeout time.Duration) error
+	Resume(ctx context.Context, host, service string) error
 }
 
 type Target struct {
@@ -86,6 +89,29 @@ func (k *KamalProxy) Deploy(ctx context.Context, host string, target Target) err
 
 func (k *KamalProxy) Remove(ctx context.Context, host, service string) error {
 	_, err := k.client.Run(ctx, host, "docker exec "+shellQuote(proxyContainerName)+" kamal-proxy remove "+shellQuote(service))
+	return err
+}
+
+// Stop puts the service into maintenance mode: kamal-proxy returns the
+// configured message (default 503-style) for incoming requests and drains
+// in-flight requests over drainTimeout.
+func (k *KamalProxy) Stop(ctx context.Context, host, service, message string, drainTimeout time.Duration) error {
+	args := []string{"docker", "exec", shellQuote(proxyContainerName),
+		"kamal-proxy", "stop", shellQuote(service)}
+	if drainTimeout > 0 {
+		args = append(args, "--drain-timeout", shellQuote(drainTimeout.String()))
+	}
+	if message != "" {
+		args = append(args, "--message", shellQuote(message))
+	}
+	_, err := k.client.Run(ctx, host, strings.Join(args, " "))
+	return err
+}
+
+// Resume brings a stopped service back online — kamal-proxy resumes routing
+// requests to the previously registered target.
+func (k *KamalProxy) Resume(ctx context.Context, host, service string) error {
+	_, err := k.client.Run(ctx, host, "docker exec "+shellQuote(proxyContainerName)+" kamal-proxy resume "+shellQuote(service))
 	return err
 }
 

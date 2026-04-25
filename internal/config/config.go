@@ -234,6 +234,12 @@ func applyDefaults(cfg *Config) {
 	}
 }
 
+// Marshal returns the config rendered as YAML, including all applied defaults.
+// Useful for `qifa config` to show what qifa actually sees after loading.
+func (c *Config) Marshal() ([]byte, error) {
+	return yaml.Marshal(c)
+}
+
 func WriteSample(path string) error {
 	dir := filepath.Dir(path)
 	if dir != "." {
