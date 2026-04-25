@@ -338,11 +338,17 @@ func serverUsesProxy(role string, server config.Server) bool {
 	return role == "web"
 }
 
-func (d *Deployer) Rollback(ctx context.Context) error {
+func (d *Deployer) Rollback(ctx context.Context, version string) error {
 	if err := hooks.Run(ctx, d.cfg.Hooks.PreRollback, nil); err != nil {
 		return err
 	}
-	prevVersion, prevImage, err := d.findPreviousVersion(ctx)
+	var prevVersion, prevImage string
+	var err error
+	if version == "" {
+		prevVersion, prevImage, err = d.findPreviousVersion(ctx)
+	} else {
+		prevVersion, prevImage, err = d.findVersion(ctx, version)
+	}
 	if err != nil {
 		return err
 	}
@@ -375,6 +381,39 @@ func (d *Deployer) Rollback(ctx context.Context) error {
 	}
 	d.log.Printf("rolled back to %s", prevImage)
 	return nil
+}
+
+// findVersion locates an existing labeled container with the given version on
+// every host of every role. Returns the version+image if found on every host;
+// errors if any host is missing a container with that version.
+func (d *Deployer) findVersion(ctx context.Context, version string) (string, string, error) {
+	image := ""
+	for _, role := range orderedRoles(d.cfg.Servers) {
+		server := d.cfg.Servers[role]
+		for _, host := range server.Hosts {
+			containers, err := d.remoteDocker.ListContainersByService(ctx, host, d.cfg.Service, role)
+			if err != nil {
+				return "", "", err
+			}
+			matched := false
+			for _, c := range containers {
+				if c.Version == version {
+					if image == "" {
+						image = c.Image
+					}
+					matched = true
+					break
+				}
+			}
+			if !matched {
+				return "", "", fmt.Errorf("version %q not found for %s/%s on %s", version, d.cfg.Service, role, host)
+			}
+		}
+	}
+	if image == "" {
+		return "", "", fmt.Errorf("version %q not found", version)
+	}
+	return version, image, nil
 }
 
 func (d *Deployer) findPreviousVersion(ctx context.Context) (string, string, error) {
@@ -769,6 +808,10 @@ func (d *Deployer) cleanupPriorContainer(ctx context.Context, host, previousCont
 	return d.remoteDocker.StopContainer(ctx, host, previousContainer)
 }
 
+// cleanupStaleContainers stops and removes orphaned RUNNING labeled
+// containers — anything still running that isn't the new container or the
+// previous active. Stopped containers are left in place: they are valid
+// rollback candidates and are managed by Prune (via prune.retain_containers).
 func (d *Deployer) cleanupStaleContainers(ctx context.Context, host, role, currentContainer, previousContainer string) error {
 	containers, err := d.remoteDocker.ListContainersByService(ctx, host, d.cfg.Service, role)
 	if err != nil {
@@ -776,6 +819,9 @@ func (d *Deployer) cleanupStaleContainers(ctx context.Context, host, role, curre
 	}
 	for _, c := range containers {
 		if c.Name == "" || c.Name == currentContainer || c.Name == previousContainer {
+			continue
+		}
+		if c.State != "running" && c.State != "restarting" {
 			continue
 		}
 		if err := d.remoteDocker.StopAndRemove(ctx, host, c.Name); err != nil {

@@ -163,7 +163,7 @@ func TestDeployerEndToEndWithLocalSSH(t *testing.T) {
 				t.Fatalf("unexpected status output: %q", statusOut.String())
 			}
 
-			if err := deployer.Rollback(ctx); err != nil {
+			if err := deployer.Rollback(ctx, ""); err != nil {
 				t.Fatal(err)
 			}
 
@@ -287,6 +287,65 @@ func TestDeployerExternalImageSkipsBuild(t *testing.T) {
 	}
 	if !strings.Contains(calls, "--label qifa.version="+last.Version) {
 		t.Fatalf("expected version label %q, got %q", last.Version, calls)
+	}
+}
+
+func TestDeployerRollbackToExplicitVersion(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	env := newIntegrationEnv(t)
+	cfg := env.config(t, config.BuilderHostPerTarget, "local", "testapp", config.Registry{})
+	proxyDisabled := false
+	web := cfg.Servers["web"]
+	web.Port = 19087
+	web.AppPort = 80
+	web.Proxy = &proxyDisabled
+	cfg.Servers["web"] = web
+	delete(cfg.Servers, "worker")
+
+	store, err := state.NewStore(filepath.Join(env.root, ".qifa", "state.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	deployer, err := New(cfg, store, &stdout, &stderr)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := deployer.Deploy(ctx); err != nil {
+		t.Fatalf("first deploy: %v", err)
+	}
+	time.Sleep(1100 * time.Millisecond) // ensure resolveVersion timestamp differs
+	if err := deployer.Deploy(ctx); err != nil {
+		t.Fatalf("second deploy: %v", err)
+	}
+	time.Sleep(1100 * time.Millisecond)
+	if err := deployer.Deploy(ctx); err != nil {
+		t.Fatalf("third deploy: %v", err)
+	}
+
+	deployments, _, err := store.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	versions := []string{}
+	for _, d := range deployments {
+		if d.Status == state.StatusSucceeded {
+			versions = append(versions, d.Version)
+		}
+	}
+	if len(versions) < 3 {
+		t.Fatalf("expected 3 successful deploys, got %d (%v)", len(versions), versions)
+	}
+	target := versions[0] // oldest
+
+	if err := deployer.Rollback(ctx, target); err != nil {
+		t.Fatalf("rollback to %q: %v", target, err)
+	}
+	if err := deployer.Rollback(ctx, "does-not-exist"); err == nil {
+		t.Fatal("expected error rolling back to nonexistent version")
 	}
 }
 

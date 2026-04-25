@@ -45,7 +45,7 @@ qifa/
 ```bash
 qifa init [path]        # write a starter qifa.yml
 qifa deploy             # build (if needed) + ship + healthcheck + switch
-qifa rollback           # roll back to the previous version
+qifa rollback [version] # roll back to the previous version (or a specific one)
 qifa stop               # stop the running container per role/host
 qifa start              # start the most recent labeled container
 qifa restart            # stop then start
@@ -240,10 +240,18 @@ active set. Removing or losing the file does not break any other command.
 ### Rollback Flow
 
 1. Run `pre_rollback` hook
-2. Find previous version from Docker: across all role/host pairs, walk
-   labeled containers (sorted by CreatedAt desc), skip the currently running
-   one, pick the most recent next-newest container with a different version.
+2. Resolve target version:
+   - `qifa rollback` (no arg): walk labeled containers across all role/host
+     pairs, skip the currently running version, pick the most recent
+     next-newest container with a different version.
+   - `qifa rollback <version>`: verify a labeled container with that exact
+     version exists on every role/host; reuse its image. Errors if any host
+     is missing it.
 3. Re-run the deploy flow with that version's image.
+
+Stopped labeled containers from prior deploys are preserved as rollback
+candidates (subject to `prune.retain_containers`); only the auto-prune step
+removes them, never the per-deploy cleanup.
 
 ### Stop / Start / Restart
 

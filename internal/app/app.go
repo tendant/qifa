@@ -34,8 +34,12 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 			return rt.deployer.Deploy(ctx)
 		})
 	case "rollback":
+		version := ""
+		if len(args) > 1 {
+			version = args[1]
+		}
 		return withRuntime(ctx, stdout, stderr, func(rt *runtime) error {
-			return rt.deployer.Rollback(ctx)
+			return rt.deployer.Rollback(ctx, version)
 		})
 	case "stop":
 		return withRuntime(ctx, stdout, stderr, func(rt *runtime) error {
@@ -123,7 +127,7 @@ func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "commands:")
 	fmt.Fprintln(w, "  init [path]")
 	fmt.Fprintln(w, "  deploy")
-	fmt.Fprintln(w, "  rollback")
+	fmt.Fprintln(w, "  rollback [version]")
 	fmt.Fprintln(w, "  stop")
 	fmt.Fprintln(w, "  start")
 	fmt.Fprintln(w, "  restart")
