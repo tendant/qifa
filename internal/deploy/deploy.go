@@ -877,17 +877,24 @@ func (d *Deployer) ListContainers(ctx context.Context, out io.Writer) error {
 	return tw.Flush()
 }
 
-func (d *Deployer) Logs(ctx context.Context, out io.Writer) error {
+func (d *Deployer) Logs(ctx context.Context, lines int, follow bool, out io.Writer) error {
 	host, container, err := d.defaultTarget(ctx)
 	if err != nil {
 		return err
 	}
-	logOutput, err := d.remoteDocker.Logs(ctx, host, container)
-	if err != nil {
+	if follow {
+		return d.remoteDocker.LogsStream(ctx, host, container, lines, true, out)
+	}
+	if lines == 200 {
+		// Preserve the legacy one-shot path that buffers + trims.
+		logOutput, err := d.remoteDocker.Logs(ctx, host, container)
+		if err != nil {
+			return err
+		}
+		_, err = fmt.Fprintln(out, logOutput)
 		return err
 	}
-	_, err = fmt.Fprintln(out, logOutput)
-	return err
+	return d.remoteDocker.LogsStream(ctx, host, container, lines, false, out)
 }
 
 func (d *Deployer) Exec(ctx context.Context, command string, out io.Writer) error {

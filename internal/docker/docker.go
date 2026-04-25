@@ -356,6 +356,17 @@ func (r *Remote) Logs(ctx context.Context, host, name string) (string, error) {
 	return r.client.Run(ctx, host, "docker logs --tail 200 "+shellQuote(name))
 }
 
+// LogsStream pipes `docker logs --tail <lines> [--follow] <name>` to out in
+// real time. Cancel ctx (e.g. via Ctrl-C in the CLI) to stop a follow.
+func (r *Remote) LogsStream(ctx context.Context, host, name string, lines int, follow bool, out io.Writer) error {
+	cmd := fmt.Sprintf("docker logs --tail %d", lines)
+	if follow {
+		cmd += " --follow"
+	}
+	cmd += " " + shellQuote(name)
+	return r.client.Stream(ctx, host, cmd, out)
+}
+
 func (r *Remote) ContainerState(ctx context.Context, host, name string) (string, error) {
 	return r.client.Run(ctx, host, "docker inspect -f '{{.State.Status}} exit={{.State.ExitCode}} error={{.State.Error}}' "+shellQuote(name))
 }

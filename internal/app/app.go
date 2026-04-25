@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"runtime/debug"
+	"strconv"
 	"strings"
 	"time"
 
@@ -158,8 +159,29 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 			return rt.deployer.Status(ctx, stdout)
 		})
 	case "logs":
+		lines := 200
+		follow := false
+		rest := args[1:]
+		for i := 0; i < len(rest); i++ {
+			switch rest[i] {
+			case "--follow", "-f":
+				follow = true
+			case "--lines", "-n":
+				if i+1 >= len(rest) {
+					return errors.New("--lines requires a value")
+				}
+				n, err := strconv.Atoi(rest[i+1])
+				if err != nil {
+					return fmt.Errorf("--lines: %w", err)
+				}
+				lines = n
+				i++
+			default:
+				return fmt.Errorf("unknown flag %q", rest[i])
+			}
+		}
 		return withRuntime(ctx, stdout, stderr, func(rt *runtime) error {
-			return rt.deployer.Logs(ctx, stdout)
+			return rt.deployer.Logs(ctx, lines, follow, stdout)
 		})
 	case "app":
 		if len(args) < 2 {
@@ -286,7 +308,7 @@ func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "  sweep")
 	fmt.Fprintln(w, "  lock <status|release>")
 	fmt.Fprintln(w, "  status")
-	fmt.Fprintln(w, "  logs")
+	fmt.Fprintln(w, "  logs [--follow] [--lines N]")
 	fmt.Fprintln(w, "  app exec <command>")
 	fmt.Fprintln(w, "  app containers")
 	fmt.Fprintln(w, "  app maintenance [--message <msg>] [--drain-timeout <duration>]")

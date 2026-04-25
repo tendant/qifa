@@ -137,7 +137,7 @@ func TestDeployerEndToEndWithLocalSSH(t *testing.T) {
 			}
 
 			var logsOut bytes.Buffer
-			if err := deployer.Logs(ctx, &logsOut); err != nil {
+			if err := deployer.Logs(ctx, 200, false, &logsOut); err != nil {
 				t.Fatal(err)
 			}
 			if !strings.Contains(logsOut.String(), "image="+tt.image+":") {
