@@ -563,6 +563,10 @@ case "$cmd" in
   exec)
     name="$1"
     shift
+    if [ "$name" = "qifa-proxy" ] && [ "${1:-}" = "kamal-proxy" ]; then
+      echo "$*" >> "$state/proxy_calls.log"
+      exit 0
+    fi
     if [ "$1" = "sh" ] && [ "$2" = "-lc" ]; then
       shift 2
       /bin/sh -c "$1"

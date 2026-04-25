@@ -113,8 +113,10 @@ func (d *Deployer) deployHost(ctx context.Context, deployment state.Deployment, 
 	if err := d.remoteDocker.EnsureDocker(ctx, host); err != nil {
 		return err
 	}
-	if err := d.proxy.EnsureInstalled(ctx, host); err != nil && useProxy {
-		return err
+	if useProxy {
+		if err := d.proxy.EnsureInstalled(ctx, host); err != nil {
+			return err
+		}
 	}
 	if err := d.ssh.Upload(ctx, host, remoteEnv, envFile, 0o600); err != nil {
 		return err

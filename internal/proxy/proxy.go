@@ -27,28 +27,32 @@ type KamalProxy struct {
 	cfg    config.Proxy
 }
 
+const (
+	proxyContainerName = "qifa-proxy"
+	proxyImage         = "basecamp/kamal-proxy:latest"
+)
+
 func New(client *ssh.Client, cfg config.Proxy) *KamalProxy {
 	return &KamalProxy{client: client, cfg: cfg}
 }
 
 func (k *KamalProxy) EnsureInstalled(ctx context.Context, host string) error {
 	command := strings.Join([]string{
-		"command -v kamal-proxy >/dev/null",
-		"([ -S /tmp/kamal-proxy.sock ] || [ -e /tmp/kamal-proxy.sock ] || nohup kamal-proxy run >/tmp/kamal-proxy.log 2>&1 </dev/null &)",
-		"for i in 1 2 3 4 5; do ([ -S /tmp/kamal-proxy.sock ] || [ -e /tmp/kamal-proxy.sock ]) && exit 0; sleep 1; done; exit 1",
+		"docker ps --filter " + shellQuote("name=^"+proxyContainerName) + " --format '{{.Names}}' | grep -qx " + shellQuote(proxyContainerName) + " || (docker rm -f " + shellQuote(proxyContainerName) + " >/dev/null 2>&1 || true; docker run -d --restart unless-stopped --name " + shellQuote(proxyContainerName) + " -p 80:80 -p 443:443 " + shellQuote(proxyImage) + ")",
+		"for i in 1 2 3 4 5; do docker ps --filter " + shellQuote("name=^"+proxyContainerName) + " --format '{{.Names}}' | grep -qx " + shellQuote(proxyContainerName) + " && exit 0; sleep 1; done; exit 1",
 	}, " && ")
 	_, err := k.client.Run(ctx, host, command)
 	return err
 }
 
 func (k *KamalProxy) Deploy(ctx context.Context, host string, target Target) error {
-	command := k.deployCommand(target)
+	command := "docker exec " + shellQuote(proxyContainerName) + " " + k.deployCommand(target)
 	_, err := k.client.Run(ctx, host, command)
 	return err
 }
 
 func (k *KamalProxy) Remove(ctx context.Context, host, service string) error {
-	_, err := k.client.Run(ctx, host, "kamal-proxy remove "+shellQuote(service))
+	_, err := k.client.Run(ctx, host, "docker exec "+shellQuote(proxyContainerName)+" kamal-proxy remove "+shellQuote(service))
 	return err
 }
 
