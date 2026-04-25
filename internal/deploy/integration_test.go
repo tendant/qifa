@@ -283,6 +283,51 @@ func TestDeployerNonProxyHealthCheckUsesPublishedPort(t *testing.T) {
 	}
 }
 
+func TestDeployerNonProxyRedeployReplacesActiveContainer(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	env := newIntegrationEnv(t)
+	cfg := env.config(t, "per_target", "local", "testapp", config.Registry{}, "")
+	server := cfg.Servers["web"]
+	proxyEnabled := false
+	server.Proxy = &proxyEnabled
+	server.Port = 19080
+	server.AppPort = 80
+	cfg.Servers["web"] = server
+
+	store, err := state.NewStore(filepath.Join(env.root, ".qifa", "state.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	deployer, err := New(cfg, store, &stdout, &stderr)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := deployer.Deploy(ctx); err != nil {
+		t.Fatalf("first deploy failed: %v\nstdout:\n%s\nstderr:\n%s", err, stdout.String(), stderr.String())
+	}
+	if err := deployer.Deploy(ctx); err != nil {
+		t.Fatalf(
+			"second deploy failed: %v\nstdout:\n%s\nstderr:\n%s\ndocker calls:\n%s\nsshd log:\n%s",
+			err,
+			stdout.String(),
+			stderr.String(),
+			readIfExists(filepath.Join(env.stateDir, "docker_calls.log")),
+			readIfExists(filepath.Join(env.root, "sshd.log")),
+		)
+	}
+
+	dockerCalls := readIfExists(filepath.Join(env.stateDir, "docker_calls.log"))
+	if !strings.Contains(dockerCalls, "rm -f testapp-web-") {
+		t.Fatalf("expected previous non-proxy container cleanup before redeploy, got %q", dockerCalls)
+	}
+}
+
 type integrationEnv struct {
 	root       string
 	home       string

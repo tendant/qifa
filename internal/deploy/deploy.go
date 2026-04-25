@@ -149,6 +149,12 @@ func (d *Deployer) deployHost(ctx context.Context, deployment state.Deployment, 
 	if !useProxy {
 		publishedPort = server.Port
 		containerPort = appPort
+		if previousActive != nil {
+			if err := d.remoteDocker.StopAndRemove(ctx, host, previousActive.Container); err != nil {
+				return err
+			}
+			previousActive = nil
+		}
 	}
 	if err := d.remoteDocker.RunContainer(ctx, host, containerName, imageRef, remoteEnv, server.Cmd, publishedPort, containerPort); err != nil {
 		_ = d.remoteDocker.StopAndRemove(ctx, host, containerName)
