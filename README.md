@@ -77,6 +77,12 @@ servers:
     hosts: [10.0.0.11, 10.0.0.12]
     app_port: 3000
 
+# Operator runs `qifa proxy boot` once to launch kamal-proxy on these hosts.
+# App deploys verify it's running but never modify boot config.
+proxy_boot:
+  hosts: [10.0.0.11, 10.0.0.12]
+
+# Per-app routing — set on every deploy.
 proxy:
   host: app.example.com
   app_port: 3000
@@ -97,6 +103,10 @@ env:
     APP_ENV: production
   secret_command: sops --decrypt secrets.enc.env
 ```
+
+First-time setup on each new host: `qifa proxy boot` (idempotent).
+To upgrade the proxy: `qifa proxy upgrade` (state volume preserved, routes
+survive).
 
 ### 3. Deploy an externally produced image
 
@@ -133,6 +143,8 @@ qifa remove                      # full teardown + deregister proxy
 qifa prune                       # keep last N stopped (config: prune.retain_containers)
 qifa sweep                       # remove orphan running containers (also runs at deploy start)
 qifa lock <status|release>       # show or forcibly clear deploy lock
+qifa proxy <boot|start|stop|restart|upgrade|remove [--purge]|logs|details>
+                                 # manage the shared kamal-proxy container
 qifa status                      # deployment history + active containers
 
 qifa logs [--follow] [--lines N] # docker logs from the active container

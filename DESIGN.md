@@ -58,6 +58,15 @@ qifa prune              # keep last N stopped containers; prune dangling images
 qifa sweep              # stop+remove orphan running labeled containers (also runs at the start of every deploy)
 qifa lock status        # show the deploy-lock holder per host
 qifa lock release       # forcibly clear a stale deploy lock (recovery)
+
+qifa proxy boot         # launch kamal-proxy on every proxy_boot.hosts
+qifa proxy start        # docker start kamal-proxy
+qifa proxy stop         # docker stop kamal-proxy
+qifa proxy restart
+qifa proxy upgrade      # re-create container with current proxy_boot config (e.g. new version)
+qifa proxy remove [--purge]   # rm container; --purge also drops the state volume
+qifa proxy logs [--follow] [--lines N]
+qifa proxy details      # docker exec kamal-proxy kamal-proxy list  (registered routes)
 qifa status             # deployment history (audit) + active containers (live)
 qifa logs               # docker logs from the active container
 qifa app exec <command> # docker exec in the active container
@@ -184,20 +193,36 @@ emulation. Docker Desktop ships with this; Linux servers may need
 
 ## Proxy Model
 
-The proxy is one shared container per host, not per app.
+The proxy is one shared container per host, not per app — multiple apps on
+the same host all register routes with the same `kamal-proxy` container.
 
-- proxy boot creates a persistent Docker volume for runtime route state and a
-  shared Docker network (default `kamal`)
-- app containers attach to the same network so the proxy can reach them by IP
-- app deploys register/update their route in the shared proxy via
-  `docker exec kamal-proxy kamal-proxy deploy ...`
-- if the proxy container is restarted, routes survive as long as the volume is
-  preserved
-- if the proxy volume is deleted, routes must be replayed by redeploying
+Two distinct config sections, two distinct ownership boundaries:
 
-The root `proxy` block configures both the proxy container itself (image,
-network, ports, state volume) and per-app routing (host, healthcheck, TLS,
-path prefixes).
+- **`proxy_boot`** describes how to launch the kamal-proxy container itself
+  (image, version, network, state volume, http/https ports, hosts to run on).
+  Owned by the operator. Set once. Applied via `qifa proxy boot` (or
+  `qifa proxy upgrade` to re-create with new settings). App deploys never
+  touch this.
+- **`proxy`** describes how THIS app's routes register with the running proxy
+  (host, app_port, healthcheck path, TLS, drain timeout, path prefixes).
+  Owned by each app. Applied on every `qifa deploy`.
+
+How it works:
+- `qifa proxy boot` creates the Docker network (default `kamal`) and a
+  persistent state volume (default `kamal-proxy-config`), then runs the
+  kamal-proxy container on every `proxy_boot.hosts`.
+- App containers attach to the same network so the proxy can reach them by IP.
+- App deploys call `docker exec kamal-proxy kamal-proxy deploy <service> ...`
+  with the per-app routing flags from `proxy:`.
+- App deploys verify the proxy is running on the target host before booting
+  the app container; if not, they error with "run `qifa proxy boot` first".
+- Routes survive a `qifa proxy restart` (state volume persists). They survive
+  `qifa proxy upgrade` for the same reason. They do NOT survive
+  `qifa proxy remove --purge`.
+
+Multi-app sharing is the common case: app A and app B both list the same
+hosts under their own `proxy_boot.hosts`, both ship to the same kamal-proxy
+container, both register their own host routes.
 
 ## Discovery & State Model
 

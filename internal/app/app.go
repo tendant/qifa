@@ -138,6 +138,58 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		return withRuntime(ctx, stdout, stderr, func(rt *runtime) error {
 			return rt.deployer.SweepStaleContainers(ctx)
 		})
+	case "proxy":
+		if len(args) < 2 {
+			return errors.New("usage: qifa proxy <boot|start|stop|restart|upgrade|remove|logs|details>")
+		}
+		verb := args[1]
+		rest := args[2:]
+		return withRuntime(ctx, stdout, stderr, func(rt *runtime) error {
+			switch verb {
+			case "boot":
+				return rt.deployer.ProxyBoot(ctx)
+			case "start":
+				return rt.deployer.ProxyStart(ctx)
+			case "stop":
+				return rt.deployer.ProxyStop(ctx)
+			case "restart":
+				return rt.deployer.ProxyRestart(ctx)
+			case "upgrade":
+				return rt.deployer.ProxyUpgrade(ctx)
+			case "remove":
+				purge := false
+				for _, a := range rest {
+					if a == "--purge" {
+						purge = true
+					}
+				}
+				return rt.deployer.ProxyRemove(ctx, purge)
+			case "details":
+				return rt.deployer.ProxyDetails(ctx)
+			case "logs":
+				lines := 200
+				follow := false
+				for i := 0; i < len(rest); i++ {
+					switch rest[i] {
+					case "--follow", "-f":
+						follow = true
+					case "--lines", "-n":
+						if i+1 >= len(rest) {
+							return errors.New("--lines requires a value")
+						}
+						n, err := strconv.Atoi(rest[i+1])
+						if err != nil {
+							return fmt.Errorf("--lines: %w", err)
+						}
+						lines = n
+						i++
+					}
+				}
+				return rt.deployer.ProxyLogs(ctx, lines, follow)
+			default:
+				return errors.New("usage: qifa proxy <boot|start|stop|restart|upgrade|remove|logs|details>")
+			}
+		})
 	case "lock":
 		if len(args) < 2 {
 			return errors.New("usage: qifa lock <status|release>")
@@ -307,6 +359,7 @@ func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "  prune")
 	fmt.Fprintln(w, "  sweep")
 	fmt.Fprintln(w, "  lock <status|release>")
+	fmt.Fprintln(w, "  proxy <boot|start|stop|restart|upgrade|remove [--purge]|logs [--follow] [--lines N]|details>")
 	fmt.Fprintln(w, "  status")
 	fmt.Fprintln(w, "  logs [--follow] [--lines N]")
 	fmt.Fprintln(w, "  app exec <command>")

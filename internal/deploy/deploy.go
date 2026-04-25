@@ -33,7 +33,8 @@ type Deployer struct {
 	localDocker  *docker.Local
 	remoteDocker *docker.Remote
 	ssh          *ssh.Client
-	proxy        proxy.Proxy
+	proxy        *proxy.KamalProxy
+	stdout       io.Writer
 }
 
 func New(cfg *config.Config, store *state.Store, stdout, stderr io.Writer) (*Deployer, error) {
@@ -46,7 +47,8 @@ func New(cfg *config.Config, store *state.Store, stdout, stderr io.Writer) (*Dep
 		localDocker:  docker.NewLocal(),
 		remoteDocker: docker.NewRemote(sshClient, stdout),
 		ssh:          sshClient,
-		proxy:        proxy.New(sshClient, cfg.Proxy),
+		proxy:        proxy.New(sshClient, cfg.Proxy, cfg.ProxyBoot),
+		stdout:       stdout,
 	}, nil
 }
 
@@ -235,7 +237,7 @@ func (d *Deployer) deployHost(ctx context.Context, deployment state.Deployment, 
 		return err
 	}
 	if useProxy {
-		if err := d.proxy.EnsureInstalled(ctx, host); err != nil {
+		if err := d.proxy.EnsureRunning(ctx, host); err != nil {
 			return err
 		}
 	}
@@ -286,7 +288,7 @@ func (d *Deployer) deployHost(ctx context.Context, deployment state.Deployment, 
 	}
 	containerNetwork := ""
 	if useProxy {
-		containerNetwork = d.cfg.Proxy.Network
+		containerNetwork = d.cfg.ProxyBoot.Network
 	}
 	labels := map[string]string{
 		docker.LabelService: d.cfg.Service,
@@ -504,7 +506,7 @@ func (d *Deployer) Start(ctx context.Context) error {
 				d.log.Printf("started %s on %s", top.Name, host)
 			}
 			if useProxy {
-				if err := d.proxy.EnsureInstalled(ctx, host); err != nil {
+				if err := d.proxy.EnsureRunning(ctx, host); err != nil {
 					return err
 				}
 				containerIP, err := d.remoteDocker.ContainerIP(ctx, host, top.Name)
@@ -693,12 +695,35 @@ func (d *Deployer) Status(ctx context.Context, out io.Writer) error {
 	return nil
 }
 
+// ProxyBoot starts the kamal-proxy container on every host listed in
+// proxy_boot.hosts. Idempotent: hosts that already have it skip.
+func (d *Deployer) ProxyBoot(ctx context.Context) error {
+	if len(d.cfg.ProxyBoot.Hosts) == 0 {
+		return errors.New("config.proxy_boot.hosts is required")
+	}
+	return d.proxy.Boot(ctx)
+}
+
+func (d *Deployer) ProxyStart(ctx context.Context) error    { return d.proxy.Start(ctx) }
+func (d *Deployer) ProxyStop(ctx context.Context) error     { return d.proxy.StopProxy(ctx) }
+func (d *Deployer) ProxyRestart(ctx context.Context) error  { return d.proxy.Restart(ctx) }
+func (d *Deployer) ProxyUpgrade(ctx context.Context) error  { return d.proxy.Upgrade(ctx) }
+func (d *Deployer) ProxyRemove(ctx context.Context, purge bool) error {
+	return d.proxy.RemoveProxy(ctx, purge)
+}
+func (d *Deployer) ProxyLogs(ctx context.Context, lines int, follow bool) error {
+	return d.proxy.Logs(ctx, lines, follow, d.stdout)
+}
+func (d *Deployer) ProxyDetails(ctx context.Context) error {
+	return d.proxy.Details(ctx, d.stdout)
+}
+
 // Maintenance puts the service into maintenance mode on every host where the
 // proxy is running. kamal-proxy returns `message` for incoming requests and
 // drains in-flight requests over drainTimeout. Use Live to come back.
 func (d *Deployer) Maintenance(ctx context.Context, message string, drainTimeout time.Duration) error {
 	for _, host := range d.proxyHosts() {
-		if err := d.proxy.EnsureInstalled(ctx, host); err != nil {
+		if err := d.proxy.EnsureRunning(ctx, host); err != nil {
 			return err
 		}
 		if err := d.proxy.Stop(ctx, host, d.cfg.Service, message, drainTimeout); err != nil {

@@ -3,6 +3,7 @@ package proxy
 import (
 	"context"
 	"fmt"
+	"io"
 	"strconv"
 	"strings"
 	"time"
@@ -11,8 +12,10 @@ import (
 	"github.com/gokamal/gocart/internal/ssh"
 )
 
+// Proxy is the runtime interface used by the deployer when registering and
+// deregistering app routes. The proxy container itself is managed
+// independently via the lifecycle methods on KamalProxy (Boot, Upgrade, etc.).
 type Proxy interface {
-	EnsureInstalled(context.Context, string) error
 	Deploy(context.Context, string, Target) error
 	Remove(context.Context, string, string) error
 	Stop(ctx context.Context, host, service, message string, drainTimeout time.Duration) error
@@ -27,48 +30,161 @@ type Target struct {
 
 type KamalProxy struct {
 	client *ssh.Client
-	cfg    config.Proxy
+	app    config.Proxy
+	boot   config.ProxyBoot
 }
 
-const (
-	proxyContainerName = "kamal-proxy"
-)
+const proxyContainerName = "kamal-proxy"
 
-func New(client *ssh.Client, cfg config.Proxy) *KamalProxy {
-	return &KamalProxy{client: client, cfg: cfg}
+func New(client *ssh.Client, app config.Proxy, boot config.ProxyBoot) *KamalProxy {
+	return &KamalProxy{client: client, app: app, boot: boot}
 }
 
-func (k *KamalProxy) EnsureInstalled(ctx context.Context, host string) error {
-	command := k.bootCommand()
-	_, err := k.client.Run(ctx, host, command)
-	return err
+// Boot starts the kamal-proxy container on every host listed in
+// boot.hosts. Idempotent: hosts where the container is already running are
+// skipped. Creates the docker network and state volume on first boot.
+func (k *KamalProxy) Boot(ctx context.Context) error {
+	for _, host := range k.boot.Hosts {
+		if _, err := k.client.Run(ctx, host, k.bootCommand()); err != nil {
+			return fmt.Errorf("boot proxy on %s: %w", host, err)
+		}
+	}
+	return nil
+}
+
+// EnsureRunning checks whether the proxy container is up on host. Returns a
+// clear error if not, pointing the user at `qifa proxy boot`.
+func (k *KamalProxy) EnsureRunning(ctx context.Context, host string) error {
+	out, err := k.client.Run(ctx, host, "docker ps --filter "+shellQuote("name=^"+proxyContainerName)+" --format '{{.Names}}'")
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(out) == proxyContainerName {
+		return nil
+	}
+	return fmt.Errorf("kamal-proxy is not running on %s — run `qifa proxy boot` first", host)
+}
+
+func (k *KamalProxy) Start(ctx context.Context) error {
+	for _, host := range k.boot.Hosts {
+		if _, err := k.client.Run(ctx, host, "docker start "+proxyContainerName); err != nil {
+			return fmt.Errorf("start proxy on %s: %w", host, err)
+		}
+	}
+	return nil
+}
+
+func (k *KamalProxy) StopProxy(ctx context.Context) error {
+	for _, host := range k.boot.Hosts {
+		if _, err := k.client.Run(ctx, host, "docker stop "+proxyContainerName+" >/dev/null 2>&1 || true"); err != nil {
+			return fmt.Errorf("stop proxy on %s: %w", host, err)
+		}
+	}
+	return nil
+}
+
+func (k *KamalProxy) Restart(ctx context.Context) error {
+	if err := k.StopProxy(ctx); err != nil {
+		return err
+	}
+	return k.Start(ctx)
+}
+
+// Upgrade re-creates the proxy container with the current boot config (e.g.
+// to pick up a new image version). The state volume survives so registered
+// routes persist.
+func (k *KamalProxy) Upgrade(ctx context.Context) error {
+	for _, host := range k.boot.Hosts {
+		// Force recreate: rm then run.
+		if _, err := k.client.Run(ctx, host, "docker rm -f "+proxyContainerName+" >/dev/null 2>&1 || true"); err != nil {
+			return fmt.Errorf("upgrade (rm) on %s: %w", host, err)
+		}
+		if _, err := k.client.Run(ctx, host, k.bootCommand()); err != nil {
+			return fmt.Errorf("upgrade (boot) on %s: %w", host, err)
+		}
+	}
+	return nil
+}
+
+// RemoveProxy stops and removes the proxy container on every host. Does NOT
+// remove the state volume (so route state survives) unless purge is true.
+func (k *KamalProxy) RemoveProxy(ctx context.Context, purge bool) error {
+	for _, host := range k.boot.Hosts {
+		if _, err := k.client.Run(ctx, host, "docker rm -f "+proxyContainerName+" >/dev/null 2>&1 || true"); err != nil {
+			return fmt.Errorf("remove proxy on %s: %w", host, err)
+		}
+		if purge {
+			vol := k.boot.StateVolume
+			if vol == "" {
+				vol = "kamal-proxy-config"
+			}
+			if _, err := k.client.Run(ctx, host, "docker volume rm "+shellQuote(vol)+" >/dev/null 2>&1 || true"); err != nil {
+				return fmt.Errorf("purge volume on %s: %w", host, err)
+			}
+		}
+	}
+	return nil
+}
+
+// Logs streams `docker logs --tail N [--follow] kamal-proxy` from each host
+// to out, prefixed with the host name when there's more than one.
+func (k *KamalProxy) Logs(ctx context.Context, lines int, follow bool, out io.Writer) error {
+	cmd := fmt.Sprintf("docker logs --tail %d", lines)
+	if follow {
+		cmd += " --follow"
+	}
+	cmd += " " + proxyContainerName
+	for _, host := range k.boot.Hosts {
+		w := out
+		if len(k.boot.Hosts) > 1 {
+			fmt.Fprintf(out, "\n=== %s ===\n", host)
+		}
+		if err := k.client.Stream(ctx, host, cmd, w); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// Details prints `docker exec kamal-proxy kamal-proxy list` on each host so
+// operators can see what's currently registered.
+func (k *KamalProxy) Details(ctx context.Context, out io.Writer) error {
+	for _, host := range k.boot.Hosts {
+		if len(k.boot.Hosts) > 1 {
+			fmt.Fprintf(out, "\n=== %s ===\n", host)
+		}
+		if err := k.client.Stream(ctx, host, "docker exec "+proxyContainerName+" kamal-proxy list", out); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (k *KamalProxy) bootCommand() string {
-	httpPort := k.cfg.HTTPPort
+	httpPort := k.boot.HTTPPort
 	if httpPort == 0 {
 		httpPort = 80
 	}
-	httpsPort := k.cfg.HTTPSPort
+	httpsPort := k.boot.HTTPSPort
 	if httpsPort == 0 {
 		httpsPort = 443
 	}
-	imageRef := k.cfg.Image
+	imageRef := k.boot.Image
 	if imageRef == "" {
 		imageRef = "basecamp/kamal-proxy"
 	}
-	if k.cfg.Version != "" {
-		imageRef = imageRef + ":" + k.cfg.Version
+	if k.boot.Version != "" {
+		imageRef = imageRef + ":" + k.boot.Version
 	}
-	network := k.cfg.Network
+	network := k.boot.Network
 	if network == "" {
 		network = "kamal"
 	}
-	stateVolume := k.cfg.StateVolume
+	stateVolume := k.boot.StateVolume
 	if stateVolume == "" {
 		stateVolume = "kamal-proxy-config"
 	}
-	appsConfigDir := k.cfg.AppsConfigDir
+	appsConfigDir := k.boot.AppsConfigDir
 	if appsConfigDir == "" {
 		appsConfigDir = ".kamal/proxy/apps-config"
 	}
@@ -124,45 +240,45 @@ func (k *KamalProxy) deployCommand(target Target) string {
 	for _, host := range k.hosts() {
 		args = append(args, "--host", shellQuote(host))
 	}
-	healthPath := k.cfg.Healthcheck.Path
+	healthPath := k.app.Healthcheck.Path
 	if healthPath == "" {
 		healthPath = "/up"
 	}
 	args = append(args,
 		"--target", shellQuote(fmt.Sprintf("%s:%d", target.Host, target.Port)),
 		"--health-check-path", shellQuote(healthPath),
-		"--health-check-interval", shellQuote(k.cfg.Healthcheck.Interval.String()),
-		"--health-check-timeout", shellQuote(k.cfg.Healthcheck.Timeout.String()),
-		"--deploy-timeout", shellQuote(k.cfg.DeployTimeout.String()),
-		"--drain-timeout", shellQuote(k.cfg.DrainTimeout.String()),
-		"--target-timeout", shellQuote(k.cfg.TargetTimeout.String()),
+		"--health-check-interval", shellQuote(k.app.Healthcheck.Interval.String()),
+		"--health-check-timeout", shellQuote(k.app.Healthcheck.Timeout.String()),
+		"--deploy-timeout", shellQuote(k.app.DeployTimeout.String()),
+		"--drain-timeout", shellQuote(k.app.DrainTimeout.String()),
+		"--target-timeout", shellQuote(k.app.TargetTimeout.String()),
 	)
-	if k.cfg.TLS {
+	if k.app.TLS {
 		args = append(args, "--tls")
 	}
-	if k.cfg.TLSRedirect != nil {
-		args = append(args, "--tls-redirect="+strconv.FormatBool(*k.cfg.TLSRedirect))
+	if k.app.TLSRedirect != nil {
+		args = append(args, "--tls-redirect="+strconv.FormatBool(*k.app.TLSRedirect))
 	}
-	if k.cfg.TLSStaging {
+	if k.app.TLSStaging {
 		args = append(args, "--tls-staging")
 	}
-	if k.cfg.ForwardHeaders != nil {
-		args = append(args, "--forward-headers="+strconv.FormatBool(*k.cfg.ForwardHeaders))
+	if k.app.ForwardHeaders != nil {
+		args = append(args, "--forward-headers="+strconv.FormatBool(*k.app.ForwardHeaders))
 	}
-	for _, prefix := range k.cfg.PathPrefixes {
+	for _, prefix := range k.app.PathPrefixes {
 		args = append(args, "--path-prefix", shellQuote(prefix))
 	}
-	if k.cfg.StripPathPrefix != nil {
-		args = append(args, "--strip-path-prefix="+strconv.FormatBool(*k.cfg.StripPathPrefix))
+	if k.app.StripPathPrefix != nil {
+		args = append(args, "--strip-path-prefix="+strconv.FormatBool(*k.app.StripPathPrefix))
 	}
 	return strings.Join(args, " ")
 }
 
 func (k *KamalProxy) hosts() []string {
-	hosts := make([]string, 0, len(k.cfg.Hosts)+1)
-	if k.cfg.Host != "" {
-		hosts = append(hosts, k.cfg.Host)
+	hosts := make([]string, 0, len(k.app.Hosts)+1)
+	if k.app.Host != "" {
+		hosts = append(hosts, k.app.Host)
 	}
-	hosts = append(hosts, k.cfg.Hosts...)
+	hosts = append(hosts, k.app.Hosts...)
 	return hosts
 }

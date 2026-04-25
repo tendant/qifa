@@ -14,7 +14,7 @@ func TestDeployCommandIncludesConfiguredFlags(t *testing.T) {
 	stripPathPrefix := false
 
 	p := &KamalProxy{
-		cfg: config.Proxy{
+		app: config.Proxy{
 			Host:            "app.example.com",
 			Hosts:           []string{"www.example.com"},
 			DeployTimeout:   45 * time.Second,
@@ -67,7 +67,7 @@ func TestDeployCommandIncludesConfiguredFlags(t *testing.T) {
 
 func TestBootCommandUsesConfiguredPorts(t *testing.T) {
 	p := &KamalProxy{
-		cfg: config.Proxy{
+		boot: config.ProxyBoot{
 			HTTPPort:      8080,
 			HTTPSPort:     8443,
 			Image:         "basecamp/kamal-proxy",

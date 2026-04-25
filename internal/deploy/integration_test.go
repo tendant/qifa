@@ -112,6 +112,10 @@ func TestDeployerEndToEndWithLocalSSH(t *testing.T) {
 				t.Fatal(err)
 			}
 
+			if err := deployer.ProxyBoot(ctx); err != nil {
+				t.Fatalf("proxy boot failed: %v", err)
+			}
+
 			if err := deployer.Deploy(ctx); err != nil {
 				t.Fatalf(
 					"deploy failed: %v\nstdout:\n%s\nstderr:\n%s\ndocker calls:\n%s\nproxy calls:\n%s\nsshd log:\n%s",
@@ -427,6 +431,9 @@ func TestDeployerMultiPlatformUsesBuildxPush(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := deployer.ProxyBoot(ctx); err != nil {
+		t.Fatalf("proxy boot: %v", err)
+	}
 	if err := deployer.Deploy(ctx); err != nil {
 		t.Fatalf("deploy: %v", err)
 	}
@@ -631,6 +638,10 @@ func (e *integrationEnv) config(t *testing.T, host, source, image string, regist
 				Interval: 10 * time.Millisecond,
 				Timeout:  time.Second,
 			},
+		},
+		ProxyBoot: config.ProxyBoot{
+			Hosts:   []string{fmt.Sprintf("127.0.0.1:%d", e.port)},
+			Network: "kamal",
 		},
 		Registry: registryCfg,
 		Env: config.Env{

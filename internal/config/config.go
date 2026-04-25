@@ -24,6 +24,7 @@ type Config struct {
 	Accessories map[string]Accessory `yaml:"accessories"`
 	Prune       Prune                `yaml:"prune"`
 	Rollout     Rollout              `yaml:"rollout"`
+	ProxyBoot   ProxyBoot            `yaml:"proxy_boot"`
 }
 
 type Prune struct {
@@ -49,17 +50,13 @@ type Server struct {
 	Volumes []string `yaml:"volumes"`
 }
 
+// Proxy is the per-app routing config registered with kamal-proxy at deploy
+// time. It does NOT control how the proxy container itself runs — that's
+// owned by ProxyBoot and the `qifa proxy` verbs.
 type Proxy struct {
 	Host            string        `yaml:"host"`
 	Hosts           []string      `yaml:"hosts"`
 	AppPort         int           `yaml:"app_port"`
-	HTTPPort        int           `yaml:"http_port"`
-	HTTPSPort       int           `yaml:"https_port"`
-	Image           string        `yaml:"image"`
-	Version         string        `yaml:"version"`
-	Network         string        `yaml:"network"`
-	StateVolume     string        `yaml:"state_volume"`
-	AppsConfigDir   string        `yaml:"apps_config_dir"`
 	Healthcheck     Healthcheck   `yaml:"healthcheck"`
 	DeployTimeout   time.Duration `yaml:"deploy_timeout"`
 	DrainTimeout    time.Duration `yaml:"drain_timeout"`
@@ -70,6 +67,21 @@ type Proxy struct {
 	ForwardHeaders  *bool         `yaml:"forward_headers"`
 	PathPrefixes    []string      `yaml:"path_prefixes"`
 	StripPathPrefix *bool         `yaml:"strip_path_prefix"`
+}
+
+// ProxyBoot describes how to boot the shared kamal-proxy container itself.
+// One proxy per host, shared across every app on that host. Owned by the
+// operator via `qifa proxy boot` / `qifa proxy upgrade`; app deploys never
+// touch it.
+type ProxyBoot struct {
+	Hosts         []string `yaml:"hosts"` // hosts to boot the proxy on
+	Image         string   `yaml:"image"`
+	Version       string   `yaml:"version"`
+	Network       string   `yaml:"network"`
+	StateVolume   string   `yaml:"state_volume"`
+	AppsConfigDir string   `yaml:"apps_config_dir"`
+	HTTPPort      int      `yaml:"http_port"`
+	HTTPSPort     int      `yaml:"https_port"`
 }
 
 type Healthcheck struct {
@@ -177,11 +189,11 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("config.servers.%s.hosts is required", role)
 		}
 	}
-	if c.Proxy.HTTPPort < 0 {
-		return errors.New("config.proxy.http_port must not be negative")
+	if c.ProxyBoot.HTTPPort < 0 {
+		return errors.New("config.proxy_boot.http_port must not be negative")
 	}
-	if c.Proxy.HTTPSPort < 0 {
-		return errors.New("config.proxy.https_port must not be negative")
+	if c.ProxyBoot.HTTPSPort < 0 {
+		return errors.New("config.proxy_boot.https_port must not be negative")
 	}
 	if c.Registry.Server != "" && (c.Registry.Username == "" || c.Registry.PasswordEnv == "") {
 		return errors.New("config.registry.username and config.registry.password_env are required when config.registry.server is set")
@@ -208,26 +220,26 @@ func applyDefaults(cfg *Config) {
 	if cfg.Proxy.Healthcheck.Timeout == 0 {
 		cfg.Proxy.Healthcheck.Timeout = 5 * time.Second
 	}
-	if cfg.Proxy.HTTPPort == 0 {
-		cfg.Proxy.HTTPPort = 80
+	if cfg.ProxyBoot.HTTPPort == 0 {
+		cfg.ProxyBoot.HTTPPort = 80
 	}
-	if cfg.Proxy.HTTPSPort == 0 {
-		cfg.Proxy.HTTPSPort = 443
+	if cfg.ProxyBoot.HTTPSPort == 0 {
+		cfg.ProxyBoot.HTTPSPort = 443
 	}
-	if cfg.Proxy.Image == "" {
-		cfg.Proxy.Image = "basecamp/kamal-proxy"
+	if cfg.ProxyBoot.Image == "" {
+		cfg.ProxyBoot.Image = "basecamp/kamal-proxy"
 	}
-	if cfg.Proxy.Version == "" {
-		cfg.Proxy.Version = "v0.9.2"
+	if cfg.ProxyBoot.Version == "" {
+		cfg.ProxyBoot.Version = "v0.9.2"
 	}
-	if cfg.Proxy.Network == "" {
-		cfg.Proxy.Network = "kamal"
+	if cfg.ProxyBoot.Network == "" {
+		cfg.ProxyBoot.Network = "kamal"
 	}
-	if cfg.Proxy.StateVolume == "" {
-		cfg.Proxy.StateVolume = "kamal-proxy-config"
+	if cfg.ProxyBoot.StateVolume == "" {
+		cfg.ProxyBoot.StateVolume = "kamal-proxy-config"
 	}
-	if cfg.Proxy.AppsConfigDir == "" {
-		cfg.Proxy.AppsConfigDir = ".kamal/proxy/apps-config"
+	if cfg.ProxyBoot.AppsConfigDir == "" {
+		cfg.ProxyBoot.AppsConfigDir = ".kamal/proxy/apps-config"
 	}
 	if cfg.Prune.RetainContainers == 0 {
 		cfg.Prune.RetainContainers = 5
@@ -277,6 +289,18 @@ servers:
       - 10.0.0.13
     cmd: ./worker
 
+# proxy_boot describes how to launch the shared kamal-proxy container itself.
+# Owned by the operator via "qifa proxy boot"; app deploys do not touch it.
+# A single proxy is shared by every app on each listed host.
+proxy_boot:
+  hosts:
+    - 10.0.0.11
+    - 10.0.0.12
+  # http_port: 80
+  # https_port: 443
+
+# proxy describes how THIS app's routes are registered with the running proxy.
+# Set on every "qifa deploy".
 proxy:
   host: app.example.com
   app_port: 3000
