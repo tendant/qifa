@@ -741,6 +741,92 @@ func (d *Deployer) proxyHosts() []string {
 	return hosts
 }
 
+// Plan prints what Deploy would do without performing any mutating operations.
+// Read-only Docker queries (e.g. find currently running container) are
+// allowed so the plan reflects actual current state.
+func (d *Deployer) Plan(ctx context.Context, out io.Writer) error {
+	fmt.Fprintf(out, "Plan for service=%s\n", d.cfg.Service)
+
+	var version string
+	if d.cfg.Builder != nil {
+		version = resolveVersion()
+		fmt.Fprintf(out, "  Image:    %s:%s (built)\n", d.cfg.Image, version)
+	} else {
+		tag, err := config.ParseImageVersion(d.cfg.Image)
+		if err != nil {
+			return err
+		}
+		version = tag
+		fmt.Fprintf(out, "  Image:    %s (external; digest resolved at deploy time)\n", d.cfg.Image)
+	}
+
+	switch {
+	case d.cfg.Builder == nil:
+		fmt.Fprintln(out, "  Builder:  none (pull only)")
+	case d.cfg.Builder.IsPerTarget():
+		fmt.Fprintln(out, "  Builder:  per_target (build on each host)")
+	case d.cfg.Builder.IsLocal():
+		if docker.IsMultiPlatform(d.cfg.Builder.Platform) {
+			fmt.Fprintf(out, "  Builder:  local buildx --push (%s)\n", d.cfg.Builder.Platform)
+		} else {
+			fmt.Fprintln(out, "  Builder:  local (build + push)")
+		}
+	default:
+		fmt.Fprintf(out, "  Builder:  remote on %s (build + push)\n", d.cfg.Builder.Host)
+	}
+
+	hosts := d.uniqueHosts()
+	fmt.Fprintf(out, "  Lock:     would acquire on %v\n", hosts)
+	fmt.Fprintf(out, "  Sweep:    would remove orphan running labeled containers\n")
+
+	batchSize := 1
+	if d.cfg.Rollout.BatchSize != nil {
+		batchSize = *d.cfg.Rollout.BatchSize
+	}
+	for _, role := range orderedRoles(d.cfg.Servers) {
+		server := d.cfg.Servers[role]
+		useProxy := serverUsesProxy(role, server)
+		bs := batchSize
+		if bs <= 0 || bs > len(server.Hosts) {
+			bs = len(server.Hosts)
+		}
+		fmt.Fprintf(out, "\n  Role %s  (proxy=%t, batch_size=%d, hosts=%d):\n", role, useProxy, bs, len(server.Hosts))
+		for i := 0; i < len(server.Hosts); i += bs {
+			end := i + bs
+			if end > len(server.Hosts) {
+				end = len(server.Hosts)
+			}
+			fmt.Fprintf(out, "    Batch %d %v:\n", i/bs+1, server.Hosts[i:end])
+			for _, host := range server.Hosts[i:end] {
+				current, err := d.findRunningContainer(ctx, host, role)
+				if err != nil {
+					fmt.Fprintf(out, "      %s: ERROR %v\n", host, err)
+					continue
+				}
+				steps := []string{}
+				if d.cfg.Builder.IsPerTarget() {
+					steps = append(steps, "build")
+				} else if d.cfg.Builder == nil || d.cfg.Registry.Enabled() {
+					steps = append(steps, "pull")
+				}
+				steps = append(steps, "run "+d.containerName(role, version))
+				if current != "" {
+					steps = append(steps, "stop previous "+current)
+				}
+				fmt.Fprintf(out, "      %s: %s\n", host, strings.Join(steps, " → "))
+			}
+		}
+	}
+
+	retain := d.cfg.Prune.RetainContainers
+	if retain <= 0 {
+		retain = 5
+	}
+	fmt.Fprintf(out, "\n  Prune:    keep last %d stopped per role; remove dangling images\n", retain)
+	fmt.Fprintf(out, "  Lock:     would release on %v\n", hosts)
+	return nil
+}
+
 // LockStatus prints the lock holder per host (or "(free)" if not locked).
 func (d *Deployer) LockStatus(ctx context.Context, out io.Writer) error {
 	locker := lock.New(d.ssh, d.cfg.Service, d.uniqueHosts())

@@ -93,7 +93,16 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		}
 		return config.WriteSample(path)
 	case "deploy":
+		dryRun := false
+		for _, a := range args[1:] {
+			if a == "--dry-run" || a == "-n" {
+				dryRun = true
+			}
+		}
 		return withRuntime(ctx, stdout, stderr, func(rt *runtime) error {
+			if dryRun {
+				return rt.deployer.Plan(ctx, stdout)
+			}
 			return rt.deployer.Deploy(ctx)
 		})
 	case "rollback":
@@ -267,7 +276,7 @@ func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "  init [path]")
 	fmt.Fprintln(w, "  version")
 	fmt.Fprintln(w, "  config")
-	fmt.Fprintln(w, "  deploy")
+	fmt.Fprintln(w, "  deploy [--dry-run]")
 	fmt.Fprintln(w, "  rollback [version]")
 	fmt.Fprintln(w, "  stop")
 	fmt.Fprintln(w, "  start")

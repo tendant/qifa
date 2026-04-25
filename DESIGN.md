@@ -47,7 +47,8 @@ qifa/
 qifa init [path]        # write a starter qifa.yml
 qifa version            # print build version, commit, build date
 qifa config             # print loaded+defaulted config as YAML
-qifa deploy             # build (if needed) + ship + healthcheck + switch
+qifa deploy [--dry-run] # build (if needed) + ship + healthcheck + switch
+                        # --dry-run prints what would happen without executing
 qifa rollback [version] # roll back to the previous version (or a specific one)
 qifa stop               # stop the running container per role/host
 qifa start              # start the most recent labeled container
