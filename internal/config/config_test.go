@@ -45,6 +45,49 @@ func TestLoadConfig(t *testing.T) {
 	}
 }
 
+func TestRolloutBatchSizeDefaults(t *testing.T) {
+	tests := []struct {
+		name string
+		yaml string
+		want int
+	}{
+		{"unset defaults to 1 (strict rolling)", "", 1},
+		{"explicit 1", "rollout:\n  batch_size: 1\n", 1},
+		{"explicit 0 means all-at-once", "rollout:\n  batch_size: 0\n", 0},
+		{"explicit N", "rollout:\n  batch_size: 3\n", 3},
+	}
+	base := `service: app
+image: registry.example.com/app
+servers:
+  web:
+    hosts: [10.0.0.11]
+registry:
+  server: registry.example.com
+  username: reg
+  password_env: REGISTRY_PASSWORD
+builder:
+  context: .
+`
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "qifa.yml")
+			if err := os.WriteFile(path, []byte(base+tt.yaml), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := Load(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.Rollout.BatchSize == nil {
+				t.Fatal("expected BatchSize to be defaulted to a non-nil pointer")
+			}
+			if got := *cfg.Rollout.BatchSize; got != tt.want {
+				t.Fatalf("BatchSize = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestParseImageVersion(t *testing.T) {
 	tests := []struct {
 		image   string

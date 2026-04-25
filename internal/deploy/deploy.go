@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gokamal/gocart/internal/config"
@@ -86,10 +87,8 @@ func (d *Deployer) Deploy(ctx context.Context) error {
 
 	for _, role := range orderedRoles(d.cfg.Servers) {
 		server := d.cfg.Servers[role]
-		for _, host := range server.Hosts {
-			if err := d.deployHost(ctx, deployment, role, host, server, imageRef, envFile, d.cfg.Builder.IsPerTarget()); err != nil {
-				return d.failDeployment(deployment, err)
-			}
+		if err := d.rolloutRole(ctx, deployment, role, server, imageRef, envFile); err != nil {
+			return d.failDeployment(deployment, err)
 		}
 	}
 
@@ -154,6 +153,63 @@ func (d *Deployer) uniqueHosts() []string {
 		}
 	}
 	return hosts
+}
+
+func (d *Deployer) rolloutRole(ctx context.Context, deployment state.Deployment, role string, server config.Server, imageRef string, envFile []byte) error {
+	buildOnHost := d.cfg.Builder.IsPerTarget()
+	hosts := server.Hosts
+	batchSize := 1
+	if d.cfg.Rollout.BatchSize != nil {
+		batchSize = *d.cfg.Rollout.BatchSize
+	}
+	if batchSize <= 0 || batchSize > len(hosts) {
+		batchSize = len(hosts)
+	}
+	for i := 0; i < len(hosts); i += batchSize {
+		end := i + batchSize
+		if end > len(hosts) {
+			end = len(hosts)
+		}
+		batch := hosts[i:end]
+		if i > 0 && d.cfg.Rollout.BatchWait > 0 {
+			select {
+			case <-time.After(d.cfg.Rollout.BatchWait):
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+		if err := d.runBatch(ctx, deployment, role, server, imageRef, envFile, batch, buildOnHost); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (d *Deployer) runBatch(ctx context.Context, deployment state.Deployment, role string, server config.Server, imageRef string, envFile []byte, hosts []string, buildOnHost bool) error {
+	if len(hosts) == 1 {
+		return d.deployHost(ctx, deployment, role, hosts[0], server, imageRef, envFile, buildOnHost)
+	}
+	var wg sync.WaitGroup
+	errCh := make(chan error, len(hosts))
+	for _, host := range hosts {
+		wg.Add(1)
+		go func(host string) {
+			defer wg.Done()
+			if err := d.deployHost(ctx, deployment, role, host, server, imageRef, envFile, buildOnHost); err != nil {
+				errCh <- fmt.Errorf("%s: %w", host, err)
+			}
+		}(host)
+	}
+	wg.Wait()
+	close(errCh)
+	var errs []string
+	for err := range errCh {
+		errs = append(errs, err.Error())
+	}
+	if len(errs) > 0 {
+		return errors.New(strings.Join(errs, "; "))
+	}
+	return nil
 }
 
 func (d *Deployer) deployHost(ctx context.Context, deployment state.Deployment, role, host string, server config.Server, imageRef string, envFile []byte, buildOnHost bool) error {

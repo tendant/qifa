@@ -23,10 +23,19 @@ type Config struct {
 	Hooks       Hooks                `yaml:"hooks"`
 	Accessories map[string]Accessory `yaml:"accessories"`
 	Prune       Prune                `yaml:"prune"`
+	Rollout     Rollout              `yaml:"rollout"`
 }
 
 type Prune struct {
 	RetainContainers int `yaml:"retain_containers"`
+}
+
+type Rollout struct {
+	// BatchSize controls how many hosts in a role deploy in parallel per batch.
+	// Defaults to 1 (strict rolling) when omitted. Set to 0 to deploy all
+	// hosts in one batch (fully parallel).
+	BatchSize *int          `yaml:"batch_size"`
+	BatchWait time.Duration `yaml:"batch_wait"`
 }
 
 type Server struct {
@@ -209,6 +218,10 @@ func applyDefaults(cfg *Config) {
 	}
 	if cfg.Prune.RetainContainers == 0 {
 		cfg.Prune.RetainContainers = 5
+	}
+	if cfg.Rollout.BatchSize == nil {
+		one := 1
+		cfg.Rollout.BatchSize = &one
 	}
 	if cfg.Proxy.DeployTimeout == 0 {
 		cfg.Proxy.DeployTimeout = 30 * time.Second

@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"sync"
 	"time"
 )
 
@@ -55,6 +56,7 @@ type record struct {
 
 type Store struct {
 	path string
+	mu   sync.Mutex
 }
 
 func NewStore(path string) (*Store, error) {
@@ -78,6 +80,8 @@ func (s *Store) AppendEvent(e Event) error {
 }
 
 func (s *Store) append(r record) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	f, err := os.OpenFile(s.path, os.O_APPEND|os.O_WRONLY, 0o644)
 	if err != nil {
 		return err

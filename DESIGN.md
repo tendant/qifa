@@ -109,6 +109,10 @@ builder:
 prune:
   retain_containers: 5  # default; how many stopped containers to keep per role
 
+rollout:
+  batch_size: 1   # default; hosts per batch in a role's rollout (0 = all at once)
+  batch_wait: 0s  # sleep between batches
+
 ssh:
   user: ubuntu
   key: ~/.ssh/id_ed25519
@@ -207,7 +211,11 @@ active set. Removing or losing the file does not break any other command.
    - `local`: build locally + push
    - `remote`: build on `builder.host` + push
 4. Render env file (clear + secret env vars)
-5. For each role (web first), for each host:
+5. For each role (web first), batch the role's hosts according to `rollout.batch_size`
+   (default 1 = strict rolling; 0 = all hosts in one batch). Hosts within a batch
+   run in parallel; batches run sequentially with `rollout.batch_wait` between them.
+   On any host failure, remaining batches are skipped and the deploy errors out.
+   For each host in the current batch:
    1. `connecting` event
    2. Ensure Docker is running on the host
    3. If proxy is used: ensure shared kamal-proxy container, network, volume
@@ -331,7 +339,6 @@ Implementation shells out: `docker run -d ... basecamp/kamal-proxy` for boot,
 
 ## Out of Scope (For Now)
 
-- Rolling/batched deploys across hosts (`boot.limit`, `boot.wait`)
 - Primary-role healthcheck barrier for multi-role apps
 - Maintenance mode / explicit traffic on/off
 - Deploy locks (multiple deployers racing)
