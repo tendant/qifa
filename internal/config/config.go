@@ -328,6 +328,14 @@ func (c *Config) validateBuilder() error {
 			return errors.New("config.builder.ref and config.builder.subdir must not be set when config.builder.repo is not set")
 		}
 	}
+	if strings.Contains(c.Builder.Platform, ",") {
+		if c.Builder.IsPerTarget() {
+			return errors.New("config.builder.platform must be a single platform when config.builder.host=per_target")
+		}
+		if !c.Registry.Enabled() {
+			return errors.New("config.builder.platform with multiple platforms requires a registry (buildx --push targets the registry directly)")
+		}
+	}
 	return nil
 }
 

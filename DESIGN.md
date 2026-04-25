@@ -163,6 +163,24 @@ machine if it isn't local).
   tag (`:latest`, `:alpine`) either resolve to the same digest (idempotent) or
   become distinct deploys with rollback between them.
 
+### Multi-Arch Builds
+
+`builder.platform` accepts a comma-separated list (e.g.
+`linux/amd64,linux/arm64`). When more than one platform is listed, qifa uses
+`docker buildx build --platform <list> --push` in a single shot — buildx
+compiles for each platform and pushes the resulting manifest list directly to
+the registry (multi-arch images can't be loaded into a single-arch local
+daemon). Each target host then pulls and selects its own arch automatically.
+
+Validation:
+- Multi-platform requires `registry` (buildx --push targets it directly).
+- Multi-platform forbids `builder.host: per_target` (per-target builds
+  produce a host-local image for the host's own arch only).
+
+The build host must have buildx + QEMU/binfmt available for cross-arch
+emulation. Docker Desktop ships with this; Linux servers may need
+`docker run --rm --privileged tonistiigi/binfmt --install all` first.
+
 ## Proxy Model
 
 The proxy is one shared container per host, not per app.
@@ -384,6 +402,9 @@ the host while it's intentionally offline.
 - Primary-role healthcheck barrier for multi-role apps (qifa serializes
   roles strictly, so the barrier kamal needs for parallel-role booting
   doesn't apply here)
+- Secret managers (SOPS, Vault, AWS Secrets Manager, 1Password)
+- OpenTelemetry / web UI
+- GitHub Actions integration
 - Maintenance mode / explicit traffic on/off
 - Deploy locks (multiple deployers racing)
 - Multi-arch builds

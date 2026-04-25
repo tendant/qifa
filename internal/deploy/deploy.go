@@ -566,6 +566,13 @@ func (d *Deployer) prepareImage(ctx context.Context, deployment state.Deployment
 	case d.cfg.Builder == nil, d.cfg.Builder.IsPerTarget():
 		return nil
 	case d.cfg.Builder.IsLocal():
+		if docker.IsMultiPlatform(d.cfg.Builder.Platform) {
+			// buildx --push is one shot: build all platforms, push manifest list.
+			if err := d.updateStatus(deployment, state.StatusPushing); err != nil {
+				return err
+			}
+			return d.localDocker.BuildxPush(ctx, d.cfg, imageRef)
+		}
 		if err := d.localDocker.Build(ctx, d.cfg, imageRef); err != nil {
 			return err
 		}
@@ -576,6 +583,16 @@ func (d *Deployer) prepareImage(ctx context.Context, deployment state.Deployment
 	default: // remote builder
 		if err := d.remoteDocker.EnsureDocker(ctx, d.cfg.Builder.Host); err != nil {
 			return err
+		}
+		if docker.IsMultiPlatform(d.cfg.Builder.Platform) {
+			dockerConfigDir, err := registry.Login(ctx, d.ssh, d.cfg.Registry, d.cfg.Builder.Host)
+			if err != nil {
+				return err
+			}
+			if err := d.updateStatus(deployment, state.StatusPushing); err != nil {
+				return err
+			}
+			return d.remoteDocker.BuildxPush(ctx, d.cfg.Builder.Host, d.cfg, dockerConfigDir, imageRef)
 		}
 		if err := d.remoteDocker.Build(ctx, d.cfg.Builder.Host, d.cfg, imageRef); err != nil {
 			return err

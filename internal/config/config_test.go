@@ -210,6 +210,38 @@ func TestValidateBuilderShapes(t *testing.T) {
 				c.Registry = Registry{}
 			},
 		},
+		{
+			name: "single platform is fine",
+			mutate: func(c *Config) {
+				c.Builder.Platform = "linux/amd64"
+			},
+		},
+		{
+			name: "multi-platform with registry is fine",
+			mutate: func(c *Config) {
+				c.Builder.Platform = "linux/amd64,linux/arm64"
+			},
+		},
+		{
+			name: "multi-platform requires registry",
+			mutate: func(c *Config) {
+				c.Builder.Host = BuilderHostPerTarget
+				c.Builder.Platform = "linux/amd64,linux/arm64"
+				c.Registry = Registry{}
+				c.Image = "myapp"
+			},
+			wantErr: "must be a single platform when config.builder.host=per_target",
+		},
+		{
+			name: "multi-platform forbidden with per_target",
+			mutate: func(c *Config) {
+				c.Builder.Host = BuilderHostPerTarget
+				c.Builder.Platform = "linux/amd64,linux/arm64"
+				c.Registry = Registry{}
+				c.Image = "myapp"
+			},
+			wantErr: "config.builder.host=per_target",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

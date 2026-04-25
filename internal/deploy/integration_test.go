@@ -407,6 +407,42 @@ func TestSweepStaleContainersRemovesOrphanRunning(t *testing.T) {
 	}
 }
 
+func TestDeployerMultiPlatformUsesBuildxPush(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	env := newIntegrationEnv(t)
+	cfg := env.config(t, "", "local", "registry.example.com/testapp", config.Registry{
+		Server: "registry.example.com", Username: "reg", PasswordEnv: "REGISTRY_PASSWORD",
+	})
+	cfg.Builder.Platform = "linux/amd64,linux/arm64"
+	delete(cfg.Servers, "worker")
+
+	store, err := state.NewStore(filepath.Join(env.root, ".qifa", "state.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	deployer, err := New(cfg, store, &stdout, &stderr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := deployer.Deploy(ctx); err != nil {
+		t.Fatalf("deploy: %v", err)
+	}
+
+	calls := readIfExists(filepath.Join(env.stateDir, "docker_calls.log"))
+	if !strings.Contains(calls, "buildx buildx build --platform linux/amd64,linux/arm64 --push") {
+		t.Fatalf("expected buildx --push call, got %q", calls)
+	}
+	if strings.Contains(calls, "build build -f") {
+		t.Fatalf("multi-platform deploy should not use plain docker build, got %q", calls)
+	}
+	if strings.Contains(calls, "push push") {
+		t.Fatalf("multi-platform deploy should not use plain docker push (buildx --push handles it), got %q", calls)
+	}
+}
+
 func TestDeployerNonProxyHealthCheckUsesPublishedPort(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -653,7 +689,7 @@ echo "$1 $*" >> "$state/docker_calls.log"
 cmd="$1"
 shift
 case "$cmd" in
-  build|push|info|pull|login)
+  build|push|info|pull|login|buildx)
     exit 0
     ;;
   network)

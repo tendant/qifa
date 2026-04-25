@@ -59,6 +59,31 @@ func (l *Local) BuildSpec(ctx context.Context, spec BuildSpec, imageRef string) 
 	return runLocalEnv(ctx, extraEnv, "docker", args...)
 }
 
+// BuildxPush builds a multi-platform image with `docker buildx build --push`,
+// which compiles for every platform and pushes the resulting manifest list to
+// the registry in one shot. Multi-arch images can't be loaded into a single-arch
+// local daemon, so build and push are inseparable here.
+func (l *Local) BuildxPush(ctx context.Context, cfg *config.Config, imageRef string) error {
+	spec, cleanup, err := localBuildSpec(ctx, cfg)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+	registryEnv, cleanupReg, err := registry.LocalEnv(cfg.Registry)
+	if err != nil {
+		return err
+	}
+	defer cleanupReg()
+	args := []string{"buildx", "build",
+		"--platform", spec.Platform,
+		"--push",
+		"-f", spec.Dockerfile,
+		"-t", imageRef,
+		spec.ContextDir,
+	}
+	return runLocalEnv(ctx, registryEnv, "docker", args...)
+}
+
 func (l *Local) Push(ctx context.Context, registryCfg config.Registry, imageRef string) error {
 	registryEnv, cleanup, err := registry.LocalEnv(registryCfg)
 	if err != nil {
@@ -88,6 +113,53 @@ func (r *Remote) Pull(ctx context.Context, host, dockerConfigDir, imageRef strin
 
 func (r *Remote) Push(ctx context.Context, host, dockerConfigDir, imageRef string) error {
 	_, err := r.client.Run(ctx, host, withDockerConfig(dockerConfigDir, "docker push "+shellQuote(imageRef)))
+	return err
+}
+
+// BuildxPush runs `docker buildx build --push` on the remote host: a single
+// invocation that builds for every platform listed in cfg.Builder.Platform and
+// pushes the resulting manifest list to the registry.
+func (r *Remote) BuildxPush(ctx context.Context, host string, cfg *config.Config, dockerConfigDir, imageRef string) error {
+	if cfg.Builder.IsGit() {
+		remoteRoot := fmt.Sprintf("/tmp/qifa-build-%d", time.Now().UTC().UnixNano())
+		repoDir := filepath.Join(remoteRoot, "repo")
+		contextDir := filepath.Join(repoDir, cfg.Builder.Subdir)
+		command := strings.Join([]string{
+			"rm -rf " + shellQuote(remoteRoot),
+			"mkdir -p " + shellQuote(remoteRoot),
+			"git clone " + shellQuote(cfg.Builder.Repo) + " " + shellQuote(repoDir),
+			"git -C " + shellQuote(repoDir) + " checkout " + shellQuote(cfg.Builder.Ref),
+			withDockerConfig(dockerConfigDir, buildxCommand(BuildSpec{
+				ContextDir: contextDir,
+				Dockerfile: filepath.Join(contextDir, cfg.Builder.Dockerfile),
+				Platform:   cfg.Builder.Platform,
+			}, imageRef)),
+		}, " && ")
+		_, err := r.client.Run(ctx, host, command)
+		return err
+	}
+	archive, err := buildContextArchive(cfg.Builder.Context)
+	if err != nil {
+		return err
+	}
+	remoteRoot := fmt.Sprintf("/tmp/qifa-build-%d", time.Now().UTC().UnixNano())
+	remoteArchive := filepath.Join(remoteRoot, "context.tar")
+	remoteContext := filepath.Join(remoteRoot, "context")
+	if err := r.client.Upload(ctx, host, remoteArchive, archive, 0o600); err != nil {
+		return err
+	}
+	command := strings.Join([]string{
+		"rm -rf " + shellQuote(remoteContext),
+		"mkdir -p " + shellQuote(remoteContext),
+		"tar -xf " + shellQuote(remoteArchive) + " -C " + shellQuote(remoteContext),
+		withDockerConfig(dockerConfigDir, buildxCommand(BuildSpec{
+			ContextDir: remoteContext,
+			Dockerfile: filepath.Join(remoteContext, cfg.Builder.Dockerfile),
+			Platform:   cfg.Builder.Platform,
+		}, imageRef)),
+		"rm -f " + shellQuote(remoteArchive),
+	}, " && ")
+	_, err = r.client.Run(ctx, host, command)
 	return err
 }
 
@@ -327,6 +399,23 @@ func buildCommand(spec BuildSpec, imageRef string) string {
 	}
 	args = append(args, shellQuote(spec.ContextDir))
 	return strings.Join(args, " ")
+}
+
+func buildxCommand(spec BuildSpec, imageRef string) string {
+	args := []string{"docker buildx build",
+		"--platform", shellQuote(spec.Platform),
+		"--push",
+		"-f", shellQuote(spec.Dockerfile),
+		"-t", shellQuote(imageRef),
+		shellQuote(spec.ContextDir),
+	}
+	return strings.Join(args, " ")
+}
+
+// IsMultiPlatform reports whether a builder.platform value declares more than
+// one target platform.
+func IsMultiPlatform(platform string) bool {
+	return strings.Contains(platform, ",")
 }
 
 func buildContextArchive(root string) ([]byte, error) {
