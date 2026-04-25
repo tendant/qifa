@@ -138,10 +138,13 @@ func (r *Remote) Build(ctx context.Context, host string, cfg *config.Config, ima
 	}
 }
 
-func (r *Remote) RunContainer(ctx context.Context, host, name, imageRef, envFile, command string, hostPort, containerPort int) error {
+func (r *Remote) RunContainer(ctx context.Context, host, name, imageRef, envFile, command, network string, hostPort, containerPort int) error {
 	var args []string
 	args = append(args, "docker run -d --restart unless-stopped")
 	args = append(args, "--name "+shellQuote(name))
+	if network != "" {
+		args = append(args, "--network "+shellQuote(network))
+	}
 	if envFile != "" {
 		args = append(args, "--env-file "+shellQuote(envFile))
 	}

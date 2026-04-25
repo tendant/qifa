@@ -158,7 +158,11 @@ func (d *Deployer) deployHost(ctx context.Context, deployment state.Deployment, 
 			previousActive = nil
 		}
 	}
-	if err := d.remoteDocker.RunContainer(ctx, host, containerName, imageRef, remoteEnv, server.Cmd, publishedPort, containerPort); err != nil {
+	containerNetwork := ""
+	if useProxy {
+		containerNetwork = d.cfg.Proxy.Network
+	}
+	if err := d.remoteDocker.RunContainer(ctx, host, containerName, imageRef, remoteEnv, server.Cmd, containerNetwork, publishedPort, containerPort); err != nil {
 		_ = d.remoteDocker.StopAndRemove(ctx, host, containerName)
 		return err
 	}
@@ -176,7 +180,7 @@ func (d *Deployer) deployHost(ctx context.Context, deployment state.Deployment, 
 	} else {
 		healthPort = server.Port
 	}
-	if err := d.healthCheck(ctx, host, targetHost, healthPort, containerName); err != nil {
+	if err := d.healthCheck(ctx, host, targetHost, healthPort, containerName, useProxy); err != nil {
 		return err
 	}
 	if useProxy {
@@ -360,7 +364,7 @@ func (d *Deployer) AccessoryBoot(ctx context.Context, name string) error {
 	if err := d.remoteDocker.StopAndRemove(ctx, accessory.Host, containerName); err != nil {
 		return err
 	}
-	return d.remoteDocker.RunContainer(ctx, accessory.Host, containerName, accessory.Image, "", "", 0, 0)
+	return d.remoteDocker.RunContainer(ctx, accessory.Host, containerName, accessory.Image, "", "", "", 0, 0)
 }
 
 func (d *Deployer) AccessoryLogs(ctx context.Context, name string, out io.Writer) error {
@@ -377,7 +381,7 @@ func (d *Deployer) AccessoryLogs(ctx context.Context, name string, out io.Writer
 	return err
 }
 
-func (d *Deployer) healthCheck(ctx context.Context, host, targetHost string, targetPort int, containerName string) error {
+func (d *Deployer) healthCheck(ctx context.Context, host, targetHost string, targetPort int, containerName string, useProxy bool) error {
 	if targetPort == 0 {
 		_, err := d.remoteDocker.Exec(ctx, host, containerName, "true")
 		if err != nil {
@@ -386,6 +390,13 @@ func (d *Deployer) healthCheck(ctx context.Context, host, targetHost string, tar
 		return nil
 	}
 	path := d.cfg.Proxy.Healthcheck.Path
+	if path == "" {
+		if useProxy {
+			path = "/up"
+		} else {
+			path = "/"
+		}
+	}
 	command := fmt.Sprintf("for i in 1 2 3 4 5; do curl -fsS http://%s:%d%s && exit 0; sleep %d; done; exit 1", targetHost, targetPort, path, int(d.cfg.Proxy.Healthcheck.Interval.Seconds()))
 	_, err := d.ssh.Run(ctx, host, command)
 	if err != nil {

@@ -98,9 +98,13 @@ func (k *KamalProxy) deployCommand(target Target) string {
 	for _, host := range k.hosts() {
 		args = append(args, "--host", shellQuote(host))
 	}
+	healthPath := k.cfg.Healthcheck.Path
+	if healthPath == "" {
+		healthPath = "/up"
+	}
 	args = append(args,
 		"--target", shellQuote(fmt.Sprintf("%s:%d", target.Host, target.Port)),
-		"--health-check-path", shellQuote(k.cfg.Healthcheck.Path),
+		"--health-check-path", shellQuote(healthPath),
 		"--health-check-interval", shellQuote(k.cfg.Healthcheck.Interval.String()),
 		"--health-check-timeout", shellQuote(k.cfg.Healthcheck.Timeout.String()),
 		"--deploy-timeout", shellQuote(k.cfg.DeployTimeout.String()),

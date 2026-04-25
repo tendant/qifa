@@ -160,9 +160,6 @@ func applyDefaults(cfg *Config) {
 	if cfg.Builder.Dockerfile == "" {
 		cfg.Builder.Dockerfile = "Dockerfile"
 	}
-	if cfg.Proxy.Healthcheck.Path == "" {
-		cfg.Proxy.Healthcheck.Path = "/up"
-	}
 	if cfg.Proxy.Healthcheck.Interval == 0 {
 		cfg.Proxy.Healthcheck.Interval = 2 * time.Second
 	}
