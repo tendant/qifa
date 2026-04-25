@@ -65,6 +65,22 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		return withRuntime(ctx, stdout, stderr, func(rt *runtime) error {
 			return rt.deployer.SweepStaleContainers(ctx)
 		})
+	case "lock":
+		if len(args) < 2 {
+			return errors.New("usage: qifa lock <status|release>")
+		}
+		switch args[1] {
+		case "status":
+			return withRuntime(ctx, stdout, stderr, func(rt *runtime) error {
+				return rt.deployer.LockStatus(ctx, stdout)
+			})
+		case "release":
+			return withRuntime(ctx, stdout, stderr, func(rt *runtime) error {
+				return rt.deployer.LockRelease(ctx)
+			})
+		default:
+			return errors.New("usage: qifa lock <status|release>")
+		}
 	case "status":
 		return withRuntime(ctx, stdout, stderr, func(rt *runtime) error {
 			return rt.deployer.Status(ctx, stdout)
@@ -147,6 +163,7 @@ func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "  remove")
 	fmt.Fprintln(w, "  prune")
 	fmt.Fprintln(w, "  sweep")
+	fmt.Fprintln(w, "  lock <status|release>")
 	fmt.Fprintln(w, "  status")
 	fmt.Fprintln(w, "  logs")
 	fmt.Fprintln(w, "  app exec <command>")

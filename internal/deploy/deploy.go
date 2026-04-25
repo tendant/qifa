@@ -15,6 +15,7 @@ import (
 	"github.com/gokamal/gocart/internal/config"
 	"github.com/gokamal/gocart/internal/docker"
 	"github.com/gokamal/gocart/internal/hooks"
+	"github.com/gokamal/gocart/internal/lock"
 	"github.com/gokamal/gocart/internal/logs"
 	"github.com/gokamal/gocart/internal/proxy"
 	"github.com/gokamal/gocart/internal/registry"
@@ -54,6 +55,11 @@ func (d *Deployer) Deploy(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	locker := lock.New(d.ssh, d.cfg.Service, d.uniqueHosts())
+	if err := locker.Acquire(ctx, version); err != nil {
+		return err
+	}
+	defer locker.Release(context.Background())
 	deployment := state.Deployment{
 		ID:        deploymentID(version),
 		Service:   d.cfg.Service,
@@ -340,6 +346,11 @@ func serverUsesProxy(role string, server config.Server) bool {
 }
 
 func (d *Deployer) Rollback(ctx context.Context, version string) error {
+	locker := lock.New(d.ssh, d.cfg.Service, d.uniqueHosts())
+	if err := locker.Acquire(ctx, version); err != nil {
+		return err
+	}
+	defer locker.Release(context.Background())
 	if err := hooks.Run(ctx, d.cfg.Hooks.PreRollback, nil); err != nil {
 		return err
 	}
@@ -663,6 +674,30 @@ func (d *Deployer) Status(ctx context.Context, out io.Writer) error {
 		}
 	}
 	return nil
+}
+
+// LockStatus prints the lock holder per host (or "(free)" if not locked).
+func (d *Deployer) LockStatus(ctx context.Context, out io.Writer) error {
+	locker := lock.New(d.ssh, d.cfg.Service, d.uniqueHosts())
+	status, err := locker.Status(ctx)
+	if err != nil {
+		return err
+	}
+	for _, host := range d.uniqueHosts() {
+		if v := status[host]; v == "" {
+			fmt.Fprintf(out, "%s\t(free)\n", host)
+		} else {
+			fmt.Fprintf(out, "%s\t%s\n", host, v)
+		}
+	}
+	return nil
+}
+
+// LockRelease forcibly clears the deploy lock on every configured host.
+// For recovery from a deploy that crashed without releasing.
+func (d *Deployer) LockRelease(ctx context.Context) error {
+	locker := lock.New(d.ssh, d.cfg.Service, d.uniqueHosts())
+	return locker.ForceRelease(ctx)
 }
 
 // ListContainers prints labeled containers per role/host with their state and

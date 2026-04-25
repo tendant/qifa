@@ -34,6 +34,7 @@ qifa/
   internal/registry/   per-host docker login isolation
   internal/secrets/    env file rendering
   internal/hooks/      pre/post hook execution
+  internal/lock/       per-service mutex held across target hosts during deploy
   internal/state/      append-only audit log (deployments + events)
   internal/ssh/        SSH client (parallel fanout, sudo, known_hosts)
   internal/logs/       stdout/stderr formatting
@@ -52,6 +53,8 @@ qifa restart            # stop then start
 qifa remove             # tear down all labeled containers + deregister proxy
 qifa prune              # keep last N stopped containers; prune dangling images
 qifa sweep              # stop+remove orphan running labeled containers (also runs at the start of every deploy)
+qifa lock status        # show the deploy-lock holder per host
+qifa lock release       # forcibly clear a stale deploy lock (recovery)
 qifa status             # deployment history (audit) + active containers (live)
 qifa logs               # docker logs from the active container
 qifa app exec <command> # docker exec in the active container
@@ -348,6 +351,18 @@ type Proxy interface {
 Implementation shells out: `docker run -d ... basecamp/kamal-proxy` for boot,
 `docker exec kamal-proxy kamal-proxy deploy ...` for register,
 `docker exec kamal-proxy kamal-proxy remove <service>` for deregister.
+
+## Deploy Lock
+
+Deploy and Rollback acquire a per-service mutex held across every target host.
+The lock is a directory at `/tmp/qifa-lock-<service>` on each host, created
+via `mkdir` (atomic). The directory contains a `holder.json` with the user,
+host, service, version, and acquisition timestamp. The lock is released via
+`defer` so it always runs (success, failure, or panic).
+
+If the lock is held when another deploy tries to start, the new deploy errors
+out with the existing holder's metadata. Stale locks (from a deploy that
+crashed without unwinding `defer`) can be cleared with `qifa lock release`.
 
 ## Out of Scope (For Now)
 
