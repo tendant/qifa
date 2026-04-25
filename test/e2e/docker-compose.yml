@@ -3,10 +3,15 @@ services:
     image: ghcr.io/project-zot/zot:latest
     command: ["serve", "/etc/zot/config.json"]
     ports:
-      - "5001:5000"
+      - "5001:5001"
     volumes:
       - ./zot/config.json:/etc/zot/config.json:ro
+      - ./zot/htpasswd:/etc/zot/htpasswd:ro
       - zot-data:/var/lib/registry
+    networks:
+      default:
+        aliases:
+          - zottest
 
   deploy-host:
     build:

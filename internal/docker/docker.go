@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/gokamal/gocart/internal/config"
+	"github.com/gokamal/gocart/internal/registry"
 	"github.com/gokamal/gocart/internal/ssh"
 )
 
@@ -27,10 +28,18 @@ func (l *Local) BuildAndPush(ctx context.Context, cfg *config.Config, imageRef s
 	if cfg.Builder.Platform == "" {
 		extraEnv["DOCKER_BUILDKIT"] = "0"
 	}
+	registryEnv, cleanup, err := registry.LocalEnv(cfg.Registry)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+	for key, value := range registryEnv {
+		extraEnv[key] = value
+	}
 	if err := runLocalEnv(ctx, extraEnv, "docker", args...); err != nil {
 		return err
 	}
-	return runLocal(ctx, "docker", "push", imageRef)
+	return runLocalEnv(ctx, extraEnv, "docker", "push", imageRef)
 }
 
 type Remote struct {
@@ -46,8 +55,8 @@ func (r *Remote) EnsureDocker(ctx context.Context, host string) error {
 	return err
 }
 
-func (r *Remote) Pull(ctx context.Context, host, imageRef string) error {
-	_, err := r.client.Run(ctx, host, "docker pull "+shellQuote(imageRef))
+func (r *Remote) Pull(ctx context.Context, host, dockerConfigDir, imageRef string) error {
+	_, err := r.client.Run(ctx, host, withDockerConfig(dockerConfigDir, "docker pull "+shellQuote(imageRef)))
 	return err
 }
 
@@ -104,4 +113,11 @@ func runLocalEnv(ctx context.Context, extraEnv map[string]string, binary string,
 
 func shellQuote(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
+}
+
+func withDockerConfig(dir, command string) string {
+	if dir == "" {
+		return command
+	}
+	return "DOCKER_CONFIG=" + shellQuote(dir) + " " + command
 }

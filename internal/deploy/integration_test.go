@@ -103,10 +103,15 @@ func TestDeployerEndToEndWithLocalSSH(t *testing.T) {
 		t.Fatal(err)
 	}
 	calls := string(dockerCalls)
-	for _, expected := range []string{"build", "push", "pull", "run", "login"} {
+	for _, expected := range []string{"build", "push", "pull", "run"} {
 		if !strings.Contains(calls, expected) {
 			t.Fatalf("missing docker call %q in %q", expected, calls)
 		}
+	}
+
+	registryConfig, err := os.ReadFile(filepath.Join(env.root, "home", ".docker", "config.json"))
+	if err == nil && len(registryConfig) > 0 {
+		t.Fatalf("expected auth to avoid mutating home docker config, found %q", string(registryConfig))
 	}
 
 	proxyCalls, err := os.ReadFile(filepath.Join(env.stateDir, "proxy_calls.log"))

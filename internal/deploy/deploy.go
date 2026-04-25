@@ -115,7 +115,8 @@ func (d *Deployer) deployHost(ctx context.Context, deployment state.Deployment, 
 	if err := d.proxy.EnsureInstalled(ctx, host); err != nil && role == "web" {
 		return err
 	}
-	if err := registry.Login(ctx, d.ssh, d.cfg.Registry, host); err != nil {
+	dockerConfigDir, err := registry.Login(ctx, d.ssh, d.cfg.Registry, host)
+	if err != nil {
 		return err
 	}
 	if err := d.ssh.Upload(ctx, host, remoteEnv, envFile, 0o600); err != nil {
@@ -124,7 +125,7 @@ func (d *Deployer) deployHost(ctx context.Context, deployment state.Deployment, 
 	if err := d.updateStatus(deployment, state.StatusPulling); err != nil {
 		return err
 	}
-	if err := d.remoteDocker.Pull(ctx, host, imageRef); err != nil {
+	if err := d.remoteDocker.Pull(ctx, host, dockerConfigDir, imageRef); err != nil {
 		return err
 	}
 	if err := d.updateStatus(deployment, state.StatusStarting); err != nil {
@@ -287,7 +288,7 @@ func (d *Deployer) AccessoryBoot(ctx context.Context, name string) error {
 		return fmt.Errorf("unknown accessory %s", name)
 	}
 	containerName := d.cfg.Service + "-accessory-" + name
-	if err := d.remoteDocker.Pull(ctx, accessory.Host, accessory.Image); err != nil {
+	if err := d.remoteDocker.Pull(ctx, accessory.Host, "", accessory.Image); err != nil {
 		return err
 	}
 	if err := d.remoteDocker.StopAndRemove(ctx, accessory.Host, containerName); err != nil {

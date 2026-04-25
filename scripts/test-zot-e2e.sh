@@ -10,6 +10,9 @@ RUN_ROOT=${RUN_ROOT:-$(mktemp -d /tmp/godeploy-zot-e2e-XXXXXX)}
 WEB_DIR="$RUN_ROOT/web-run"
 WORKER_DIR="$RUN_ROOT/worker-run"
 COMPOSE_FILE="$E2E_DIR/docker-compose.yml"
+REGISTRY_HOST="zottest:5001"
+REGISTRY_USER="testuser"
+REGISTRY_PASSWORD_VALUE="testpass"
 
 cleanup() {
   if [[ "${KEEP_E2E_ENV:-0}" != "1" ]]; then
@@ -49,7 +52,7 @@ wait_for() {
   return 1
 }
 
-wait_for "zot registry" "curl -fsS http://127.0.0.1:5001/v2/"
+wait_for "zot registry" "curl -fsS -u $REGISTRY_USER:$REGISTRY_PASSWORD_VALUE http://127.0.0.1:5001/v2/"
 wait_for "deploy host ssh" "ssh-keyscan -p 2222 127.0.0.1 >/dev/null 2>&1"
 wait_for "deploy host docker daemon" "unset DOCKER_TLS_VERIFY DOCKER_CERT_PATH DOCKER_TLS_CERTDIR; DOCKER_HOST=tcp://127.0.0.1:23750 docker info"
 
@@ -58,9 +61,12 @@ mkdir -p "$HOME_DIR/.ssh"
 cp "$SSH_DIR/id_ed25519" "$HOME_DIR/.ssh/id_ed25519"
 chmod 600 "$HOME_DIR/.ssh/id_ed25519"
 ssh-keyscan -p 2222 127.0.0.1 > "$HOME_DIR/.ssh/known_hosts"
+printf 'zottest 127.0.0.1\n' > "$TMP_DIR/hosts.aliases"
 
 export HOME="$HOME_DIR"
 export DOCKER_HOST="tcp://127.0.0.1:23750"
+export HOSTALIASES="$TMP_DIR/hosts.aliases"
+export REGISTRY_PASSWORD="$REGISTRY_PASSWORD_VALUE"
 unset DOCKER_TLS_CERTDIR
 unset DOCKER_TLS_VERIFY
 unset DOCKER_CERT_PATH
@@ -69,7 +75,7 @@ go build -o "$BIN_DIR/godeploy" "$ROOT_DIR/cmd/godeploy"
 
 cat > "$WEB_DIR/godeploy.yml" <<EOF
 service: demo-web
-image: zot:5000/demo-web
+image: $REGISTRY_HOST/demo-web
 
 servers:
   web:
@@ -86,9 +92,9 @@ proxy:
     timeout: 5s
 
 registry:
-  server: ""
-  username: ""
-  password_env: ""
+  server: $REGISTRY_HOST
+  username: $REGISTRY_USER
+  password_env: REGISTRY_PASSWORD
 
 env:
   clear:
@@ -106,7 +112,7 @@ EOF
 
 cat > "$WORKER_DIR/godeploy.yml" <<EOF
 service: demo-worker
-image: zot:5000/demo-worker
+image: $REGISTRY_HOST/demo-worker
 
 servers:
   worker:
@@ -122,9 +128,9 @@ proxy:
     timeout: 5s
 
 registry:
-  server: ""
-  username: ""
-  password_env: ""
+  server: $REGISTRY_HOST
+  username: $REGISTRY_USER
+  password_env: REGISTRY_PASSWORD
 
 env:
   clear:
@@ -164,7 +170,7 @@ EOF
 )
 
 docker --host "$DOCKER_HOST" ps
-docker --host "$DOCKER_HOST" images | grep "zot:5000/demo"
+docker --host "$DOCKER_HOST" images | grep "$REGISTRY_HOST/demo"
 
 echo "zot e2e test completed"
 if [[ "${KEEP_E2E_ENV:-0}" == "1" ]]; then

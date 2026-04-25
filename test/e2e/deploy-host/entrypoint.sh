@@ -12,4 +12,4 @@ exec dockerd-entrypoint.sh \
   --tls=false \
   --host=tcp://0.0.0.0:2375 \
   --host=unix:///var/run/docker.sock \
-  --insecure-registry=zot:5000
+  --insecure-registry=zottest:5001
