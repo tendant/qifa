@@ -7,4 +7,7 @@ require (
 	gopkg.in/yaml.v3 v3.0.1
 )
 
-require golang.org/x/sys v0.40.0 // indirect
+require (
+	github.com/kevinburke/ssh_config v1.6.0 // indirect
+	golang.org/x/sys v0.40.0 // indirect
+)

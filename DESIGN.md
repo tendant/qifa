@@ -99,8 +99,9 @@ builder:
   platform: linux/amd64
 
 ssh:
-  user: ubuntu
-  key: ~/.ssh/id_ed25519
+  user: ubuntu # optional
+  key: ~/.ssh/id_ed25519 # optional
+  strict_host_key_checking: true # optional, defaults to true
 ```
 
 ## Build And Distribution Model

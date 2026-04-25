@@ -28,6 +28,7 @@ type Server struct {
 	Hosts []string `yaml:"hosts"`
 	Port  int      `yaml:"port"`
 	Cmd   string   `yaml:"cmd"`
+	Proxy *bool    `yaml:"proxy"`
 }
 
 type Proxy struct {
@@ -76,8 +77,9 @@ type Builder struct {
 }
 
 type SSH struct {
-	User string `yaml:"user"`
-	Key  string `yaml:"key"`
+	User                  string `yaml:"user"`
+	Key                   string `yaml:"key"`
+	StrictHostKeyChecking *bool  `yaml:"strict_host_key_checking"`
 }
 
 type Hooks struct {
@@ -116,12 +118,6 @@ func (c *Config) Validate() error {
 	}
 	if len(c.Servers) == 0 {
 		return errors.New("config.servers is required")
-	}
-	if c.SSH.User == "" {
-		return errors.New("config.ssh.user is required")
-	}
-	if c.SSH.Key == "" {
-		return errors.New("config.ssh.key is required")
 	}
 	for role, server := range c.Servers {
 		if len(server.Hosts) == 0 {

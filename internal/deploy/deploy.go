@@ -101,6 +101,7 @@ func (d *Deployer) deployHost(ctx context.Context, deployment state.Deployment, 
 	containerName := d.containerName(role, deployment.Version)
 	remoteEnv := fmt.Sprintf("/tmp/%s.env", containerName)
 	appPort := d.appPort(role, server)
+	useProxy := serverUsesProxy(role, server)
 	previousActive, err := d.store.ActiveTarget(d.cfg.Service, host, role)
 	if err != nil && !errors.Is(err, state.ErrNoActiveTarget) {
 		return err
@@ -112,7 +113,7 @@ func (d *Deployer) deployHost(ctx context.Context, deployment state.Deployment, 
 	if err := d.remoteDocker.EnsureDocker(ctx, host); err != nil {
 		return err
 	}
-	if err := d.proxy.EnsureInstalled(ctx, host); err != nil && role == "web" {
+	if err := d.proxy.EnsureInstalled(ctx, host); err != nil && useProxy {
 		return err
 	}
 	if err := d.ssh.Upload(ctx, host, remoteEnv, envFile, 0o600); err != nil {
@@ -141,7 +142,7 @@ func (d *Deployer) deployHost(ctx context.Context, deployment state.Deployment, 
 		return err
 	}
 	publishedPort := 0
-	if role != "web" {
+	if !useProxy {
 		publishedPort = server.Port
 	}
 	if err := d.remoteDocker.RunContainer(ctx, host, containerName, imageRef, remoteEnv, server.Cmd, publishedPort); err != nil {
@@ -151,7 +152,7 @@ func (d *Deployer) deployHost(ctx context.Context, deployment state.Deployment, 
 		return err
 	}
 	targetHost := host
-	if role == "web" {
+	if useProxy {
 		containerIP, err := d.remoteDocker.ContainerIP(ctx, host, containerName)
 		if err != nil {
 			return err
@@ -161,7 +162,7 @@ func (d *Deployer) deployHost(ctx context.Context, deployment state.Deployment, 
 	if err := d.healthCheck(ctx, host, targetHost, appPort, containerName); err != nil {
 		return err
 	}
-	if role == "web" {
+	if useProxy {
 		if err := d.updateStatus(deployment, state.StatusSwitchingTraffic); err != nil {
 			return err
 		}
@@ -194,6 +195,13 @@ func (d *Deployer) deployHost(ctx context.Context, deployment state.Deployment, 
 		return err
 	}
 	return nil
+}
+
+func serverUsesProxy(role string, server config.Server) bool {
+	if server.Proxy != nil {
+		return *server.Proxy
+	}
+	return role == "web"
 }
 
 func (d *Deployer) Rollback(ctx context.Context) error {

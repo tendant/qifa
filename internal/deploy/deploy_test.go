@@ -99,3 +99,50 @@ func TestDefaultTargetRequiresHosts(t *testing.T) {
 		t.Fatal("expected error")
 	}
 }
+
+func TestServerUsesProxy(t *testing.T) {
+	falseValue := false
+	trueValue := true
+
+	tests := []struct {
+		name   string
+		role   string
+		server config.Server
+		want   bool
+	}{
+		{
+			name: "web defaults true",
+			role: "web",
+			want: true,
+		},
+		{
+			name: "non web defaults false",
+			role: "app",
+			want: false,
+		},
+		{
+			name: "web can disable proxy",
+			role: "web",
+			server: config.Server{
+				Proxy: &falseValue,
+			},
+			want: false,
+		},
+		{
+			name: "non web can enable proxy",
+			role: "app",
+			server: config.Server{
+				Proxy: &trueValue,
+			},
+			want: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := serverUsesProxy(tt.role, tt.server); got != tt.want {
+				t.Fatalf("serverUsesProxy(%q) = %v, want %v", tt.role, got, tt.want)
+			}
+		})
+	}
+}

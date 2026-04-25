@@ -43,6 +43,9 @@ func TestLoadConfig(t *testing.T) {
 	if cfg.Builder.Source != "local" {
 		t.Fatalf("unexpected builder source: %s", cfg.Builder.Source)
 	}
+	if cfg.SSH.StrictHostKeyChecking != nil {
+		t.Fatalf("expected nil strict host key setting by default, got %#v", cfg.SSH.StrictHostKeyChecking)
+	}
 }
 
 func TestWriteSampleCreatesParents(t *testing.T) {
@@ -64,6 +67,23 @@ func TestValidateBuilderModes(t *testing.T) {
 		{
 			name: "local with registry",
 			cfg:  validConfig(),
+		},
+		{
+			name: "ssh user and key optional",
+			cfg: func() Config {
+				cfg := validConfig()
+				cfg.SSH = SSH{}
+				return cfg
+			}(),
+		},
+		{
+			name: "ssh strict host key setting optional",
+			cfg: func() Config {
+				cfg := validConfig()
+				value := false
+				cfg.SSH.StrictHostKeyChecking = &value
+				return cfg
+			}(),
 		},
 		{
 			name: "remote with registry",
