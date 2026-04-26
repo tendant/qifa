@@ -82,6 +82,11 @@ type ProxyBoot struct {
 	AppsConfigDir string   `yaml:"apps_config_dir"`
 	HTTPPort      int      `yaml:"http_port"`
 	HTTPSPort     int      `yaml:"https_port"`
+	// BindIPs restricts which host IPs the proxy listens on. Empty (default)
+	// = listen on all interfaces (0.0.0.0). Use to separate public and
+	// internal NICs, or to bind to specific IPs on a multi-IP host.
+	// Each entry produces one set of -p <ip>:<port>:<port> flags.
+	BindIPs []string `yaml:"bind_ips"`
 }
 
 type Healthcheck struct {

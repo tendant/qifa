@@ -188,13 +188,38 @@ func (k *KamalProxy) bootCommand() string {
 	if appsConfigDir == "" {
 		appsConfigDir = ".kamal/proxy/apps-config"
 	}
+	publishFlags := publishArgs(httpPort, httpsPort, k.boot.BindIPs)
 	command := strings.Join([]string{
 		"docker network create " + shellQuote(network) + " >/dev/null 2>&1 || true",
 		"mkdir -p " + shellQuote(appsConfigDir),
-		"docker ps --filter " + shellQuote("name=^"+proxyContainerName) + " --format '{{.Names}}' | grep -qx " + shellQuote(proxyContainerName) + " || (docker rm -f " + shellQuote(proxyContainerName) + " >/dev/null 2>&1 || true; docker run -d --restart unless-stopped --name " + shellQuote(proxyContainerName) + " --network " + shellQuote(network) + " --volume " + shellQuote(stateVolume+":/home/kamal-proxy/.config/kamal-proxy") + " --volume " + shellQuote(appsConfigDir+":/home/kamal-proxy/.apps-config") + " -p " + fmt.Sprintf("%d:80", httpPort) + " -p " + fmt.Sprintf("%d:443", httpsPort) + " --log-opt max-size=10m " + shellQuote(imageRef) + " kamal-proxy run)",
+		"docker ps --filter " + shellQuote("name=^"+proxyContainerName) + " --format '{{.Names}}' | grep -qx " + shellQuote(proxyContainerName) + " || (docker rm -f " + shellQuote(proxyContainerName) + " >/dev/null 2>&1 || true; docker run -d --restart unless-stopped --name " + shellQuote(proxyContainerName) + " --network " + shellQuote(network) + " --volume " + shellQuote(stateVolume+":/home/kamal-proxy/.config/kamal-proxy") + " --volume " + shellQuote(appsConfigDir+":/home/kamal-proxy/.apps-config") + " " + publishFlags + " --log-opt max-size=10m " + shellQuote(imageRef) + " kamal-proxy run)",
 		"for i in 1 2 3 4 5; do docker ps --filter " + shellQuote("name=^"+proxyContainerName) + " --format '{{.Names}}' | grep -qx " + shellQuote(proxyContainerName) + " && exit 0; sleep 1; done; exit 1",
 	}, " && ")
 	return command
+}
+
+// publishArgs returns the docker -p flags for the proxy. With no bindIPs,
+// docker binds to 0.0.0.0 by default (one -p per port). With bindIPs, it
+// emits one -p per IP per port so the proxy listens only on those IPs.
+// IPv6 addresses are wrapped in [brackets] per docker's syntax.
+func publishArgs(httpPort, httpsPort int, bindIPs []string) string {
+	if len(bindIPs) == 0 {
+		return fmt.Sprintf("-p %d:80 -p %d:443", httpPort, httpsPort)
+	}
+	var args []string
+	for _, ip := range bindIPs {
+		ip = formatBindIP(ip)
+		args = append(args, fmt.Sprintf("-p %s:%d:80", ip, httpPort))
+		args = append(args, fmt.Sprintf("-p %s:%d:443", ip, httpsPort))
+	}
+	return strings.Join(args, " ")
+}
+
+func formatBindIP(ip string) string {
+	if strings.Contains(ip, ":") && !strings.HasPrefix(ip, "[") {
+		return "[" + ip + "]"
+	}
+	return ip
 }
 
 func (k *KamalProxy) Deploy(ctx context.Context, host string, target Target) error {

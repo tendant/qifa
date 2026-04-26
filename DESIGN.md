@@ -199,10 +199,10 @@ the same host all register routes with the same `kamal-proxy` container.
 Two distinct config sections, two distinct ownership boundaries:
 
 - **`proxy_boot`** describes how to launch the kamal-proxy container itself
-  (image, version, network, state volume, http/https ports, hosts to run on).
-  Owned by the operator. Set once. Applied via `qifa proxy boot` (or
-  `qifa proxy upgrade` to re-create with new settings). App deploys never
-  touch this.
+  (image, version, network, state volume, http/https ports, hosts to run on,
+  optional bind_ips for multi-NIC separation). Owned by the operator. Set
+  once. Applied via `qifa proxy boot` (or `qifa proxy upgrade` to re-create
+  with new settings). App deploys never touch this.
 - **`proxy`** describes how THIS app's routes register with the running proxy
   (host, app_port, healthcheck path, TLS, drain timeout, path prefixes).
   Owned by each app. Applied on every `qifa deploy`.
