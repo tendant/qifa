@@ -73,7 +73,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		_, err := fmt.Fprintln(stdout, versionString())
 		return err
 	case "config":
-		cfg, err := config.Load("qifa.yml")
+		cfg, err := config.Load("qifa.yaml")
 		if err != nil {
 			return err
 		}
@@ -84,7 +84,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		_, err = stdout.Write(data)
 		return err
 	case "init":
-		path := "qifa.yml"
+		path := "qifa.yaml"
 		if len(args) > 1 {
 			path = args[1]
 		}
@@ -328,7 +328,7 @@ type runtime struct {
 }
 
 func withRuntime(ctx context.Context, stdout, stderr io.Writer, fn func(*runtime) error) error {
-	cfg, err := config.Load("qifa.yml")
+	cfg, err := config.Load("qifa.yaml")
 	if err != nil {
 		return err
 	}

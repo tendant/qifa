@@ -31,7 +31,7 @@ anywhere on `$PATH`.
 ## Quickstart
 
 ```bash
-qifa init       # writes a starter qifa.yml
+qifa init       # writes a starter qifa.yaml
 qifa config     # show the loaded config (defaults applied)
 qifa deploy     # build, ship, healthcheck, switch traffic
 qifa logs -f    # tail the running container
@@ -129,7 +129,7 @@ servers:
 ## Verb Cheatsheet
 
 ```text
-qifa init [path]                 # write a starter qifa.yml
+qifa init [path]                 # write a starter qifa.yaml
 qifa version                     # build version + commit
 qifa config                      # print loaded+defaulted config
 

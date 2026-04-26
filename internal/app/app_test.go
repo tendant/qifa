@@ -22,7 +22,7 @@ func TestRunNoArgsPrintsUsage(t *testing.T) {
 
 func TestRunInitWritesSample(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "qifa.yml")
+	path := filepath.Join(dir, "qifa.yaml")
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer

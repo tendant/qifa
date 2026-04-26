@@ -10,7 +10,7 @@ import (
 
 func TestLoadConfig(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "qifa.yml")
+	path := filepath.Join(dir, "qifa.yaml")
 	if err := os.WriteFile(path, []byte(sampleConfig), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -70,7 +70,7 @@ builder:
 `
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "qifa.yml")
+			path := filepath.Join(t.TempDir(), "qifa.yaml")
 			if err := os.WriteFile(path, []byte(base+tt.yaml), 0o644); err != nil {
 				t.Fatal(err)
 			}
@@ -262,7 +262,7 @@ func TestValidateBuilderShapes(t *testing.T) {
 }
 
 func TestWriteSampleCreatesParents(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "nested", "qifa.yml")
+	path := filepath.Join(t.TempDir(), "nested", "qifa.yaml")
 	if err := WriteSample(path); err != nil {
 		t.Fatal(err)
 	}
@@ -275,7 +275,7 @@ func TestWriteSampleCreatesParents(t *testing.T) {
 // writes must Load cleanly, so new users don't hit a validation error on
 // day one.
 func TestWriteSampleParses(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "qifa.yml")
+	path := filepath.Join(t.TempDir(), "qifa.yaml")
 	if err := WriteSample(path); err != nil {
 		t.Fatal(err)
 	}

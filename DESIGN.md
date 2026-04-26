@@ -44,7 +44,7 @@ qifa/
 ## CLI
 
 ```bash
-qifa init [path]        # write a starter qifa.yml
+qifa init [path]        # write a starter qifa.yaml
 qifa version            # print build version, commit, build date
 qifa config             # print loaded+defaulted config as YAML
 qifa deploy [--dry-run] # build (if needed) + ship + healthcheck + switch

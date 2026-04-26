@@ -73,7 +73,7 @@ unset DOCKER_CERT_PATH
 
 go build -o "$BIN_DIR/qifa" "$ROOT_DIR/cmd/qifa"
 
-cat > "$WEB_DIR/qifa.yml" <<EOF
+cat > "$WEB_DIR/qifa.yaml" <<EOF
 service: demo-web
 image: $REGISTRY_HOST/demo-web
 
@@ -110,7 +110,7 @@ ssh:
   key: ~/.ssh/id_ed25519
 EOF
 
-cat > "$WORKER_DIR/qifa.yml" <<EOF
+cat > "$WORKER_DIR/qifa.yaml" <<EOF
 service: demo-worker
 image: $REGISTRY_HOST/demo-worker
 
