@@ -105,6 +105,43 @@ func (c *Client) Stream(ctx context.Context, host, command string, out io.Writer
 	}
 }
 
+// Download streams the contents of a remote file to dst. Uses `cat <path>` so
+// it works with any user that can read the file (no sftp subsystem needed).
+// Designed for binary blobs (backup artifacts, etc.) — runs in constant
+// memory regardless of file size since both ends are streaming pipes.
+func (c *Client) Download(ctx context.Context, host, path string, dst io.Writer) error {
+	conn, err := c.dial(host)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+
+	sess, err := conn.NewSession()
+	if err != nil {
+		return err
+	}
+	defer sess.Close()
+
+	var stderr bytes.Buffer
+	sess.Stdout = dst
+	sess.Stderr = &stderr
+
+	command := "cat " + shellQuote(path)
+	done := make(chan error, 1)
+	go func() { done <- sess.Run(command) }()
+
+	select {
+	case <-ctx.Done():
+		_ = sess.Signal(gossh.SIGKILL)
+		return ctx.Err()
+	case err := <-done:
+		if err != nil {
+			return formatRemoteError("download", host, command, err, stderr.String())
+		}
+		return nil
+	}
+}
+
 func (c *Client) Upload(ctx context.Context, host, path string, contents []byte, mode os.FileMode) error {
 	command := fmt.Sprintf("umask 077 && mkdir -p %s && cat > %s && chmod %o %s", shellDir(path), shellQuote(path), mode.Perm(), shellQuote(path))
 	conn, err := c.dial(host)

@@ -134,6 +134,10 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		return withRuntime(ctx, stdout, stderr, func(rt *runtime) error {
 			return rt.deployer.Prune(ctx)
 		})
+	case "backup":
+		return withRuntime(ctx, stdout, stderr, func(rt *runtime) error {
+			return rt.deployer.Backup(ctx)
+		})
 	case "sweep":
 		return withRuntime(ctx, stdout, stderr, func(rt *runtime) error {
 			return rt.deployer.SweepStaleContainers(ctx)
@@ -357,6 +361,7 @@ func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "  restart")
 	fmt.Fprintln(w, "  remove")
 	fmt.Fprintln(w, "  prune")
+	fmt.Fprintln(w, "  backup")
 	fmt.Fprintln(w, "  sweep")
 	fmt.Fprintln(w, "  lock <status|release>")
 	fmt.Fprintln(w, "  proxy <boot|start|stop|restart|upgrade|remove [--purge]|logs [--follow] [--lines N]|details>")

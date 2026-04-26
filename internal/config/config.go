@@ -25,6 +25,32 @@ type Config struct {
 	Prune       Prune                `yaml:"prune"`
 	Rollout     Rollout              `yaml:"rollout"`
 	ProxyBoot   ProxyBoot            `yaml:"proxy_boot"`
+	Backup      *Backup              `yaml:"backup"`
+}
+
+// Backup describes a per-service snapshot recipe. `qifa backup` runs the
+// command inside the running app container, copies the produced artifact
+// back to ./backups/<service>/, and applies optional retention. App-specific
+// dump tools (gitea dump, postgres pg_dump, mysql dump, restic, plain tar,
+// etc.) plug in via Command — qifa doesn't bake in any backend.
+type Backup struct {
+	// Command is run inside the container via `docker exec sh -c`. It must
+	// produce the artifact at the path given by Artifact.
+	Command string `yaml:"command"`
+	// User and Workdir map to docker exec --user / --workdir. Optional.
+	User    string `yaml:"user"`
+	Workdir string `yaml:"workdir"`
+	// Artifact is the path inside the container where Command writes its
+	// output. qifa docker-cp's it out, scp's it back, then removes both
+	// the in-container and host-side temp copies.
+	Artifact string `yaml:"artifact"`
+	// ArtifactName templates the local filename. Supports ${SERVICE},
+	// ${VERSION}, ${STAMP}. Defaults to "${SERVICE}-${VERSION}-${STAMP}<ext>"
+	// where <ext> is taken from the Artifact path.
+	ArtifactName string `yaml:"artifact_name"`
+	// Retain is how many recent local backups to keep. 0 (default) = unlimited.
+	// Older snapshots beyond this count are deleted after a successful backup.
+	Retain int `yaml:"retain"`
 }
 
 type Prune struct {
@@ -202,6 +228,14 @@ func (c *Config) Validate() error {
 	}
 	if c.Registry.Server != "" && (c.Registry.Username == "" || c.Registry.PasswordEnv == "") {
 		return errors.New("config.registry.username and config.registry.password_env are required when config.registry.server is set")
+	}
+	if c.Backup != nil {
+		if strings.TrimSpace(c.Backup.Command) == "" {
+			return errors.New("config.backup.command is required when config.backup is set")
+		}
+		if strings.TrimSpace(c.Backup.Artifact) == "" {
+			return errors.New("config.backup.artifact is required when config.backup is set (path inside the container where the command writes its output)")
+		}
 	}
 	return c.validateBuilder()
 }

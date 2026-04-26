@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -693,6 +695,160 @@ func (d *Deployer) Status(ctx context.Context, out io.Writer) error {
 		}
 	}
 	return nil
+}
+
+// Backup runs cfg.Backup.Command inside the running app container, copies
+// the produced artifact back to ./backups/<service>/, and applies retention.
+//
+// For multi-host services it picks the first running container — backups
+// usually want to run against the host that holds the canonical state
+// (typically the one with the bind-mount volume), and most stateful apps
+// only run on a single host anyway. To back up state on a specific host,
+// run qifa from a config narrowed to that host.
+func (d *Deployer) Backup(ctx context.Context) error {
+	if d.cfg.Backup == nil {
+		return errors.New("config.backup is not set in qifa.yaml")
+	}
+	host, container, version, err := d.firstRunning(ctx)
+	if err != nil {
+		return err
+	}
+	stamp := time.Now().UTC().Format("20060102T150405Z")
+	tmpl := d.cfg.Backup.ArtifactName
+	if strings.TrimSpace(tmpl) == "" {
+		ext := ""
+		if i := strings.LastIndex(d.cfg.Backup.Artifact, "."); i >= 0 {
+			ext = d.cfg.Backup.Artifact[i:]
+		}
+		tmpl = "${SERVICE}-${VERSION}-${STAMP}" + ext
+	}
+	expand := func(s string) string {
+		s = strings.ReplaceAll(s, "${SERVICE}", d.cfg.Service)
+		s = strings.ReplaceAll(s, "${VERSION}", version)
+		s = strings.ReplaceAll(s, "${STAMP}", stamp)
+		return s
+	}
+	artifactName := expand(tmpl)
+	command := expand(d.cfg.Backup.Command)
+	containerArtifact := expand(d.cfg.Backup.Artifact)
+	hostTmp := fmt.Sprintf("/tmp/qifa-backup-%s-%s", d.cfg.Service, stamp)
+	// BACKUP_DIR env var overrides the default ./backups/<service>/ — useful
+	// for Make-based wrappers and for off-host destinations like NFS mounts.
+	backupDir := os.Getenv("BACKUP_DIR")
+	if backupDir == "" {
+		backupDir = filepath.Join("backups", d.cfg.Service)
+	}
+	localPath := filepath.Join(backupDir, artifactName)
+
+	d.log.Printf("backup: running command in %s on %s", container, host)
+	execArgs := []string{"docker", "exec"}
+	if d.cfg.Backup.User != "" {
+		execArgs = append(execArgs, "--user", shellQuoteB(d.cfg.Backup.User))
+	}
+	if d.cfg.Backup.Workdir != "" {
+		execArgs = append(execArgs, "--workdir", shellQuoteB(d.cfg.Backup.Workdir))
+	}
+	execArgs = append(execArgs, shellQuoteB(container), "sh", "-c", shellQuoteB(command))
+	if _, err := d.ssh.Run(ctx, host, strings.Join(execArgs, " ")); err != nil {
+		return fmt.Errorf("backup command failed: %w", err)
+	}
+
+	d.log.Printf("backup: copying %s out of %s -> %s on %s", containerArtifact, container, hostTmp, host)
+	if _, err := d.ssh.Run(ctx, host, fmt.Sprintf("docker cp %s:%s %s",
+		shellQuoteB(container), shellQuoteB(containerArtifact), shellQuoteB(hostTmp))); err != nil {
+		return fmt.Errorf("docker cp failed: %w", err)
+	}
+	// Best-effort: remove the in-container temp; not fatal if it fails.
+	_, _ = d.ssh.Run(ctx, host, fmt.Sprintf("docker exec %s rm -f %s",
+		shellQuoteB(container), shellQuoteB(containerArtifact)))
+
+	if err := os.MkdirAll(filepath.Dir(localPath), 0o755); err != nil {
+		return err
+	}
+	f, err := os.Create(localPath)
+	if err != nil {
+		return err
+	}
+	d.log.Printf("backup: downloading %s -> %s", hostTmp, localPath)
+	if err := d.ssh.Download(ctx, host, hostTmp, f); err != nil {
+		f.Close()
+		_ = os.Remove(localPath)
+		return fmt.Errorf("download failed: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	_, _ = d.ssh.Run(ctx, host, "rm -f "+shellQuoteB(hostTmp))
+
+	if d.cfg.Backup.Retain > 0 {
+		if err := pruneBackups(filepath.Dir(localPath), d.cfg.Backup.Retain); err != nil {
+			d.log.Printf("backup: retention prune warning: %v", err)
+		}
+	}
+
+	info, err := os.Stat(localPath)
+	if err == nil {
+		d.log.Printf("backup complete: %s (%d bytes)", localPath, info.Size())
+	}
+	return nil
+}
+
+// firstRunning returns one running container's host, name, and version.
+// Used by Backup to pick a single target across multi-host roles.
+func (d *Deployer) firstRunning(ctx context.Context) (host, name, version string, err error) {
+	for _, role := range orderedRoles(d.cfg.Servers) {
+		for _, h := range d.cfg.Servers[role].Hosts {
+			containers, lerr := d.remoteDocker.ListContainersByService(ctx, h, d.cfg.Service, role)
+			if lerr != nil {
+				return "", "", "", lerr
+			}
+			for _, c := range containers {
+				if c.State == "running" || c.State == "restarting" {
+					return h, c.Name, c.Version, nil
+				}
+			}
+		}
+	}
+	return "", "", "", fmt.Errorf("no running container found for service %s", d.cfg.Service)
+}
+
+// pruneBackups deletes older files in dir, keeping only the most recent
+// retain entries by mtime.
+func pruneBackups(dir string, retain int) error {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return err
+	}
+	type fileInfo struct {
+		name  string
+		mtime time.Time
+	}
+	files := make([]fileInfo, 0, len(entries))
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		files = append(files, fileInfo{name: e.Name(), mtime: info.ModTime()})
+	}
+	if len(files) <= retain {
+		return nil
+	}
+	sort.Slice(files, func(i, j int) bool { return files[i].mtime.After(files[j].mtime) })
+	var firstErr error
+	for _, f := range files[retain:] {
+		if err := os.Remove(filepath.Join(dir, f.name)); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
+func shellQuoteB(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'"
 }
 
 // ProxyBoot starts the kamal-proxy container on every host listed in
