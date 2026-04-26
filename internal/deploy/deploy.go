@@ -730,7 +730,7 @@ func (d *Deployer) Backup(ctx context.Context) error {
 	}
 	artifactName := expand(tmpl)
 	command := expand(d.cfg.Backup.Command)
-	containerArtifact := expand(d.cfg.Backup.Artifact)
+	artifact := expand(d.cfg.Backup.Artifact)
 	hostTmp := fmt.Sprintf("/tmp/qifa-backup-%s-%s", d.cfg.Service, stamp)
 	// BACKUP_DIR env var overrides the default ./backups/<service>/ — useful
 	// for Make-based wrappers and for off-host destinations like NFS mounts.
@@ -740,27 +740,42 @@ func (d *Deployer) Backup(ctx context.Context) error {
 	}
 	localPath := filepath.Join(backupDir, artifactName)
 
-	d.log.Printf("backup: running command in %s on %s", container, host)
-	execArgs := []string{"docker", "exec"}
-	if d.cfg.Backup.User != "" {
-		execArgs = append(execArgs, "--user", shellQuoteB(d.cfg.Backup.User))
+	mode := d.cfg.Backup.Mode
+	if mode == "" {
+		mode = "container"
 	}
-	if d.cfg.Backup.Workdir != "" {
-		execArgs = append(execArgs, "--workdir", shellQuoteB(d.cfg.Backup.Workdir))
+	switch mode {
+	case "container":
+		d.log.Printf("backup: running command in %s on %s", container, host)
+		execArgs := []string{"docker", "exec"}
+		if d.cfg.Backup.User != "" {
+			execArgs = append(execArgs, "--user", shellQuoteB(d.cfg.Backup.User))
+		}
+		if d.cfg.Backup.Workdir != "" {
+			execArgs = append(execArgs, "--workdir", shellQuoteB(d.cfg.Backup.Workdir))
+		}
+		execArgs = append(execArgs, shellQuoteB(container), "sh", "-c", shellQuoteB(command))
+		if _, err := d.ssh.Run(ctx, host, strings.Join(execArgs, " ")); err != nil {
+			return fmt.Errorf("backup command failed: %w", err)
+		}
+		d.log.Printf("backup: copying %s out of %s -> %s on %s", artifact, container, hostTmp, host)
+		if _, err := d.ssh.Run(ctx, host, fmt.Sprintf("docker cp %s:%s %s",
+			shellQuoteB(container), shellQuoteB(artifact), shellQuoteB(hostTmp))); err != nil {
+			return fmt.Errorf("docker cp failed: %w", err)
+		}
+		_, _ = d.ssh.Run(ctx, host, fmt.Sprintf("docker exec %s rm -f %s",
+			shellQuoteB(container), shellQuoteB(artifact)))
+	case "host":
+		d.log.Printf("backup: running command on %s (host mode)", host)
+		if _, err := d.ssh.Run(ctx, host, command); err != nil {
+			return fmt.Errorf("backup command failed: %w", err)
+		}
+		// In host mode, artifact IS the host path — just rename to the
+		// canonical hostTmp so the download step is the same code path.
+		if _, err := d.ssh.Run(ctx, host, fmt.Sprintf("mv %s %s", shellQuoteB(artifact), shellQuoteB(hostTmp))); err != nil {
+			return fmt.Errorf("staging artifact failed: %w", err)
+		}
 	}
-	execArgs = append(execArgs, shellQuoteB(container), "sh", "-c", shellQuoteB(command))
-	if _, err := d.ssh.Run(ctx, host, strings.Join(execArgs, " ")); err != nil {
-		return fmt.Errorf("backup command failed: %w", err)
-	}
-
-	d.log.Printf("backup: copying %s out of %s -> %s on %s", containerArtifact, container, hostTmp, host)
-	if _, err := d.ssh.Run(ctx, host, fmt.Sprintf("docker cp %s:%s %s",
-		shellQuoteB(container), shellQuoteB(containerArtifact), shellQuoteB(hostTmp))); err != nil {
-		return fmt.Errorf("docker cp failed: %w", err)
-	}
-	// Best-effort: remove the in-container temp; not fatal if it fails.
-	_, _ = d.ssh.Run(ctx, host, fmt.Sprintf("docker exec %s rm -f %s",
-		shellQuoteB(container), shellQuoteB(containerArtifact)))
 
 	if err := os.MkdirAll(filepath.Dir(localPath), 0o755); err != nil {
 		return err

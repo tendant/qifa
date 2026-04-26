@@ -29,20 +29,27 @@ type Config struct {
 }
 
 // Backup describes a per-service snapshot recipe. `qifa backup` runs the
-// command inside the running app container, copies the produced artifact
-// back to ./backups/<service>/, and applies optional retention. App-specific
-// dump tools (gitea dump, postgres pg_dump, mysql dump, restic, plain tar,
-// etc.) plug in via Command — qifa doesn't bake in any backend.
+// command, copies the produced artifact back to ./backups/<service>/, and
+// applies optional retention. App-specific dump tools (gitea dump, postgres
+// pg_dump, mysql dump, restic, plain tar, etc.) plug in via Command — qifa
+// doesn't bake in any backend.
 type Backup struct {
-	// Command is run inside the container via `docker exec sh -c`. It must
-	// produce the artifact at the path given by Artifact.
+	// Mode picks where Command runs:
+	//   "container" (default) — docker exec sh -c <command> in the running
+	//     app container. Requires the container image to ship a shell.
+	//     Artifact is a path inside the container; qifa docker-cp's it out.
+	//   "host" — run the command directly on the target host via SSH (no
+	//     docker exec). Use for distroless apps where the container has no
+	//     shell but state lives in a bind-mount on the host. Artifact is a
+	//     path on the host.
+	Mode string `yaml:"mode"`
+	// Command is the snapshot recipe; must produce Artifact.
 	Command string `yaml:"command"`
-	// User and Workdir map to docker exec --user / --workdir. Optional.
+	// User and Workdir map to docker exec --user / --workdir. Container mode only.
 	User    string `yaml:"user"`
 	Workdir string `yaml:"workdir"`
-	// Artifact is the path inside the container where Command writes its
-	// output. qifa docker-cp's it out, scp's it back, then removes both
-	// the in-container and host-side temp copies.
+	// Artifact is the path where Command writes its output (inside the
+	// container in container mode, on the host in host mode).
 	Artifact string `yaml:"artifact"`
 	// ArtifactName templates the local filename. Supports ${SERVICE},
 	// ${VERSION}, ${STAMP}. Defaults to "${SERVICE}-${VERSION}-${STAMP}<ext>"
@@ -230,11 +237,16 @@ func (c *Config) Validate() error {
 		return errors.New("config.registry.username and config.registry.password_env are required when config.registry.server is set")
 	}
 	if c.Backup != nil {
+		switch c.Backup.Mode {
+		case "", "container", "host":
+		default:
+			return fmt.Errorf("config.backup.mode must be \"container\" or \"host\", got %q", c.Backup.Mode)
+		}
 		if strings.TrimSpace(c.Backup.Command) == "" {
 			return errors.New("config.backup.command is required when config.backup is set")
 		}
 		if strings.TrimSpace(c.Backup.Artifact) == "" {
-			return errors.New("config.backup.artifact is required when config.backup is set (path inside the container where the command writes its output)")
+			return errors.New("config.backup.artifact is required when config.backup is set (path where the command writes its output)")
 		}
 	}
 	return c.validateBuilder()
