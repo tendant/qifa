@@ -26,6 +26,34 @@ type Config struct {
 	Rollout     Rollout              `yaml:"rollout"`
 	ProxyBoot   ProxyBoot            `yaml:"proxy_boot"`
 	Backup      *Backup              `yaml:"backup"`
+	Restore     *Restore             `yaml:"restore"`
+}
+
+// Restore is the symmetric inverse of Backup. qifa stages the user-provided
+// local file on the target host, then runs Command — either inside the
+// container (mode: container) or on the host directly (mode: host). The
+// command receives ${ARTIFACT} (the staged file's path).
+//
+// Intentionally minimal: no auto-stop/start, no snapshot-swap. If your
+// restore needs those (like gitea's SQLite restore), wrap qifa restore in a
+// shell script that handles the safety steps. Most volume-only apps just
+// need an untar and a separate `qifa restart`.
+type Restore struct {
+	// Mode mirrors Backup.Mode: "container" (default) runs Command via
+	// docker exec sh -c in the running container; "host" runs Command
+	// directly on the target host via SSH.
+	Mode string `yaml:"mode"`
+	// Command consumes the staged file. ${ARTIFACT} is expanded to its path
+	// (inside the container in container mode, on the host in host mode).
+	// ${SERVICE} is also available.
+	Command string `yaml:"command"`
+	// User and Workdir map to docker exec --user / --workdir. Container mode only.
+	User    string `yaml:"user"`
+	Workdir string `yaml:"workdir"`
+	// Artifact is where qifa stages the uploaded file (inside the container
+	// for container mode, on the host for host mode). Defaults to a temp
+	// path under /tmp.
+	Artifact string `yaml:"artifact"`
 }
 
 // Backup describes a per-service snapshot recipe. `qifa backup` runs the
@@ -247,6 +275,16 @@ func (c *Config) Validate() error {
 		}
 		if strings.TrimSpace(c.Backup.Artifact) == "" {
 			return errors.New("config.backup.artifact is required when config.backup is set (path where the command writes its output)")
+		}
+	}
+	if c.Restore != nil {
+		switch c.Restore.Mode {
+		case "", "container", "host":
+		default:
+			return fmt.Errorf("config.restore.mode must be \"container\" or \"host\", got %q", c.Restore.Mode)
+		}
+		if strings.TrimSpace(c.Restore.Command) == "" {
+			return errors.New("config.restore.command is required when config.restore is set")
 		}
 	}
 	return c.validateBuilder()

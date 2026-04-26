@@ -808,6 +808,85 @@ func (d *Deployer) Backup(ctx context.Context) error {
 	return nil
 }
 
+// Restore is the symmetric inverse of Backup. It uploads localPath to the
+// target host (or into the running container, depending on cfg.Restore.Mode),
+// then runs cfg.Restore.Command with ${ARTIFACT} pointing at the staged
+// path. No auto-stop / auto-snapshot — operators wrap qifa restore in
+// shell logic if their app needs the safety dance (see gitea-restore.sh).
+func (d *Deployer) Restore(ctx context.Context, localPath string) error {
+	if d.cfg.Restore == nil {
+		return errors.New("config.restore is not set in qifa.yaml")
+	}
+	host, container, _, err := d.firstRunning(ctx)
+	if err != nil {
+		return err
+	}
+	mode := d.cfg.Restore.Mode
+	if mode == "" {
+		mode = "container"
+	}
+	stamp := time.Now().UTC().Format("20060102T150405Z")
+	artifact := d.cfg.Restore.Artifact
+	if strings.TrimSpace(artifact) == "" {
+		artifact = fmt.Sprintf("/tmp/qifa-restore-%s-%s%s", d.cfg.Service, stamp, filepath.Ext(localPath))
+	}
+	hostStage := fmt.Sprintf("/tmp/qifa-restore-%s-%s%s", d.cfg.Service, stamp, filepath.Ext(localPath))
+
+	data, err := os.ReadFile(localPath)
+	if err != nil {
+		return err
+	}
+	d.log.Printf("restore: uploading %s -> %s on %s (%d bytes)", localPath, hostStage, host, len(data))
+	if err := d.ssh.Upload(ctx, host, hostStage, data, 0o600); err != nil {
+		return err
+	}
+	expand := func(s string) string {
+		s = strings.ReplaceAll(s, "${SERVICE}", d.cfg.Service)
+		s = strings.ReplaceAll(s, "${ARTIFACT}", artifact)
+		return s
+	}
+	command := expand(d.cfg.Restore.Command)
+
+	switch mode {
+	case "container":
+		d.log.Printf("restore: copying %s -> %s:%s", hostStage, container, artifact)
+		if _, err := d.ssh.Run(ctx, host, fmt.Sprintf("docker cp %s %s:%s",
+			shellQuoteB(hostStage), shellQuoteB(container), shellQuoteB(artifact))); err != nil {
+			return fmt.Errorf("docker cp into container failed: %w", err)
+		}
+		d.log.Printf("restore: running command in %s", container)
+		execArgs := []string{"docker", "exec"}
+		if d.cfg.Restore.User != "" {
+			execArgs = append(execArgs, "--user", shellQuoteB(d.cfg.Restore.User))
+		}
+		if d.cfg.Restore.Workdir != "" {
+			execArgs = append(execArgs, "--workdir", shellQuoteB(d.cfg.Restore.Workdir))
+		}
+		execArgs = append(execArgs, shellQuoteB(container), "sh", "-c", shellQuoteB(command))
+		if _, err := d.ssh.Run(ctx, host, strings.Join(execArgs, " ")); err != nil {
+			return fmt.Errorf("restore command failed: %w", err)
+		}
+		_, _ = d.ssh.Run(ctx, host, fmt.Sprintf("docker exec %s rm -f %s",
+			shellQuoteB(container), shellQuoteB(artifact)))
+	case "host":
+		// In host mode the staged file IS the artifact. Move to the
+		// configured artifact path if the user picked one.
+		if artifact != hostStage {
+			if _, err := d.ssh.Run(ctx, host, fmt.Sprintf("mv %s %s",
+				shellQuoteB(hostStage), shellQuoteB(artifact))); err != nil {
+				return fmt.Errorf("staging artifact failed: %w", err)
+			}
+		}
+		d.log.Printf("restore: running command on %s (host mode)", host)
+		if _, err := d.ssh.Run(ctx, host, command); err != nil {
+			return fmt.Errorf("restore command failed: %w", err)
+		}
+	}
+	_, _ = d.ssh.Run(ctx, host, "rm -f "+shellQuoteB(hostStage)+" "+shellQuoteB(artifact))
+	d.log.Printf("restore complete: %s applied", localPath)
+	return nil
+}
+
 // firstRunning returns one running container's host, name, and version.
 // Used by Backup to pick a single target across multi-host roles.
 func (d *Deployer) firstRunning(ctx context.Context) (host, name, version string, err error) {
