@@ -27,6 +27,22 @@ type Config struct {
 	ProxyBoot   ProxyBoot            `yaml:"proxy_boot"`
 	Backup      *Backup              `yaml:"backup"`
 	Restore     *Restore             `yaml:"restore"`
+	Files       []FileMapping        `yaml:"files"`
+}
+
+// FileMapping pushes a local file to a host path. Used to manage app config
+// files (glance.yml, gatus's config.yaml, nginx.conf, etc.) — local file is
+// the source of truth, qifa scp's it to the host on `qifa sync`,
+// `qifa deploy`, and `qifa restart`. Hand-edits on the host are clobbered
+// by the next sync (acceptable for single-operator homelab; not for teams).
+type FileMapping struct {
+	// Src is a local path, typically relative to the qifa.yaml directory.
+	Src string `yaml:"src"`
+	// Dest is the absolute path on the target host. The parent directory is
+	// auto-created via mkdir -p.
+	Dest string `yaml:"dest"`
+	// Mode is the file mode (0644 default). Octal literal in YAML: 0o644 or 420.
+	Mode int `yaml:"mode"`
 }
 
 // Restore is the symmetric inverse of Backup. qifa stages the user-provided
@@ -285,6 +301,14 @@ func (c *Config) Validate() error {
 		}
 		if strings.TrimSpace(c.Restore.Command) == "" {
 			return errors.New("config.restore.command is required when config.restore is set")
+		}
+	}
+	for i, f := range c.Files {
+		if strings.TrimSpace(f.Src) == "" {
+			return fmt.Errorf("config.files[%d].src is required", i)
+		}
+		if strings.TrimSpace(f.Dest) == "" {
+			return fmt.Errorf("config.files[%d].dest is required", i)
 		}
 	}
 	return c.validateBuilder()

@@ -79,6 +79,9 @@ func (d *Deployer) Deploy(ctx context.Context) error {
 	if err := hooks.Run(ctx, d.cfg.Hooks.PreBuild, map[string]string{"QIFA_VERSION": version}); err != nil {
 		return err
 	}
+	if err := d.SyncFiles(ctx); err != nil {
+		return d.failDeployment(deployment, err)
+	}
 	if err := d.SweepStaleContainers(ctx); err != nil {
 		return d.failDeployment(deployment, err)
 	}
@@ -525,6 +528,11 @@ func (d *Deployer) Start(ctx context.Context) error {
 }
 
 func (d *Deployer) Restart(ctx context.Context) error {
+	// Push any local file edits before bouncing the container so it picks
+	// them up on the way back up. SyncFiles is a no-op when files: is empty.
+	if err := d.SyncFiles(ctx); err != nil {
+		return err
+	}
 	if err := d.Stop(ctx); err != nil {
 		return err
 	}
@@ -804,6 +812,36 @@ func (d *Deployer) Backup(ctx context.Context) error {
 	info, err := os.Stat(localPath)
 	if err == nil {
 		d.log.Printf("backup complete: %s (%d bytes)", localPath, info.Size())
+	}
+	return nil
+}
+
+// SyncFiles pushes every cfg.Files entry to every unique target host. Idempotent
+// — no diff today (always uploads), small files so it doesn't matter. Local
+// file is the source of truth; hand-edits on the host are overwritten.
+func (d *Deployer) SyncFiles(ctx context.Context) error {
+	if len(d.cfg.Files) == 0 {
+		return nil
+	}
+	hosts := d.uniqueHosts()
+	if len(hosts) == 0 {
+		return errors.New("no hosts configured for files sync")
+	}
+	for _, f := range d.cfg.Files {
+		data, err := os.ReadFile(f.Src)
+		if err != nil {
+			return fmt.Errorf("read %s: %w", f.Src, err)
+		}
+		mode := f.Mode
+		if mode == 0 {
+			mode = 0o644
+		}
+		for _, host := range hosts {
+			d.log.Printf("sync: %s -> %s:%s (%d bytes)", f.Src, host, f.Dest, len(data))
+			if err := d.ssh.Upload(ctx, host, f.Dest, data, os.FileMode(mode)); err != nil {
+				return fmt.Errorf("upload %s to %s:%s: %w", f.Src, host, f.Dest, err)
+			}
+		}
 	}
 	return nil
 }

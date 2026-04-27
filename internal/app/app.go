@@ -156,6 +156,10 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		return withRuntime(ctx, stdout, stderr, func(rt *runtime) error {
 			return rt.deployer.SweepStaleContainers(ctx)
 		})
+	case "sync":
+		return withRuntime(ctx, stdout, stderr, func(rt *runtime) error {
+			return rt.deployer.SyncFiles(ctx)
+		})
 	case "proxy":
 		if len(args) < 2 {
 			return errors.New("usage: qifa proxy <boot|start|stop|restart|upgrade|remove|logs|details>")
@@ -378,6 +382,7 @@ func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "  backup")
 	fmt.Fprintln(w, "  restore <local-file>")
 	fmt.Fprintln(w, "  sweep")
+	fmt.Fprintln(w, "  sync")
 	fmt.Fprintln(w, "  lock <status|release>")
 	fmt.Fprintln(w, "  proxy <boot|start|stop|restart|upgrade|remove [--purge]|logs [--follow] [--lines N]|details>")
 	fmt.Fprintln(w, "  status")
