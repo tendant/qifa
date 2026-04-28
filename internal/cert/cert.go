@@ -258,7 +258,30 @@ func (m *Manager) runLego(ctx context.Context, action string, opts IssueOptions,
 		args = append(args, shellQuote(e))
 	}
 	cmd := strings.Join(args, " ")
-	return m.ssh.Stream(ctx, m.proxyHost, cmd, m.out)
+	if err := m.ssh.Stream(ctx, m.proxyHost, cmd, m.out); err != nil {
+		return err
+	}
+	// lego (running as root inside the helper container) writes certs
+	// as root mode 600. kamal-proxy runs as a non-root user (uid 1001
+	// in current upstream images) and can't even traverse the qifa
+	// subtree to load the cert. Open it up just enough — directories
+	// world-traversable, files world-readable. The volume itself is
+	// docker-private, so this isn't loosening anything that matters.
+	return m.fixCertPerms(ctx)
+}
+
+// fixCertPerms makes the qifa cert subtree readable by whatever
+// non-root user kamal-proxy is running as. Idempotent.
+func (m *Manager) fixCertPerms(ctx context.Context) error {
+	cmd := fmt.Sprintf(
+		"docker run --rm -v %s:%s %s chmod -R o+rX %s",
+		shellQuote(m.volumeName),
+		shellQuote(m.mountPoint()),
+		shellQuote(m.alpineImg),
+		shellQuote(m.subdirPath()),
+	)
+	_, err := m.ssh.Run(ctx, m.proxyHost, cmd)
+	return err
 }
 
 // pushEnv writes opts.EnvVars to a tmpfs file on the proxy host with
