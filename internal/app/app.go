@@ -339,6 +339,8 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 				return errors.New("usage: qifa accessory <boot|stop|start|restart|remove|logs|exec> <name> [args...]")
 			}
 		})
+	case "cert":
+		return runCert(ctx, args[1:], stdout, stderr)
 	default:
 		printUsage(stdout)
 		return fmt.Errorf("unknown command %q", args[0])
@@ -392,4 +394,5 @@ func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "  app maintenance [--message <msg>] [--drain-timeout <duration>]")
 	fmt.Fprintln(w, "  app live")
 	fmt.Fprintln(w, "  accessory <boot|stop|start|restart|remove|logs|exec> <name> [args...]")
+	fmt.Fprintln(w, "  cert <issue|renew|list|remove> [args...]")
 }

@@ -138,12 +138,47 @@ type Proxy struct {
 	DeployTimeout   time.Duration `yaml:"deploy_timeout"`
 	DrainTimeout    time.Duration `yaml:"drain_timeout"`
 	TargetTimeout   time.Duration `yaml:"target_timeout"`
-	TLS             bool          `yaml:"tls"`
+	SSL             bool          `yaml:"ssl"`
 	TLSRedirect     *bool         `yaml:"tls_redirect"`
-	TLSStaging      bool          `yaml:"tls_staging"`
+	TLS             *TLS          `yaml:"tls"`
 	ForwardHeaders  *bool         `yaml:"forward_headers"`
 	PathPrefixes    []string      `yaml:"path_prefixes"`
 	StripPathPrefix *bool         `yaml:"strip_path_prefix"`
+}
+
+// TLS controls who issues, renews, and serves the cert when proxy.ssl
+// is true. Three sources, picked per-app:
+//
+//   kamal:  kamal-proxy autocert (HTTP-01). Needs port 80 publicly
+//           reachable; kamal-proxy renews silently. Lowest overhead
+//           for public hosts.
+//   qifa:   qifa-issued via lego. DNS-01 by default (works for
+//           tailscale-private hosts and wildcards). Renewed by
+//           `qifa cert renew`; affected apps must be redeployed for
+//           kamal-proxy to pick up the new cert.
+//   static: BYO. User owns acquisition and renewal entirely; qifa
+//           just plumbs paths to kamal-proxy.
+type TLS struct {
+	Source string `yaml:"source"`
+
+	// Staging requests Let's Encrypt's staging environment (avoids LE
+	// rate limits while testing). Honored when source: kamal | qifa.
+	Staging bool `yaml:"staging"`
+
+	// Challenge selects ACME challenge type when source: qifa. One of
+	// "dns-01" (default) or "http-01". Ignored otherwise.
+	Challenge string `yaml:"challenge"`
+
+	// Provider is the lego DNS provider name (e.g. "cloudflare",
+	// "route53"). Required when source: qifa and challenge: dns-01.
+	// Full list: https://go-acme.github.io/lego/dns/
+	Provider string `yaml:"provider"`
+
+	// CertPath / KeyPath are the absolute paths inside the kamal-proxy
+	// container. Required when source: static. For source: qifa, qifa
+	// computes them automatically from the proxy host.
+	CertPath string `yaml:"cert_path"`
+	KeyPath  string `yaml:"key_path"`
 }
 
 // ProxyBoot describes how to boot the shared kamal-proxy container itself.
@@ -311,7 +346,47 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("config.files[%d].dest is required", i)
 		}
 	}
+	if err := c.validateProxyTLS(); err != nil {
+		return err
+	}
 	return c.validateBuilder()
+}
+
+func (c *Config) validateProxyTLS() error {
+	if !c.Proxy.SSL {
+		// SSL disabled — TLS block ignored.
+		return nil
+	}
+	if c.Proxy.Host == "" && len(c.Proxy.Hosts) == 0 {
+		return errors.New("config.proxy.ssl: true requires config.proxy.host (or .hosts)")
+	}
+	if c.Proxy.TLS == nil {
+		return errors.New("config.proxy.ssl: true requires config.proxy.tls.source (one of: kamal, qifa, static)")
+	}
+	switch c.Proxy.TLS.Source {
+	case "kamal":
+		// Anything goes; kamal-proxy autocert handles it.
+	case "qifa":
+		switch c.Proxy.TLS.Challenge {
+		case "", "dns-01":
+			if c.Proxy.TLS.Provider == "" {
+				return errors.New("config.proxy.tls.provider is required when source: qifa and challenge: dns-01")
+			}
+		case "http-01":
+			// no provider needed
+		default:
+			return fmt.Errorf("config.proxy.tls.challenge must be \"dns-01\" or \"http-01\", got %q", c.Proxy.TLS.Challenge)
+		}
+	case "static":
+		if c.Proxy.TLS.CertPath == "" || c.Proxy.TLS.KeyPath == "" {
+			return errors.New("config.proxy.tls.cert_path and config.proxy.tls.key_path are both required when source: static")
+		}
+	case "":
+		return errors.New("config.proxy.tls.source is required when proxy.ssl: true (one of: kamal, qifa, static)")
+	default:
+		return fmt.Errorf("config.proxy.tls.source must be \"kamal\", \"qifa\", or \"static\", got %q", c.Proxy.TLS.Source)
+	}
+	return nil
 }
 
 func applyDefaults(cfg *Config) {

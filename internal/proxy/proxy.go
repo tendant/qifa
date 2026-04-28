@@ -278,14 +278,30 @@ func (k *KamalProxy) deployCommand(target Target) string {
 		"--drain-timeout", shellQuote(k.app.DrainTimeout.String()),
 		"--target-timeout", shellQuote(k.app.TargetTimeout.String()),
 	)
-	if k.app.TLS {
+	if k.app.SSL {
 		args = append(args, "--tls")
-	}
-	if k.app.TLSRedirect != nil {
-		args = append(args, "--tls-redirect="+strconv.FormatBool(*k.app.TLSRedirect))
-	}
-	if k.app.TLSStaging {
-		args = append(args, "--tls-staging")
+		if k.app.TLSRedirect != nil {
+			args = append(args, "--tls-redirect="+strconv.FormatBool(*k.app.TLSRedirect))
+		}
+		if k.app.TLS != nil {
+			switch k.app.TLS.Source {
+			case "kamal":
+				if k.app.TLS.Staging {
+					args = append(args, "--tls-staging")
+				}
+			case "qifa":
+				certPath, keyPath := QifaCertPaths(primaryHost(k.app))
+				args = append(args,
+					"--tls-certificate-path", shellQuote(certPath),
+					"--tls-private-key-path", shellQuote(keyPath),
+				)
+			case "static":
+				args = append(args,
+					"--tls-certificate-path", shellQuote(k.app.TLS.CertPath),
+					"--tls-private-key-path", shellQuote(k.app.TLS.KeyPath),
+				)
+			}
+		}
 	}
 	if k.app.ForwardHeaders != nil {
 		args = append(args, "--forward-headers="+strconv.FormatBool(*k.app.ForwardHeaders))
@@ -306,4 +322,29 @@ func (k *KamalProxy) hosts() []string {
 	}
 	hosts = append(hosts, k.app.Hosts...)
 	return hosts
+}
+
+// primaryHost returns the canonical hostname used as the cert filename
+// for source: qifa. Prefers Proxy.Host; falls back to the first entry
+// in Proxy.Hosts.
+func primaryHost(p config.Proxy) string {
+	if p.Host != "" {
+		return p.Host
+	}
+	if len(p.Hosts) > 0 {
+		return p.Hosts[0]
+	}
+	return ""
+}
+
+// QifaCertRootInContainer is where qifa-managed certs live inside the
+// kamal-proxy container, under its state-volume mount. lego writes to
+// the same volume at <volume>/qifa/certificates/<host>.{crt,key}.
+const QifaCertRootInContainer = "/home/kamal-proxy/.config/kamal-proxy/qifa/certificates"
+
+// QifaCertPaths returns the cert and key paths kamal-proxy reads when
+// source: qifa is in effect for the given proxy host.
+func QifaCertPaths(host string) (cert, key string) {
+	return QifaCertRootInContainer + "/" + host + ".crt",
+		QifaCertRootInContainer + "/" + host + ".key"
 }

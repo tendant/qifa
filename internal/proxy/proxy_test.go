@@ -20,9 +20,12 @@ func TestDeployCommandIncludesConfiguredFlags(t *testing.T) {
 			DeployTimeout:   45 * time.Second,
 			DrainTimeout:    20 * time.Second,
 			TargetTimeout:   15 * time.Second,
-			TLS:             true,
+			SSL:             true,
 			TLSRedirect:     &tlsRedirect,
-			TLSStaging:      true,
+			TLS: &config.TLS{
+				Source:  "kamal",
+				Staging: true,
+			},
 			ForwardHeaders:  &forwardHeaders,
 			PathPrefixes:    []string{"/", "/api"},
 			StripPathPrefix: &stripPathPrefix,
@@ -61,6 +64,89 @@ func TestDeployCommandIncludesConfiguredFlags(t *testing.T) {
 	} {
 		if !strings.Contains(command, fragment) {
 			t.Fatalf("missing fragment %q in %q", fragment, command)
+		}
+	}
+}
+
+func TestDeployCommandTLSSources(t *testing.T) {
+	tests := []struct {
+		name    string
+		tls     *config.TLS
+		want    []string
+		notWant []string
+	}{
+		{
+			name: "source kamal staging false omits --tls-staging",
+			tls:  &config.TLS{Source: "kamal"},
+			want: []string{"--tls"},
+			notWant: []string{
+				"--tls-staging",
+				"--tls-certificate-path",
+				"--tls-private-key-path",
+			},
+		},
+		{
+			name: "source qifa derives container paths from host",
+			tls:  &config.TLS{Source: "qifa", Provider: "cloudflare"},
+			want: []string{
+				"--tls",
+				"--tls-certificate-path '/home/kamal-proxy/.config/kamal-proxy/qifa/certificates/app.example.com.crt'",
+				"--tls-private-key-path '/home/kamal-proxy/.config/kamal-proxy/qifa/certificates/app.example.com.key'",
+			},
+			notWant: []string{"--tls-staging"},
+		},
+		{
+			name: "source static passes user-supplied paths verbatim",
+			tls: &config.TLS{
+				Source:   "static",
+				CertPath: "/etc/ssl/foo.crt",
+				KeyPath:  "/etc/ssl/foo.key",
+			},
+			want: []string{
+				"--tls",
+				"--tls-certificate-path '/etc/ssl/foo.crt'",
+				"--tls-private-key-path '/etc/ssl/foo.key'",
+			},
+			notWant: []string{"--tls-staging"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			p := &KamalProxy{
+				app: config.Proxy{
+					Host: "app.example.com",
+					SSL:  true,
+					TLS:  tc.tls,
+				},
+			}
+			cmd := p.deployCommand(Target{Service: "app", Host: "172.18.0.5", Port: 3000})
+			for _, w := range tc.want {
+				if !strings.Contains(cmd, w) {
+					t.Errorf("missing %q in %q", w, cmd)
+				}
+			}
+			for _, n := range tc.notWant {
+				if strings.Contains(cmd, n) {
+					t.Errorf("unexpected %q in %q", n, cmd)
+				}
+			}
+		})
+	}
+}
+
+func TestDeployCommandSSLDisabledOmitsTLSFlags(t *testing.T) {
+	p := &KamalProxy{
+		app: config.Proxy{
+			Host: "app.example.com",
+			SSL:  false,
+			TLS:  &config.TLS{Source: "kamal", Staging: true},
+		},
+	}
+	cmd := p.deployCommand(Target{Service: "app", Host: "172.18.0.5", Port: 3000})
+	for _, n := range []string{"--tls", "--tls-staging", "--tls-certificate-path"} {
+		if strings.Contains(cmd, n) {
+			t.Errorf("unexpected %q in %q (SSL: false)", n, cmd)
 		}
 	}
 }
