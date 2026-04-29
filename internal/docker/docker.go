@@ -238,7 +238,10 @@ func (r *Remote) RunContainer(ctx context.Context, host, name, imageRef, envFile
 
 // ensureVolumeHostDirs runs mkdir -p on the host side of each bind-mount
 // volume. Named volumes (e.g. "myvol:/data") are skipped — Docker creates
-// those automatically.
+// those automatically. Paths that already exist (file or dir) are also
+// skipped — single-file bind mounts (e.g. config.json:/etc/app/config.json)
+// are valid and the file is typically pre-populated by the files: block,
+// so blindly mkdir'ing it would fail with "File exists".
 func (r *Remote) ensureVolumeHostDirs(ctx context.Context, host string, volumes []string) error {
 	var dirs []string
 	for _, v := range volumes {
@@ -260,7 +263,13 @@ func (r *Remote) ensureVolumeHostDirs(ctx context.Context, host string, volumes 
 	for _, d := range dirs {
 		quoted = append(quoted, shellQuote(d))
 	}
-	_, err := r.client.Run(ctx, host, "mkdir -p "+strings.Join(quoted, " "))
+	// Skip mkdir if the path already exists (file or directory). Real
+	// mkdir errors (permission denied, etc.) still abort via `|| exit 1`.
+	cmd := fmt.Sprintf(
+		`for p in %s; do [ -e "$p" ] || mkdir -p "$p" || exit 1; done`,
+		strings.Join(quoted, " "),
+	)
+	_, err := r.client.Run(ctx, host, cmd)
 	return err
 }
 
