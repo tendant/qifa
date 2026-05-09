@@ -3,6 +3,7 @@ package ssh
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -208,6 +209,9 @@ func (c *Client) authMethods(resolved resolvedConfig) ([]gossh.AuthMethod, error
 	}
 
 	var methods []gossh.AuthMethod
+	if agentMethod, err := agentAuthMethod(); err == nil {
+		methods = append(methods, agentMethod)
+	}
 	if len(resolved.identityFiles) > 0 {
 		signers, err := signersFromFiles(resolved.identityFiles)
 		if err != nil {
@@ -216,9 +220,6 @@ func (c *Client) authMethods(resolved resolvedConfig) ([]gossh.AuthMethod, error
 		if len(signers) > 0 {
 			methods = append(methods, gossh.PublicKeys(signers...))
 		}
-	}
-	if agentMethod, err := agentAuthMethod(); err == nil {
-		methods = append(methods, agentMethod)
 	}
 	signers, err := defaultKeySigners()
 	if err != nil {
@@ -326,7 +327,8 @@ func signersFromFiles(paths []string) ([]gossh.Signer, error) {
 	for _, path := range paths {
 		signer, err := privateKey(path)
 		if err != nil {
-			if os.IsNotExist(err) || strings.Contains(err.Error(), "no such file") {
+			var pmErr *gossh.PassphraseMissingError
+			if os.IsNotExist(err) || strings.Contains(err.Error(), "no such file") || errors.As(err, &pmErr) {
 				continue
 			}
 			return nil, err
@@ -358,7 +360,8 @@ func defaultKeySigners() ([]gossh.Signer, error) {
 	} {
 		signer, err := privateKey(path)
 		if err != nil {
-			if os.IsNotExist(err) || strings.Contains(err.Error(), "no such file") {
+			var pmErr *gossh.PassphraseMissingError
+			if os.IsNotExist(err) || strings.Contains(err.Error(), "no such file") || errors.As(err, &pmErr) {
 				continue
 			}
 			return nil, err
