@@ -64,6 +64,22 @@ func versionString() string {
 }
 
 func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+	configFile := "qifa.yaml"
+	filtered := args[:0:0]
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "-c", "--config":
+			if i+1 >= len(args) {
+				return errors.New("-c/--config requires a file argument")
+			}
+			configFile = args[i+1]
+			i++
+		default:
+			filtered = append(filtered, args[i])
+		}
+	}
+	args = filtered
+
 	if len(args) == 0 {
 		printUsage(stdout)
 		return nil
@@ -74,7 +90,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		_, err := fmt.Fprintln(stdout, versionString())
 		return err
 	case "config":
-		cfg, err := config.Load("qifa.yaml")
+		cfg, err := config.Load(configFile)
 		if err != nil {
 			return err
 		}
@@ -101,7 +117,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 				dryRun = true
 			}
 		}
-		return withRuntime(ctx, stdout, stderr, func(rt *runtime) error {
+		return withRuntime(ctx, stdout, stderr, configFile, func(rt *runtime) error {
 			if dryRun {
 				return rt.deployer.Plan(ctx, stdout)
 			}
@@ -112,31 +128,31 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		if len(args) > 1 {
 			version = args[1]
 		}
-		return withRuntime(ctx, stdout, stderr, func(rt *runtime) error {
+		return withRuntime(ctx, stdout, stderr, configFile, func(rt *runtime) error {
 			return rt.deployer.Rollback(ctx, version)
 		})
 	case "stop":
-		return withRuntime(ctx, stdout, stderr, func(rt *runtime) error {
+		return withRuntime(ctx, stdout, stderr, configFile, func(rt *runtime) error {
 			return rt.deployer.Stop(ctx)
 		})
 	case "start":
-		return withRuntime(ctx, stdout, stderr, func(rt *runtime) error {
+		return withRuntime(ctx, stdout, stderr, configFile, func(rt *runtime) error {
 			return rt.deployer.Start(ctx)
 		})
 	case "restart":
-		return withRuntime(ctx, stdout, stderr, func(rt *runtime) error {
+		return withRuntime(ctx, stdout, stderr, configFile, func(rt *runtime) error {
 			return rt.deployer.Restart(ctx)
 		})
 	case "remove":
-		return withRuntime(ctx, stdout, stderr, func(rt *runtime) error {
+		return withRuntime(ctx, stdout, stderr, configFile, func(rt *runtime) error {
 			return rt.deployer.Remove(ctx)
 		})
 	case "prune":
-		return withRuntime(ctx, stdout, stderr, func(rt *runtime) error {
+		return withRuntime(ctx, stdout, stderr, configFile, func(rt *runtime) error {
 			return rt.deployer.Prune(ctx)
 		})
 	case "backup":
-		return withRuntime(ctx, stdout, stderr, func(rt *runtime) error {
+		return withRuntime(ctx, stdout, stderr, configFile, func(rt *runtime) error {
 			return rt.deployer.Backup(ctx)
 		})
 	case "restore":
@@ -149,15 +165,15 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		if localPath == "" {
 			return errors.New("usage: qifa restore <local-file>  (or set RESTORE_FROM=<path>)")
 		}
-		return withRuntime(ctx, stdout, stderr, func(rt *runtime) error {
+		return withRuntime(ctx, stdout, stderr, configFile, func(rt *runtime) error {
 			return rt.deployer.Restore(ctx, localPath)
 		})
 	case "sweep":
-		return withRuntime(ctx, stdout, stderr, func(rt *runtime) error {
+		return withRuntime(ctx, stdout, stderr, configFile, func(rt *runtime) error {
 			return rt.deployer.SweepStaleContainers(ctx)
 		})
 	case "sync":
-		return withRuntime(ctx, stdout, stderr, func(rt *runtime) error {
+		return withRuntime(ctx, stdout, stderr, configFile, func(rt *runtime) error {
 			return rt.deployer.SyncFiles(ctx)
 		})
 	case "proxy":
@@ -166,7 +182,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		}
 		verb := args[1]
 		rest := args[2:]
-		return withRuntime(ctx, stdout, stderr, func(rt *runtime) error {
+		return withRuntime(ctx, stdout, stderr, configFile, func(rt *runtime) error {
 			switch verb {
 			case "boot":
 				return rt.deployer.ProxyBoot(ctx)
@@ -218,18 +234,18 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		}
 		switch args[1] {
 		case "status":
-			return withRuntime(ctx, stdout, stderr, func(rt *runtime) error {
+			return withRuntime(ctx, stdout, stderr, configFile, func(rt *runtime) error {
 				return rt.deployer.LockStatus(ctx, stdout)
 			})
 		case "release":
-			return withRuntime(ctx, stdout, stderr, func(rt *runtime) error {
+			return withRuntime(ctx, stdout, stderr, configFile, func(rt *runtime) error {
 				return rt.deployer.LockRelease(ctx)
 			})
 		default:
 			return errors.New("usage: qifa lock <status|release>")
 		}
 	case "status":
-		return withRuntime(ctx, stdout, stderr, func(rt *runtime) error {
+		return withRuntime(ctx, stdout, stderr, configFile, func(rt *runtime) error {
 			return rt.deployer.Status(ctx, stdout)
 		})
 	case "logs":
@@ -254,7 +270,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 				return fmt.Errorf("unknown flag %q", rest[i])
 			}
 		}
-		return withRuntime(ctx, stdout, stderr, func(rt *runtime) error {
+		return withRuntime(ctx, stdout, stderr, configFile, func(rt *runtime) error {
 			return rt.deployer.Logs(ctx, lines, follow, stdout)
 		})
 	case "app":
@@ -267,11 +283,11 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 				return errors.New("usage: qifa app exec <command>")
 			}
 			command := strings.Join(args[2:], " ")
-			return withRuntime(ctx, stdout, stderr, func(rt *runtime) error {
+			return withRuntime(ctx, stdout, stderr, configFile, func(rt *runtime) error {
 				return rt.deployer.Exec(ctx, command, stdout)
 			})
 		case "containers":
-			return withRuntime(ctx, stdout, stderr, func(rt *runtime) error {
+			return withRuntime(ctx, stdout, stderr, configFile, func(rt *runtime) error {
 				return rt.deployer.ListContainers(ctx, stdout)
 			})
 		case "maintenance":
@@ -300,11 +316,11 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 					return fmt.Errorf("unknown flag %q", rest[i])
 				}
 			}
-			return withRuntime(ctx, stdout, stderr, func(rt *runtime) error {
+			return withRuntime(ctx, stdout, stderr, configFile, func(rt *runtime) error {
 				return rt.deployer.Maintenance(ctx, message, drainTimeout)
 			})
 		case "live":
-			return withRuntime(ctx, stdout, stderr, func(rt *runtime) error {
+			return withRuntime(ctx, stdout, stderr, configFile, func(rt *runtime) error {
 				return rt.deployer.Live(ctx)
 			})
 		default:
@@ -316,7 +332,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		}
 		verb := args[1]
 		name := args[2]
-		return withRuntime(ctx, stdout, stderr, func(rt *runtime) error {
+		return withRuntime(ctx, stdout, stderr, configFile, func(rt *runtime) error {
 			switch verb {
 			case "boot":
 				return rt.deployer.AccessoryBoot(ctx, name)
@@ -340,7 +356,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 			}
 		})
 	case "cert":
-		return runCert(ctx, args[1:], stdout, stderr)
+		return runCert(ctx, args[1:], stdout, stderr, configFile)
 	default:
 		printUsage(stdout)
 		return fmt.Errorf("unknown command %q", args[0])
@@ -351,8 +367,8 @@ type runtime struct {
 	deployer *deploy.Deployer
 }
 
-func withRuntime(ctx context.Context, stdout, stderr io.Writer, fn func(*runtime) error) error {
-	cfg, err := config.Load("qifa.yaml")
+func withRuntime(ctx context.Context, stdout, stderr io.Writer, configFile string, fn func(*runtime) error) error {
+	cfg, err := config.Load(configFile)
 	if err != nil {
 		return err
 	}
@@ -368,7 +384,7 @@ func withRuntime(ctx context.Context, stdout, stderr io.Writer, fn func(*runtime
 }
 
 func printUsage(w io.Writer) {
-	fmt.Fprintln(w, "usage: qifa <command>")
+	fmt.Fprintln(w, "usage: qifa [-c config.yaml] <command>")
 	fmt.Fprintln(w, "")
 	fmt.Fprintln(w, "commands:")
 	fmt.Fprintln(w, "  init [path]")

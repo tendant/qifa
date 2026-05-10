@@ -37,19 +37,19 @@ var certEnvPrefixes = []string{
 	"VULTR_",
 }
 
-func runCert(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+func runCert(ctx context.Context, args []string, stdout, stderr io.Writer, configFile string) error {
 	if len(args) == 0 {
 		return certUsageError()
 	}
 	switch args[0] {
 	case "issue":
-		return runCertIssue(ctx, args[1:], stdout, stderr)
+		return runCertIssue(ctx, args[1:], stdout, stderr, configFile)
 	case "renew":
-		return runCertRenew(ctx, args[1:], stdout, stderr)
+		return runCertRenew(ctx, args[1:], stdout, stderr, configFile)
 	case "list":
-		return runCertList(ctx, args[1:], stdout, stderr)
+		return runCertList(ctx, args[1:], stdout, stderr, configFile)
 	case "remove":
-		return runCertRemove(ctx, args[1:], stdout, stderr)
+		return runCertRemove(ctx, args[1:], stdout, stderr, configFile)
 	default:
 		return certUsageError()
 	}
@@ -134,7 +134,7 @@ func parseDays(s string) (int, error) {
 	return n, nil
 }
 
-func runCertIssue(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+func runCertIssue(ctx context.Context, args []string, stdout, stderr io.Writer, configFile string) error {
 	f, err := parseCertFlags(args)
 	if err != nil {
 		return err
@@ -148,7 +148,7 @@ func runCertIssue(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	if f.email == "" {
 		return errors.New("--email is required")
 	}
-	mgr, err := newCertManager(stdout)
+	mgr, err := newCertManager(stdout, configFile)
 	if err != nil {
 		return err
 	}
@@ -165,12 +165,12 @@ func runCertIssue(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	})
 }
 
-func runCertRenew(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+func runCertRenew(ctx context.Context, args []string, stdout, stderr io.Writer, configFile string) error {
 	f, err := parseCertFlags(args)
 	if err != nil {
 		return err
 	}
-	mgr, err := newCertManager(stdout)
+	mgr, err := newCertManager(stdout, configFile)
 	if err != nil {
 		return err
 	}
@@ -216,11 +216,11 @@ func runCertRenew(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	}, days)
 }
 
-func runCertList(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+func runCertList(ctx context.Context, args []string, stdout, stderr io.Writer, configFile string) error {
 	if len(args) > 0 {
 		return errors.New("qifa cert list takes no arguments")
 	}
-	mgr, err := newCertManager(stdout)
+	mgr, err := newCertManager(stdout, configFile)
 	if err != nil {
 		return err
 	}
@@ -238,7 +238,7 @@ func runCertList(ctx context.Context, args []string, stdout, stderr io.Writer) e
 	return nil
 }
 
-func runCertRemove(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+func runCertRemove(ctx context.Context, args []string, stdout, stderr io.Writer, configFile string) error {
 	f, err := parseCertFlags(args)
 	if err != nil {
 		return err
@@ -246,7 +246,7 @@ func runCertRemove(ctx context.Context, args []string, stdout, stderr io.Writer)
 	if f.host == "" {
 		return errors.New("usage: qifa cert remove <host>")
 	}
-	mgr, err := newCertManager(stdout)
+	mgr, err := newCertManager(stdout, configFile)
 	if err != nil {
 		return err
 	}
@@ -257,16 +257,16 @@ func runCertRemove(ctx context.Context, args []string, stdout, stderr io.Writer)
 	return nil
 }
 
-// newCertManager loads the qifa.yaml in cwd to derive the proxy host
+// newCertManager loads the config file to derive the proxy host
 // and SSH config, then constructs a cert.Manager.
-func newCertManager(out io.Writer) (*cert.Manager, error) {
-	cfg, err := config.Load("qifa.yaml")
+func newCertManager(out io.Writer, configFile string) (*cert.Manager, error) {
+	cfg, err := config.Load(configFile)
 	if err != nil {
-		return nil, fmt.Errorf("qifa cert needs a qifa.yaml in the current directory (typically build/proxy/ or any build/<app>/): %w", err)
+		return nil, fmt.Errorf("qifa cert needs a config file (tried %s): %w", configFile, err)
 	}
 	host := proxyHostFromConfig(cfg)
 	if host == "" {
-		return nil, errors.New("can't find proxy host: set proxy_boot.hosts (or servers.<role>.hosts) in qifa.yaml")
+		return nil, fmt.Errorf("can't find proxy host: set proxy_boot.hosts (or servers.<role>.hosts) in %s", configFile)
 	}
 	client := ssh.New(cfg.SSH)
 	return cert.New(client, host, out, cert.Options{}), nil
