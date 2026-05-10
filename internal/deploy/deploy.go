@@ -59,6 +59,8 @@ func (d *Deployer) Deploy(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	d.log.Printf("deploying %s", imageRef)
+	d.log.Printf("acquiring lock on %v", d.uniqueHosts())
 	locker := lock.New(d.ssh, d.cfg.Service, d.uniqueHosts())
 	if err := locker.Acquire(ctx, version); err != nil {
 		return err
@@ -82,6 +84,7 @@ func (d *Deployer) Deploy(ctx context.Context) error {
 	if err := d.SyncFiles(ctx); err != nil {
 		return d.failDeployment(deployment, err)
 	}
+	d.log.Printf("sweeping stale containers")
 	if err := d.SweepStaleContainers(ctx); err != nil {
 		return d.failDeployment(deployment, err)
 	}
@@ -238,10 +241,12 @@ func (d *Deployer) deployHost(ctx context.Context, deployment state.Deployment, 
 	if err := d.appendEvent(deployment.ID, host, role, "connecting", "connecting to host"); err != nil {
 		return err
 	}
+	d.log.Printf("connecting to %s", host)
 	if err := d.remoteDocker.EnsureDocker(ctx, host); err != nil {
 		return err
 	}
 	if useProxy {
+		d.log.Printf("checking proxy on %s", host)
 		if err := d.proxy.EnsureRunning(ctx, host); err != nil {
 			return err
 		}
@@ -257,6 +262,7 @@ func (d *Deployer) deployHost(ctx context.Context, deployment state.Deployment, 
 		if err := d.updateStatus(deployment, state.StatusBuilding); err != nil {
 			return err
 		}
+		d.log.Printf("building on %s", host)
 		if err := d.remoteDocker.Build(ctx, host, d.cfg, imageRef); err != nil {
 			return err
 		}

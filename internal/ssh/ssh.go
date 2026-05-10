@@ -61,7 +61,7 @@ func (c *Client) Run(ctx context.Context, host, command string) (string, error) 
 
 	select {
 	case <-ctx.Done():
-		_ = sess.Signal(gossh.SIGKILL)
+		conn.Close() // force TCP teardown; unblocks sess.Run() goroutine and deferred sess.Close()
 		return "", ctx.Err()
 	case err := <-done:
 		if err != nil {
@@ -96,7 +96,7 @@ func (c *Client) Stream(ctx context.Context, host, command string, out io.Writer
 
 	select {
 	case <-ctx.Done():
-		_ = sess.Signal(gossh.SIGKILL)
+		conn.Close() // force TCP teardown; unblocks sess.Run() goroutine and deferred sess.Close()
 		return ctx.Err()
 	case err := <-done:
 		if err != nil {

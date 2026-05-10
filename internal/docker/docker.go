@@ -171,8 +171,10 @@ func (r *Remote) Build(ctx context.Context, host string, cfg *config.Config, ima
 		command := strings.Join([]string{
 			"rm -rf " + shellQuote(remoteRoot),
 			"mkdir -p " + shellQuote(remoteRoot),
-			"git clone " + shellQuote(cfg.Builder.Repo) + " " + shellQuote(repoDir),
+			"echo '==> cloning " + cfg.Builder.Repo + " (" + cfg.Builder.Ref + ")'",
+			"git clone --progress " + shellQuote(cfg.Builder.Repo) + " " + shellQuote(repoDir),
 			"git -C " + shellQuote(repoDir) + " checkout " + shellQuote(cfg.Builder.Ref),
+			"echo '==> running docker build'",
 			buildCommand(BuildSpec{
 				ContextDir: contextDir,
 				Dockerfile: filepath.Join(contextDir, cfg.Builder.Dockerfile),
@@ -181,6 +183,7 @@ func (r *Remote) Build(ctx context.Context, host string, cfg *config.Config, ima
 		}, " && ")
 		return r.client.Stream(ctx, host, command, r.out)
 	}
+	fmt.Fprintf(r.out, "==> compressing build context %s\n", cfg.Builder.Context)
 	archive, err := buildContextArchive(cfg.Builder.Context)
 	if err != nil {
 		return err
@@ -188,13 +191,16 @@ func (r *Remote) Build(ctx context.Context, host string, cfg *config.Config, ima
 	remoteRoot := fmt.Sprintf("/tmp/qifa-build-%d", time.Now().UTC().UnixNano())
 	remoteArchive := filepath.Join(remoteRoot, "context.tar")
 	remoteContext := filepath.Join(remoteRoot, "context")
+	fmt.Fprintf(r.out, "==> uploading build context to %s (%d KB)\n", host, len(archive)/1024)
 	if err := r.client.Upload(ctx, host, remoteArchive, archive, 0o600); err != nil {
 		return err
 	}
 	command := strings.Join([]string{
 		"rm -rf " + shellQuote(remoteContext),
 		"mkdir -p " + shellQuote(remoteContext),
+		"echo '==> extracting build context'",
 		"tar -xf " + shellQuote(remoteArchive) + " -C " + shellQuote(remoteContext),
+		"echo '==> running docker build'",
 		buildCommand(BuildSpec{
 			ContextDir: remoteContext,
 			Dockerfile: filepath.Join(remoteContext, cfg.Builder.Dockerfile),
