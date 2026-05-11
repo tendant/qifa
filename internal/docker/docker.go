@@ -211,7 +211,7 @@ func (r *Remote) Build(ctx context.Context, host string, cfg *config.Config, ima
 	return r.client.Stream(ctx, host, command, r.out)
 }
 
-func (r *Remote) RunContainer(ctx context.Context, host, name, imageRef, envFile, command, network string, labels map[string]string, volumes []string, hostPort, containerPort int) error {
+func (r *Remote) RunContainer(ctx context.Context, host, name, imageRef, envFile, command, network string, labels map[string]string, volumes []string, hostPort, containerPort int, privileged bool, extraPublish []string) error {
 	if err := r.ensureVolumeHostDirs(ctx, host, volumes); err != nil {
 		return err
 	}
@@ -220,6 +220,9 @@ func (r *Remote) RunContainer(ctx context.Context, host, name, imageRef, envFile
 	args = append(args, "--name "+shellQuote(name))
 	if network != "" {
 		args = append(args, "--network "+shellQuote(network))
+	}
+	if privileged {
+		args = append(args, "--privileged")
 	}
 	for _, key := range sortedKeys(labels) {
 		args = append(args, "--label "+shellQuote(key+"="+labels[key]))
@@ -232,6 +235,9 @@ func (r *Remote) RunContainer(ctx context.Context, host, name, imageRef, envFile
 	}
 	if hostPort > 0 && containerPort > 0 {
 		args = append(args, fmt.Sprintf("-p %d:%d", hostPort, containerPort))
+	}
+	for _, p := range extraPublish {
+		args = append(args, "-p "+shellQuote(p))
 	}
 	if command != "" {
 		args = append(args, shellQuote(imageRef)+" "+command)

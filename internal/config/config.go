@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -125,6 +126,18 @@ type Server struct {
 	// Volumes are docker -v mounts in the form host_path:container_path[:options].
 	// Host paths are created with mkdir -p before docker run.
 	Volumes []string `yaml:"volumes"`
+	// Privileged runs the container with `--privileged`. Needed for workloads
+	// that manage their own container/cgroup namespaces (e.g. Concourse
+	// workers using Garden runC, dind, …). Off by default.
+	Privileged bool `yaml:"privileged"`
+	// ExtraPorts publishes additional host:container ports beyond the
+	// AppPort one used by the proxy/non-proxy path. Each entry is a string
+	// in docker `-p` form: "hostport:containerport" or
+	// "hostport:containerport/proto". Useful when a container exposes
+	// more than one port that needs to be reachable from outside the
+	// docker network (e.g. Concourse TSA on 2222 while ATC stays on 8080
+	// behind kamal-proxy).
+	ExtraPorts []string `yaml:"extra_ports"`
 }
 
 // Proxy is the per-app routing config registered with kamal-proxy at deploy
@@ -304,6 +317,11 @@ func (c *Config) Validate() error {
 	for role, server := range c.Servers {
 		if len(server.Hosts) == 0 {
 			return fmt.Errorf("config.servers.%s.hosts is required", role)
+		}
+		for i, p := range server.ExtraPorts {
+			if err := validatePortPublish(p); err != nil {
+				return fmt.Errorf("config.servers.%s.extra_ports[%d]: %w", role, i, err)
+			}
 		}
 	}
 	if c.ProxyBoot.HTTPPort < 0 {
@@ -566,6 +584,39 @@ func (c *Config) validateBuilder() error {
 
 func (r Registry) Enabled() bool {
 	return strings.TrimSpace(r.Server) != ""
+}
+
+// validatePortPublish accepts a docker `-p` value of the form
+// "hostport:containerport" or "hostport:containerport/proto". The full
+// docker `-p` grammar also supports an optional "host:port:port" prefix,
+// but qifa keeps the surface narrow for now — apps that need bind-IP
+// control can use proxy.bind_ips at the proxy layer.
+func validatePortPublish(s string) error {
+	core := s
+	if i := strings.Index(core, "/"); i >= 0 {
+		proto := core[i+1:]
+		switch proto {
+		case "tcp", "udp", "sctp":
+		default:
+			return fmt.Errorf("invalid protocol %q (want tcp|udp|sctp)", proto)
+		}
+		core = core[:i]
+	}
+	parts := strings.Split(core, ":")
+	if len(parts) != 2 {
+		return fmt.Errorf("want \"hostport:containerport[/proto]\", got %q", s)
+	}
+	for i, p := range parts {
+		n, err := strconv.Atoi(p)
+		if err != nil || n <= 0 || n > 65535 {
+			label := "hostport"
+			if i == 1 {
+				label = "containerport"
+			}
+			return fmt.Errorf("%s %q is not a valid port", label, p)
+		}
+	}
+	return nil
 }
 
 // ParseImageVersion extracts the tag or digest from an image reference.

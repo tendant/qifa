@@ -773,7 +773,7 @@ case "$cmd" in
           shift 2
           ;;
         --label) labels="$labels $2"; shift 2 ;;
-        -d) shift ;;
+        -d|--privileged) shift ;;
         *)
           image="$1"; shift; usercmd="$*"; break
           ;;
