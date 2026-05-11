@@ -1252,7 +1252,12 @@ func (d *Deployer) AccessoryBoot(ctx context.Context, name string) error {
 			return err
 		}
 	}
-	return d.remoteDocker.RunContainer(ctx, accessory.Host, containerName, accessory.Image, remoteEnv, "", "", nil, accessory.Volumes, accessory.Port, accessory.AppPort)
+	// Attach accessories to the same docker network as app containers
+	// (ProxyBoot.Network, default "kamal") so apps and their accessories
+	// can resolve each other by container DNS. The network is created by
+	// `qifa proxy boot`; without it, the accessory would land on the
+	// default bridge and not be reachable from app containers.
+	return d.remoteDocker.RunContainer(ctx, accessory.Host, containerName, accessory.Image, remoteEnv, "", d.cfg.ProxyBoot.Network, nil, accessory.Volumes, accessory.Port, accessory.AppPort)
 }
 
 func (d *Deployer) AccessoryLogs(ctx context.Context, name string, out io.Writer) error {
