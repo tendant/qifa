@@ -1357,7 +1357,16 @@ func (d *Deployer) healthCheck(ctx context.Context, host, targetHost string, tar
 			path = "/"
 		}
 	}
-	command := fmt.Sprintf("for i in 1 2 3 4 5; do curl -fsS http://%s:%d%s && exit 0; sleep %d; done; exit 1", targetHost, targetPort, path, int(d.cfg.Proxy.Healthcheck.Interval.Seconds()))
+	// --connect-timeout / --max-time bound every curl attempt by the
+	// configured Healthcheck.Timeout (default 5s after validation). Without
+	// them, a hung container can leave curl waiting at curl's defaults (5
+	// minute connect timeout, no overall cap), which makes a deploy look
+	// indefinitely stuck instead of failing fast.
+	timeout := int(d.cfg.Proxy.Healthcheck.Timeout.Seconds())
+	if timeout <= 0 {
+		timeout = 5
+	}
+	command := fmt.Sprintf("for i in 1 2 3 4 5; do curl -fsS --connect-timeout %d --max-time %d http://%s:%d%s && exit 0; sleep %d; done; exit 1", timeout, timeout, targetHost, targetPort, path, int(d.cfg.Proxy.Healthcheck.Interval.Seconds()))
 	_, err := d.ssh.Run(ctx, host, command)
 	if err != nil {
 		return d.withContainerDiagnostics(ctx, host, containerName, err)
