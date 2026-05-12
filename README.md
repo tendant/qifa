@@ -203,6 +203,10 @@ hooks:
 Hooks run on the deployer (not target hosts) and receive `QIFA_VERSION`
 in their environment.
 
+## Troubleshooting
+
+Common issues and fixes: [docs/troubleshooting.md](docs/troubleshooting.md).
+
 ## Status
 
 Active development. The CLI is reasonably stable; the schema may still
