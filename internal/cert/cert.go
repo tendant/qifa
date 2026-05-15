@@ -239,11 +239,17 @@ func (m *Manager) runLego(ctx context.Context, action string, opts IssueOptions,
 	}
 	defer cleanup()
 
+	// lego v5 (2025+) moved --dns / --email / --domains / --path /
+	// --accept-tos / --server from global flags to options of the `run`
+	// subcommand. The action (run, renew) now has to come BEFORE those
+	// options, not after. v4 still accepts this ordering, so it's
+	// backwards-compatible for users pinned to older images.
 	args := []string{
 		"docker run --rm",
 		envFileFlag,
 		"-v " + shellQuote(m.volumeName) + ":" + shellQuote(m.mountPoint()),
 		shellQuote(m.legoImage),
+		action,
 		"--dns " + shellQuote(opts.Provider),
 		"--email " + shellQuote(opts.Email),
 		"--domains " + shellQuote(opts.Host),
@@ -253,7 +259,6 @@ func (m *Manager) runLego(ctx context.Context, action string, opts IssueOptions,
 	if opts.Staging {
 		args = append(args, "--server", shellQuote("https://acme-staging-v02.api.letsencrypt.org/directory"))
 	}
-	args = append(args, action)
 	for _, e := range extra {
 		args = append(args, shellQuote(e))
 	}
