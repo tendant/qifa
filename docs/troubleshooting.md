@@ -55,12 +55,11 @@ time=... level=ERROR msg=Error error="flag provided but not defined: -dns"
 …you're running an older qifa binary against `goacme/lego:latest`.
 
 **Fix**: upgrade qifa to a build that puts the action name before the
-flags. Or as a temporary workaround pin the image to v4:
-```sh
-docker tag goacme/lego:v4.27.0 goacme/lego:latest
-```
-Note: the retag is local — `docker pull goacme/lego:latest` will replace
-it with v5 again.
+flags (any commit after this troubleshooting note landed). The flag
+ordering for v5+ is one-way: the patched qifa won't work with lego v4
+either, since `--dns` etc. are *global* flags in v4 and subcommand
+options in v5. Either run patched qifa + lego v5+ (current default),
+or pin a pre-patch qifa + lego v4. Don't mix.
 
 ## DNS provider auth: `cloudflare: some credentials information are missing`
 
@@ -76,26 +75,22 @@ matching what lego actually reads.
 
 ## Multi-domain (SAN) certs for `proxy.hosts:` apps
 
-`qifa cert issue <host>` issues a single-name cert (one `--domains`).
 For apps that register multiple hostnames via `proxy.hosts:` (apex +
 www, or two unrelated FQDNs sharing a backend), kamal-proxy will serve
-the first host's cert to every name, breaking TLS for the others.
+the same cert to every name, so a single-name cert breaks TLS on every
+host but the first.
 
-**Workaround until `qifa cert issue` accepts multiple domains**:
-invoke lego directly with `--domains` repeated for each hostname:
+Pass extra positional hostnames after the primary:
 
 ```sh
-docker run --rm --env-file .env -v kamal-proxy-config:/state \
-  goacme/lego:latest run \
-  --dns cloudflare --email you@example.com \
-  --domains foo.example.com --domains www.foo.example.com \
-  --path /state/qifa --accept-tos
+qifa cert issue tripmemo.ai www.tripmemo.ai \
+  --provider cloudflare --email you@example.com
 ```
 
-The resulting cert is saved under the first domain's name in
-`/state/qifa/certificates/`, but its Subject Alternative Names cover
-both. kamal-proxy picks it up correctly when it sees `Host:` requests
-for either name.
+The first host is the cert filename (and the lego "primary" domain);
+subsequent positionals become Subject Alternative Names. The same
+syntax works for `qifa cert renew`. `qifa cert remove` still takes a
+single host (it deletes one cert file).
 
 ---
 

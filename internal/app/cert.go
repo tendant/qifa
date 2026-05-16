@@ -57,21 +57,48 @@ func runCert(ctx context.Context, args []string, stdout, stderr io.Writer, confi
 
 func certUsageError() error {
 	return errors.New(`usage:
-  qifa cert issue  <host> --provider <name> --email <addr> [--staging] [--env-file <path>]
-  qifa cert renew  <host> [--days N]
+  qifa cert issue  <host> [extra-host ...] --provider <name> --email <addr> [--staging] [--env-file <path>]
+  qifa cert renew  <host> [extra-host ...] [--days N]
   qifa cert renew  --all  --provider <name> --email <addr> [--days N] [--env-file <path>]
   qifa cert list
-  qifa cert remove <host>`)
+  qifa cert remove <host>
+
+Pass extra positional hostnames after <host> to issue a multi-domain
+(SAN) cert covering all of them. The first host is the cert filename;
+the rest become Subject Alternative Names. Useful for apps that
+register multiple proxy.hosts: in qifa.yaml — kamal-proxy serves the
+same cert for every host on the app, so single-name certs break TLS
+on all hosts but the first.`)
 }
 
 type certFlags struct {
-	host     string
+	// hosts holds every positional argument. For issue/renew, hosts[0]
+	// is the primary FQDN (also the cert filename) and hosts[1:] are
+	// additional SAN entries. For remove, only hosts[0] is meaningful.
+	hosts    []string
 	provider string
 	email    string
 	staging  bool
 	envFile  string
 	days     int
 	all      bool
+}
+
+// host returns the primary FQDN (hosts[0]) or "" if none was provided.
+// Most callers check this first to decide whether to print usage.
+func (f certFlags) host() string {
+	if len(f.hosts) == 0 {
+		return ""
+	}
+	return f.hosts[0]
+}
+
+// extraHosts returns any additional SAN entries beyond the primary.
+func (f certFlags) extraHosts() []string {
+	if len(f.hosts) < 2 {
+		return nil
+	}
+	return f.hosts[1:]
 }
 
 func parseCertFlags(args []string) (certFlags, error) {
@@ -114,10 +141,7 @@ func parseCertFlags(args []string) (certFlags, error) {
 		case strings.HasPrefix(a, "--"):
 			return f, fmt.Errorf("unknown flag %q", a)
 		default:
-			if f.host != "" {
-				return f, fmt.Errorf("unexpected positional argument %q (host already set to %q)", a, f.host)
-			}
-			f.host = a
+			f.hosts = append(f.hosts, a)
 		}
 	}
 	return f, nil
@@ -139,8 +163,8 @@ func runCertIssue(ctx context.Context, args []string, stdout, stderr io.Writer, 
 	if err != nil {
 		return err
 	}
-	if f.host == "" {
-		return errors.New("usage: qifa cert issue <host> --provider <name> --email <addr> [--staging] [--env-file <path>]")
+	if f.host() == "" {
+		return errors.New("usage: qifa cert issue <host> [extra-host ...] --provider <name> --email <addr> [--staging] [--env-file <path>]")
 	}
 	if f.provider == "" {
 		return errors.New("--provider is required")
@@ -157,11 +181,12 @@ func runCertIssue(ctx context.Context, args []string, stdout, stderr io.Writer, 
 		return err
 	}
 	return mgr.Issue(ctx, cert.IssueOptions{
-		Host:     f.host,
-		Email:    f.email,
-		Provider: f.provider,
-		Staging:  f.staging,
-		EnvVars:  envVars,
+		Host:       f.host(),
+		ExtraHosts: f.extraHosts(),
+		Email:      f.email,
+		Provider:   f.provider,
+		Staging:    f.staging,
+		EnvVars:    envVars,
 	})
 }
 
@@ -198,8 +223,8 @@ func runCertRenew(ctx context.Context, args []string, stdout, stderr io.Writer, 
 			EnvVars:  envVars,
 		}, days)
 	}
-	if f.host == "" {
-		return errors.New("usage: qifa cert renew <host> [--days N]   (or: qifa cert renew --all ...)")
+	if f.host() == "" {
+		return errors.New("usage: qifa cert renew <host> [extra-host ...] [--days N]   (or: qifa cert renew --all ...)")
 	}
 	if f.provider == "" {
 		return errors.New("--provider is required")
@@ -208,11 +233,12 @@ func runCertRenew(ctx context.Context, args []string, stdout, stderr io.Writer, 
 		return errors.New("--email is required")
 	}
 	return mgr.Renew(ctx, cert.IssueOptions{
-		Host:     f.host,
-		Email:    f.email,
-		Provider: f.provider,
-		Staging:  f.staging,
-		EnvVars:  envVars,
+		Host:       f.host(),
+		ExtraHosts: f.extraHosts(),
+		Email:      f.email,
+		Provider:   f.provider,
+		Staging:    f.staging,
+		EnvVars:    envVars,
 	}, days)
 }
 
@@ -243,17 +269,20 @@ func runCertRemove(ctx context.Context, args []string, stdout, stderr io.Writer,
 	if err != nil {
 		return err
 	}
-	if f.host == "" {
+	if f.host() == "" {
 		return errors.New("usage: qifa cert remove <host>")
+	}
+	if len(f.extraHosts()) > 0 {
+		return fmt.Errorf("qifa cert remove takes one host; got %d extra (%q)", len(f.extraHosts()), f.extraHosts())
 	}
 	mgr, err := newCertManager(stdout, configFile)
 	if err != nil {
 		return err
 	}
-	if err := mgr.Remove(ctx, f.host); err != nil {
+	if err := mgr.Remove(ctx, f.host()); err != nil {
 		return err
 	}
-	fmt.Fprintf(stdout, "removed cert for %s. redeploy any app that referenced it.\n", f.host)
+	fmt.Fprintf(stdout, "removed cert for %s. redeploy any app that referenced it.\n", f.host())
 	return nil
 }
 

@@ -96,8 +96,15 @@ func New(client *ssh.Client, proxyHost string, out io.Writer, opts Options) *Man
 
 // IssueOptions controls a single cert acquisition.
 type IssueOptions struct {
-	// Host is the FQDN to issue the cert for (also the cert filename).
+	// Host is the primary FQDN to issue the cert for. Also the cert
+	// filename (lego saves under <primary>.crt + .key).
 	Host string
+
+	// ExtraHosts are additional Subject Alternative Names (SAN) to
+	// include in the same cert. Empty for a single-name cert (most
+	// apps). Used when a kamal-proxy app registers proxy.hosts: with
+	// multiple FQDNs and needs one cert covering all of them.
+	ExtraHosts []string
 
 	// Email is registered with the ACME directory.
 	Email string
@@ -241,9 +248,11 @@ func (m *Manager) runLego(ctx context.Context, action string, opts IssueOptions,
 
 	// lego v5 (2025+) moved --dns / --email / --domains / --path /
 	// --accept-tos / --server from global flags to options of the `run`
-	// subcommand. The action (run, renew) now has to come BEFORE those
-	// options, not after. v4 still accepts this ordering, so it's
-	// backwards-compatible for users pinned to older images.
+	// (and `renew`) subcommand. The action name now has to come BEFORE
+	// those flags. This ordering does NOT work with lego v4 (where the
+	// same flags are global, before the action) — users pinning the
+	// image to v4 need an older qifa binary too. Default LegoImage
+	// `goacme/lego:latest` follows v5+ from mid-2025 on.
 	args := []string{
 		"docker run --rm",
 		envFileFlag,
@@ -253,9 +262,17 @@ func (m *Manager) runLego(ctx context.Context, action string, opts IssueOptions,
 		"--dns " + shellQuote(opts.Provider),
 		"--email " + shellQuote(opts.Email),
 		"--domains " + shellQuote(opts.Host),
-		"--path " + shellQuote(m.subdirPath()),
-		"--accept-tos",
 	}
+	// Each extra host becomes another --domains flag — lego v4+ supports
+	// repeating it for SAN. The cert file still gets saved under
+	// opts.Host (the first --domains value).
+	for _, extra := range opts.ExtraHosts {
+		args = append(args, "--domains "+shellQuote(extra))
+	}
+	args = append(args,
+		"--path "+shellQuote(m.subdirPath()),
+		"--accept-tos",
+	)
 	if opts.Staging {
 		args = append(args, "--server", shellQuote("https://acme-staging-v02.api.letsencrypt.org/directory"))
 	}
