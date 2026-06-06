@@ -316,27 +316,37 @@ func (d *Deployer) deployHost(ctx context.Context, deployment state.Deployment, 
 	if err := d.updateStatus(deployment, state.StatusHealthChecking); err != nil {
 		return err
 	}
-	targetHost := "127.0.0.1"
+	// Healthcheck runs over SSH on the proxy host and reaches the container
+	// across the docker bridge by literal IP — the host's DNS can't resolve
+	// container names from outside the kamal network.
+	healthcheckHost := "127.0.0.1"
 	healthPort := appPort
 	if useProxy {
 		containerIP, err := d.remoteDocker.ContainerIP(ctx, host, containerName)
 		if err != nil {
 			return err
 		}
-		targetHost = containerIP
+		healthcheckHost = containerIP
 	} else {
 		healthPort = server.Port
 	}
-	if err := d.healthCheck(ctx, host, targetHost, healthPort, containerName, useProxy); err != nil {
+	if err := d.healthCheck(ctx, host, healthcheckHost, healthPort, containerName, useProxy); err != nil {
 		return err
 	}
 	if useProxy {
 		if err := d.updateStatus(deployment, state.StatusSwitchingTraffic); err != nil {
 			return err
 		}
+		// kamal-proxy lives on the kamal docker network alongside the app
+		// containers, so it can resolve their names via docker's embedded
+		// DNS at TCP-connect time. Passing containerName here (instead of
+		// the resolved IP at deploy time) means a bare docker restart that
+		// reassigns the container's bridge IP — postgres OOM crashloop,
+		// daemon restart, network recreation — self-heals on the next
+		// request without a manual `qifa deploy`.
 		if err := d.proxy.Deploy(ctx, host, proxy.Target{
 			Service: d.cfg.Service,
-			Host:    targetHost,
+			Host:    containerName,
 			Port:    appPort,
 		}); err != nil {
 			return err
@@ -520,11 +530,9 @@ func (d *Deployer) Start(ctx context.Context) error {
 				if err := d.proxy.EnsureRunning(ctx, host); err != nil {
 					return err
 				}
-				containerIP, err := d.remoteDocker.ContainerIP(ctx, host, top.Name)
-				if err != nil {
-					return err
-				}
-				if err := d.proxy.Deploy(ctx, host, proxy.Target{Service: d.cfg.Service, Host: containerIP, Port: appPort}); err != nil {
+				// Pass the container name so kamal-proxy resolves via
+				// docker's embedded DNS — see Deploy for rationale.
+				if err := d.proxy.Deploy(ctx, host, proxy.Target{Service: d.cfg.Service, Host: top.Name, Port: appPort}); err != nil {
 					return err
 				}
 			}
