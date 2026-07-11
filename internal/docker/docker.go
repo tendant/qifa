@@ -386,6 +386,18 @@ func (r *Remote) ImageDigest(ctx context.Context, host, image string) (string, e
 	return out[at+1:], nil
 }
 
+// ImageExists reports whether an image is already present on the host. It uses
+// an `&& echo yes || echo no` sentinel so a missing image (docker inspect exits
+// nonzero) is distinguished from an SSH/transport failure, which surfaces as a
+// real error rather than a false "absent".
+func (r *Remote) ImageExists(ctx context.Context, host, image string) (bool, error) {
+	out, err := r.client.Run(ctx, host, "docker image inspect "+shellQuote(image)+" >/dev/null 2>&1 && echo yes || echo no")
+	if err != nil {
+		return false, err
+	}
+	return strings.TrimSpace(out) == "yes", nil
+}
+
 func (r *Remote) StopAndRemove(ctx context.Context, host, name string) error {
 	_, err := r.client.Run(ctx, host, "docker rm -f "+shellQuote(name)+" >/dev/null 2>&1 || true")
 	return err

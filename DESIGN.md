@@ -152,7 +152,7 @@ accessories:
 
 | `builder.host`    | Behavior                                                | Registry  |
 |-------------------|---------------------------------------------------------|-----------|
-| (omitted block)   | External image — pull and run, never build              | optional  |
+| (omitted block)   | External image — pull (or, with `source: local`, verify) and run | optional  |
 | `""`              | Build locally where qifa runs, push to registry         | required  |
 | `"per_target"`    | Build on each deployment target (no shared artifact)    | forbidden |
 | `"<host-or-ip>"`  | Build on that SSH-reachable host, push to registry      | required  |
@@ -172,6 +172,30 @@ machine if it isn't local).
   host in a single deploy runs identical bits. Two deploys of the same floating
   tag (`:latest`, `:alpine`) either resolve to the same digest (idempotent) or
   become distinct deploys with rollback between them.
+
+### Image Source
+
+`source` governs where an externally-produced image comes from. It is only
+meaningful when the `builder` block is omitted (qifa isn't building the image).
+
+| `source`             | Behavior                                                        |
+|----------------------|-----------------------------------------------------------------|
+| `registry` (default) | Pull the tag, resolve to a digest, run by digest (as above).    |
+| `local`              | Require the image to already exist on every target; never pull. |
+
+`source: local` is for images produced out-of-band — built and loaded onto the
+hosts by a CI system (e.g. PikoCI) — keeping qifa focused on deployment rather
+than image transport. Semantics:
+
+- The image is deployed **by its pinned tag** (no digest resolution), so a
+  locally-built image that was never pushed to a registry works.
+- Presence is verified on **every** target host up front; a missing image fails
+  the deploy before any host is mutated.
+- It **forbids** a `registry` block (nothing is pulled or authenticated) and
+  cannot be combined with `builder` (which already produces the image on-host).
+
+Accessories accept the same per-accessory `source: local` (their default is also
+`registry`), verifying presence on the accessory's host instead of pulling.
 
 ### Multi-Arch Builds
 
@@ -256,7 +280,8 @@ active set. Removing or losing the file does not break any other command.
 
 1. Resolve image and version
    - Built: `image:resolveVersion()`
-   - External: pull on first host → read digest → `image@sha256:...`, version = short digest
+   - External (`source: registry`): pull on first host → read digest → `image@sha256:...`, version = short digest
+   - External (`source: local`): verify the tag exists on every host → deploy by tag, version = tag
 2. Run `pre_build` hook
 3. Sweep stale containers across all role/host pairs (stop+remove any running
    labeled container that isn't the most-recently-created one — defends
@@ -276,7 +301,8 @@ active set. Removing or losing the file does not break any other command.
    3. If proxy is used: ensure shared kamal-proxy container, network, volume
    4. Find currently running container by labels (= previous version)
    5. Upload env file
-   6. Build on host (if `per_target`) OR pull (if registry / external)
+   6. Build on host (if `per_target`) OR pull (if registry / external `source: registry`)
+      OR nothing (external `source: local` — already verified present in step 1)
    7. For non-proxy: stop the previous container in place (port collision)
    8. Remove any same-named container (rollback case)
    9. `docker run` the new container with `--network <proxy.network>` (if proxy),
@@ -396,7 +422,7 @@ accessories:
 Accessories support a parallel set of lifecycle verbs to the main app:
 
 ```bash
-qifa accessory boot <name>     # docker pull, remove any prior, docker run
+qifa accessory boot <name>     # docker pull (or verify, if source: local), remove any prior, docker run
 qifa accessory stop <name>     # docker stop
 qifa accessory start <name>    # docker start (the existing container)
 qifa accessory restart <name>  # stop then start

@@ -266,6 +266,9 @@ func (d *Deployer) deployHost(ctx context.Context, deployment state.Deployment, 
 		if err := d.remoteDocker.Build(ctx, host, d.cfg, imageRef); err != nil {
 			return err
 		}
+	} else if d.cfg.IsLocalSource() {
+		// Image presence was verified across all hosts in resolveImage; there
+		// is nothing to pull.
 	} else if d.cfg.Registry.Enabled() || d.cfg.Builder == nil {
 		dockerConfigDir := ""
 		if d.cfg.Registry.Enabled() {
@@ -645,6 +648,28 @@ func (d *Deployer) resolveImage(ctx context.Context) (imageRef, version string, 
 	hosts := d.uniqueHosts()
 	if len(hosts) == 0 {
 		return "", "", errors.New("no hosts configured")
+	}
+	if d.cfg.IsLocalSource() {
+		// Image is produced out-of-band (e.g. by CI) and must already exist on
+		// every target. Verify presence up front so we fail before mutating any
+		// host, then deploy by the pinned tag — no pull, no digest resolution.
+		for _, host := range hosts {
+			if err := d.remoteDocker.EnsureDocker(ctx, host); err != nil {
+				return "", "", err
+			}
+			ok, err := d.remoteDocker.ImageExists(ctx, host, d.cfg.Image)
+			if err != nil {
+				return "", "", err
+			}
+			if !ok {
+				return "", "", fmt.Errorf("source: local — image %q not found on host %s (build or load it out-of-band, e.g. via CI, before deploying)", d.cfg.Image, host)
+			}
+		}
+		v, err := config.ParseImageVersion(d.cfg.Image)
+		if err != nil {
+			return "", "", err
+		}
+		return d.cfg.Image, v, nil
 	}
 	first := hosts[0]
 	if err := d.remoteDocker.EnsureDocker(ctx, first); err != nil {
@@ -1133,6 +1158,8 @@ func (d *Deployer) Plan(ctx context.Context, out io.Writer) error {
 				steps := []string{}
 				if d.cfg.Builder.IsPerTarget() {
 					steps = append(steps, "build")
+				} else if d.cfg.IsLocalSource() {
+					steps = append(steps, "use local image")
 				} else if d.cfg.Builder == nil || d.cfg.Registry.Enabled() {
 					steps = append(steps, "pull")
 				}
@@ -1243,7 +1270,17 @@ func (d *Deployer) AccessoryBoot(ctx context.Context, name string) error {
 		return err
 	}
 	containerName := accessoryContainer(d.cfg.Service, name)
-	if err := d.remoteDocker.Pull(ctx, accessory.Host, "", accessory.Image); err != nil {
+	if accessory.IsLocalSource() {
+		// Image is produced out-of-band and must already exist on the host;
+		// never pull. Single-host, so this presence check is naturally fail-fast.
+		ok, err := d.remoteDocker.ImageExists(ctx, accessory.Host, accessory.Image)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return fmt.Errorf("accessory %q: source: local — image %q not found on host %s (build or load it out-of-band before booting)", name, accessory.Image, accessory.Host)
+		}
+	} else if err := d.remoteDocker.Pull(ctx, accessory.Host, "", accessory.Image); err != nil {
 		return err
 	}
 	if err := d.remoteDocker.StopAndRemove(ctx, accessory.Host, containerName); err != nil {

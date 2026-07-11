@@ -261,6 +261,133 @@ func TestValidateBuilderShapes(t *testing.T) {
 	}
 }
 
+func TestValidateSource(t *testing.T) {
+	// externalLocal returns a valid config for an external image sourced
+	// locally: no builder, no registry, tagged image.
+	externalLocal := func() Config {
+		c := validConfig()
+		c.Builder = nil
+		c.Registry = Registry{}
+		c.Image = "app:1.2.3"
+		c.Source = SourceLocal
+		return c
+	}
+	tests := []struct {
+		name    string
+		mutate  func(*Config)
+		wantErr string
+	}{
+		{
+			name:   "source local, external image, no registry",
+			mutate: func(c *Config) { *c = externalLocal() },
+		},
+		{
+			name: "source registry explicit with registry",
+			mutate: func(c *Config) {
+				c.Builder = nil
+				c.Image = "registry.example.com/app:1"
+				c.Source = SourceRegistry
+			},
+		},
+		{
+			name: "empty source defaults to registry",
+			mutate: func(c *Config) {
+				c.Builder = nil
+				c.Image = "registry.example.com/app:1"
+				c.Source = ""
+			},
+		},
+		{
+			name: "source local forbids registry",
+			mutate: func(c *Config) {
+				c.Builder = nil
+				c.Image = "app:1"
+				c.Source = SourceLocal // registry left set by validConfig
+			},
+			wantErr: "must not set config.registry",
+		},
+		{
+			name: "source with builder is rejected",
+			mutate: func(c *Config) {
+				c.Source = SourceRegistry // builder still set
+			},
+			wantErr: "applies only to external images",
+		},
+		{
+			name: "invalid source value",
+			mutate: func(c *Config) {
+				c.Builder = nil
+				c.Registry = Registry{}
+				c.Image = "app:1"
+				c.Source = "always"
+			},
+			wantErr: "is not valid",
+		},
+		{
+			name: "accessory source local",
+			mutate: func(c *Config) {
+				*c = externalLocal()
+				c.Accessories = map[string]Accessory{
+					"db": {Image: "postgres:16", Host: "10.0.0.11", Source: SourceLocal},
+				}
+			},
+		},
+		{
+			name: "accessory invalid source",
+			mutate: func(c *Config) {
+				*c = externalLocal()
+				c.Accessories = map[string]Accessory{
+					"db": {Image: "postgres:16", Host: "10.0.0.11", Source: "never"},
+				}
+			},
+			wantErr: "accessories.db.source",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := validConfig()
+			tt.mutate(&cfg)
+			err := cfg.Validate()
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatal(err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("expected error containing %q, got %v", tt.wantErr, err)
+			}
+		})
+	}
+}
+
+func TestImageSourceDefaults(t *testing.T) {
+	c := Config{}
+	if c.ImageSource() != SourceRegistry {
+		t.Fatalf("empty ImageSource = %q, want %q", c.ImageSource(), SourceRegistry)
+	}
+	if c.IsLocalSource() {
+		t.Fatal("empty config should not be local source")
+	}
+	c.Source = SourceLocal
+	if !c.IsLocalSource() {
+		t.Fatal("source: local with no builder should be local source")
+	}
+	c.Builder = &Builder{}
+	if c.IsLocalSource() {
+		t.Fatal("source: local is inert when a builder is set")
+	}
+
+	a := Accessory{}
+	if a.ImageSource() != SourceRegistry || a.IsLocalSource() {
+		t.Fatal("empty accessory should default to registry source")
+	}
+	a.Source = SourceLocal
+	if !a.IsLocalSource() {
+		t.Fatal("accessory source: local should be local source")
+	}
+}
+
 func TestWriteSampleCreatesParents(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "nested", "qifa.yaml")
 	if err := WriteSample(path); err != nil {

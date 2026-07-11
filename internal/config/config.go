@@ -15,6 +15,7 @@ import (
 type Config struct {
 	Service     string               `yaml:"service"`
 	Image       string               `yaml:"image"`
+	Source      string               `yaml:"source"`
 	Servers     map[string]Server    `yaml:"servers"`
 	Proxy       Proxy                `yaml:"proxy"`
 	Registry    Registry             `yaml:"registry"`
@@ -260,6 +261,27 @@ type Builder struct {
 
 const BuilderHostPerTarget = "per_target"
 
+// Image source. Governs whether qifa pulls an externally-produced image or
+// expects it to already exist on the target host (built/loaded out-of-band,
+// e.g. by CI). Only meaningful when Builder == nil.
+const (
+	SourceRegistry = "registry"
+	SourceLocal    = "local"
+)
+
+// ImageSource returns the effective origin of the app image. Defaults to
+// registry. Only meaningful when Builder == nil.
+func (c *Config) ImageSource() string {
+	if strings.TrimSpace(c.Source) == "" {
+		return SourceRegistry
+	}
+	return c.Source
+}
+
+// IsLocalSource reports whether the app image is expected to already exist on
+// each target host and must never be pulled.
+func (c *Config) IsLocalSource() bool { return c.Builder == nil && c.ImageSource() == SourceLocal }
+
 func (b *Builder) IsPerTarget() bool { return b != nil && b.Host == BuilderHostPerTarget }
 func (b *Builder) IsRemote() bool {
 	return b != nil && b.Host != "" && b.Host != BuilderHostPerTarget
@@ -281,12 +303,26 @@ type Hooks struct {
 
 type Accessory struct {
 	Image   string            `yaml:"image"`
+	Source  string            `yaml:"source"` // "registry" (default) | "local"
 	Host    string            `yaml:"host"`
 	Volumes []string          `yaml:"volumes"`
 	Env     map[string]string `yaml:"env"`
 	Port    int               `yaml:"port"`     // host port to publish
 	AppPort int               `yaml:"app_port"` // container port to publish
 }
+
+// ImageSource returns the effective origin of the accessory image. Defaults
+// to registry.
+func (a Accessory) ImageSource() string {
+	if strings.TrimSpace(a.Source) == "" {
+		return SourceRegistry
+	}
+	return a.Source
+}
+
+// IsLocalSource reports whether the accessory image is expected to already
+// exist on its host and must never be pulled.
+func (a Accessory) IsLocalSource() bool { return a.ImageSource() == SourceLocal }
 
 func Load(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
@@ -367,7 +403,36 @@ func (c *Config) Validate() error {
 	if err := c.validateProxyTLS(); err != nil {
 		return err
 	}
+	if err := c.validateSource(); err != nil {
+		return err
+	}
+	for name, acc := range c.Accessories {
+		switch strings.TrimSpace(acc.Source) {
+		case "", SourceRegistry, SourceLocal:
+		default:
+			return fmt.Errorf("accessories.%s.source: %q is not valid (use %q or %q)", name, acc.Source, SourceRegistry, SourceLocal)
+		}
+	}
 	return c.validateBuilder()
+}
+
+// validateSource checks the app-image source field. source applies only to
+// externally-produced images (Builder == nil); source: local additionally
+// forbids a registry, since a local image is never pulled or authenticated.
+func (c *Config) validateSource() error {
+	src := strings.TrimSpace(c.Source)
+	switch src {
+	case "", SourceRegistry, SourceLocal:
+	default:
+		return fmt.Errorf("config.source: %q is not valid (use %q or %q)", c.Source, SourceRegistry, SourceLocal)
+	}
+	if src != "" && c.Builder != nil {
+		return errors.New("config.source applies only to external images; remove it when config.builder is set")
+	}
+	if src == SourceLocal && c.Registry.Enabled() {
+		return errors.New("config.source: local must not set config.registry (a local image is never pulled)")
+	}
+	return nil
 }
 
 func (c *Config) validateProxyTLS() error {
