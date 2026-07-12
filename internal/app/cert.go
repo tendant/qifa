@@ -57,9 +57,9 @@ func runCert(ctx context.Context, args []string, stdout, stderr io.Writer, confi
 
 func certUsageError() error {
 	return errors.New(`usage:
-  qifa cert issue  <host> [extra-host ...] --provider <name> --email <addr> [--staging] [--env-file <path>]
+  qifa cert issue  <host> [extra-host ...] --provider <name> --email <addr> [--staging] [--env-file <path>] [--dns-resolvers host:port[,host:port...]]
   qifa cert renew  <host> [extra-host ...] [--days N]
-  qifa cert renew  --all  --provider <name> --email <addr> [--days N] [--env-file <path>]
+  qifa cert renew  --all  --provider <name> --email <addr> [--days N] [--env-file <path>] [--dns-resolvers host:port[,host:port...]]
   qifa cert list
   qifa cert remove <host>
 
@@ -68,20 +68,29 @@ Pass extra positional hostnames after <host> to issue a multi-domain
 the rest become Subject Alternative Names. Useful for apps that
 register multiple proxy.hosts: in qifa.yaml — kamal-proxy serves the
 same cert for every host on the app, so single-name certs break TLS
-on all hosts but the first.`)
+on all hosts but the first.
+
+--dns-resolvers overrides the recursive nameservers used to check DNS-01
+propagation (comma-separated, or repeat the flag). Defaults to public
+resolvers (see cert.DefaultDNSResolvers) rather than whatever resolver the
+proxy host happens to be configured with, since that host resolver can
+hold a stale negative-cache entry for the exact challenge name from an
+unrelated earlier lookup and fail propagation checks that would otherwise
+succeed.`)
 }
 
 type certFlags struct {
 	// hosts holds every positional argument. For issue/renew, hosts[0]
 	// is the primary FQDN (also the cert filename) and hosts[1:] are
 	// additional SAN entries. For remove, only hosts[0] is meaningful.
-	hosts    []string
-	provider string
-	email    string
-	staging  bool
-	envFile  string
-	days     int
-	all      bool
+	hosts     []string
+	provider  string
+	email     string
+	staging   bool
+	envFile   string
+	days      int
+	all       bool
+	resolvers []string
 }
 
 // host returns the primary FQDN (hosts[0]) or "" if none was provided.
@@ -138,6 +147,16 @@ func parseCertFlags(args []string) (certFlags, error) {
 				return f, perr
 			}
 			f.days = n
+		case a == "--dns-resolvers":
+			val, err := nextValue(a, args, &i)
+			if err != nil {
+				return f, err
+			}
+			for _, r := range strings.Split(val, ",") {
+				if r = strings.TrimSpace(r); r != "" {
+					f.resolvers = append(f.resolvers, r)
+				}
+			}
 		case strings.HasPrefix(a, "--"):
 			return f, fmt.Errorf("unknown flag %q", a)
 		default:
@@ -164,7 +183,7 @@ func runCertIssue(ctx context.Context, args []string, stdout, stderr io.Writer, 
 		return err
 	}
 	if f.host() == "" {
-		return errors.New("usage: qifa cert issue <host> [extra-host ...] --provider <name> --email <addr> [--staging] [--env-file <path>]")
+		return errors.New("usage: qifa cert issue <host> [extra-host ...] --provider <name> --email <addr> [--staging] [--env-file <path>] [--dns-resolvers host:port[,host:port...]]")
 	}
 	if f.provider == "" {
 		return errors.New("--provider is required")
@@ -187,6 +206,7 @@ func runCertIssue(ctx context.Context, args []string, stdout, stderr io.Writer, 
 		Provider:   f.provider,
 		Staging:    f.staging,
 		EnvVars:    envVars,
+		Resolvers:  f.resolvers,
 	})
 }
 
@@ -217,14 +237,15 @@ func runCertRenew(ctx context.Context, args []string, stdout, stderr io.Writer, 
 			return errors.New("--email is required with --all")
 		}
 		return mgr.RenewAll(ctx, cert.IssueOptions{
-			Email:    f.email,
-			Provider: f.provider,
-			Staging:  f.staging,
-			EnvVars:  envVars,
+			Email:     f.email,
+			Provider:  f.provider,
+			Staging:   f.staging,
+			EnvVars:   envVars,
+			Resolvers: f.resolvers,
 		}, days)
 	}
 	if f.host() == "" {
-		return errors.New("usage: qifa cert renew <host> [extra-host ...] [--days N]   (or: qifa cert renew --all ...)")
+		return errors.New("usage: qifa cert renew <host> [extra-host ...] [--days N] [--dns-resolvers host:port[,host:port...]]   (or: qifa cert renew --all ...)")
 	}
 	if f.provider == "" {
 		return errors.New("--provider is required")
@@ -239,6 +260,7 @@ func runCertRenew(ctx context.Context, args []string, stdout, stderr io.Writer, 
 		Provider:   f.provider,
 		Staging:    f.staging,
 		EnvVars:    envVars,
+		Resolvers:  f.resolvers,
 	}, days)
 }
 

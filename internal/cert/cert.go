@@ -49,6 +49,18 @@ const (
 	LegoSubdir = "qifa"
 )
 
+// DefaultDNSResolvers are the recursive nameservers lego uses to verify a
+// DNS-01 challenge has propagated, when IssueOptions.Resolvers is empty.
+// The lego container inherits whatever resolver the proxy host is
+// configured with, which can be flaky — or worse, can already hold a
+// stale negative-cache (NXDOMAIN) entry for the exact challenge name, from
+// an unrelated earlier lookup against that same resolver, long enough to
+// outlast lego's propagation-check window even though the record is live
+// at the authoritative nameservers. Pinning to well-known public resolvers
+// makes propagation checks deterministic and independent of host DNS
+// config and of anything else that happened to query the same name.
+var DefaultDNSResolvers = []string{"1.1.1.1:53", "8.8.8.8:53"}
+
 // Manager runs cert ops against a kamal-proxy host over SSH.
 type Manager struct {
 	ssh        *ssh.Client
@@ -123,6 +135,11 @@ type IssueOptions struct {
 	// Staging requests Let's Encrypt's staging environment (avoids
 	// production rate limits).
 	Staging bool
+
+	// Resolvers overrides the recursive nameservers lego uses to check
+	// DNS-01 propagation (host:port each, e.g. "1.1.1.1:53"). Defaults to
+	// DefaultDNSResolvers when empty.
+	Resolvers []string
 
 	// EnvVars are passed through to the lego container (for the DNS
 	// provider's API credentials). Pushed to /dev/shm on the proxy
@@ -269,6 +286,9 @@ func (m *Manager) runLego(ctx context.Context, action string, opts IssueOptions,
 	for _, extra := range opts.ExtraHosts {
 		args = append(args, "--domains "+shellQuote(extra))
 	}
+	for _, r := range resolverArgs(opts.Resolvers) {
+		args = append(args, "--dns.resolvers "+shellQuote(r))
+	}
 	args = append(args,
 		"--path "+shellQuote(m.subdirPath()),
 		"--accept-tos",
@@ -343,6 +363,15 @@ func (m *Manager) pushEnv(ctx context.Context, envVars map[string]string) (strin
 		_, _ = m.ssh.Run(context.Background(), m.proxyHost, "rm -f "+shellQuote(remotePath))
 	}
 	return "--env-file " + shellQuote(remotePath), cleanup, nil
+}
+
+// resolverArgs returns resolvers, or DefaultDNSResolvers if resolvers is
+// empty. Pure and side-effect free so it's cheap to unit test.
+func resolverArgs(resolvers []string) []string {
+	if len(resolvers) > 0 {
+		return resolvers
+	}
+	return DefaultDNSResolvers
 }
 
 func (m *Manager) mountPoint() string {
