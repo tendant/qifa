@@ -137,7 +137,10 @@ type Server struct {
 	// "hostport:containerport/proto". Useful when a container exposes
 	// more than one port that needs to be reachable from outside the
 	// docker network (e.g. Concourse TSA on 2222 while ATC stays on 8080
-	// behind kamal-proxy).
+	// behind kamal-proxy). Either side may also be an equal-width range
+	// ("50000-50100:50000-50100/udp") for workloads that need a whole
+	// port range published (e.g. WebRTC media) — passed through to
+	// docker's own `-p` range syntax as one entry rather than one per port.
 	ExtraPorts []string `yaml:"extra_ports"`
 }
 
@@ -652,10 +655,11 @@ func (r Registry) Enabled() bool {
 }
 
 // validatePortPublish accepts a docker `-p` value of the form
-// "hostport:containerport" or "hostport:containerport/proto". The full
-// docker `-p` grammar also supports an optional "host:port:port" prefix,
-// but qifa keeps the surface narrow for now — apps that need bind-IP
-// control can use proxy.bind_ips at the proxy layer.
+// "hostport:containerport" or "hostport:containerport/proto", where either
+// side may instead be an equal-width port range ("50000-50100:50000-50100").
+// The full docker `-p` grammar also supports an optional "host:port:port"
+// prefix, but qifa keeps the surface narrow for now — apps that need
+// bind-IP control can use proxy.bind_ips at the proxy layer.
 func validatePortPublish(s string) error {
 	core := s
 	if i := strings.Index(core, "/"); i >= 0 {
@@ -671,17 +675,40 @@ func validatePortPublish(s string) error {
 	if len(parts) != 2 {
 		return fmt.Errorf("want \"hostport:containerport[/proto]\", got %q", s)
 	}
-	for i, p := range parts {
-		n, err := strconv.Atoi(p)
-		if err != nil || n <= 0 || n > 65535 {
-			label := "hostport"
-			if i == 1 {
-				label = "containerport"
-			}
-			return fmt.Errorf("%s %q is not a valid port", label, p)
-		}
+	hostWidth, err := validatePortOrRange(parts[0], "hostport")
+	if err != nil {
+		return err
+	}
+	containerWidth, err := validatePortOrRange(parts[1], "containerport")
+	if err != nil {
+		return err
+	}
+	if hostWidth != containerWidth {
+		return fmt.Errorf("%q: hostport and containerport ranges must be the same width (got %d and %d)", s, hostWidth, containerWidth)
 	}
 	return nil
+}
+
+// validatePortOrRange validates a single port ("8080") or an inclusive
+// range ("50000-50100"), returning how many ports it covers (1 for a
+// single port) so the caller can check both sides of a mapping line up.
+func validatePortOrRange(p, label string) (int, error) {
+	if i := strings.Index(p, "-"); i >= 0 {
+		start, err1 := strconv.Atoi(p[:i])
+		end, err2 := strconv.Atoi(p[i+1:])
+		if err1 != nil || err2 != nil || start <= 0 || start > 65535 || end <= 0 || end > 65535 {
+			return 0, fmt.Errorf("%s range %q is not valid", label, p)
+		}
+		if end < start {
+			return 0, fmt.Errorf("%s range %q: end must be >= start", label, p)
+		}
+		return end - start + 1, nil
+	}
+	n, err := strconv.Atoi(p)
+	if err != nil || n <= 0 || n > 65535 {
+		return 0, fmt.Errorf("%s %q is not a valid port", label, p)
+	}
+	return 1, nil
 }
 
 // ParseImageVersion extracts the tag or digest from an image reference.

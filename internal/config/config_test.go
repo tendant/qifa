@@ -433,3 +433,47 @@ func validConfig() Config {
 		},
 	}
 }
+
+func TestValidatePortPublishSinglePorts(t *testing.T) {
+	cases := []struct {
+		in      string
+		wantErr bool
+	}{
+		{"8080:8080", false},
+		{"8080:8080/tcp", false},
+		{"8080:8080/udp", false},
+		{"8080:8080/sctp", false},
+		{"8080:8080/quic", true},
+		{"0:8080", true},
+		{"8080:70000", true},
+		{"8080", true},
+		{"8080:8080:8080", true},
+	}
+	for _, c := range cases {
+		err := validatePortPublish(c.in)
+		if (err != nil) != c.wantErr {
+			t.Errorf("validatePortPublish(%q) error = %v, wantErr %v", c.in, err, c.wantErr)
+		}
+	}
+}
+
+func TestValidatePortPublishRanges(t *testing.T) {
+	cases := []struct {
+		in      string
+		wantErr bool
+	}{
+		{"50000-50100:50000-50100/udp", false},
+		{"50000-50000:50000-50000/udp", false}, // single-port "range" is fine
+		{"50000-50100:60000-60100/udp", false}, // different numbers, same width
+		{"50000-50100:50000-50050/udp", true},  // width mismatch
+		{"50100-50000:50100-50000/udp", true},  // end before start
+		{"50000-50100:8080/udp", true},         // range on one side only
+		{"8080:50000-50100/udp", true},
+	}
+	for _, c := range cases {
+		err := validatePortPublish(c.in)
+		if (err != nil) != c.wantErr {
+			t.Errorf("validatePortPublish(%q) error = %v, wantErr %v", c.in, err, c.wantErr)
+		}
+	}
+}
