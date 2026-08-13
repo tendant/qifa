@@ -58,8 +58,8 @@ func runCert(ctx context.Context, args []string, stdout, stderr io.Writer, confi
 func certUsageError() error {
 	return errors.New(`usage:
   qifa cert issue  <host> [extra-host ...] --provider <name> --email <addr> [--staging] [--env-file <path>] [--dns-resolvers host:port[,host:port...]]
-  qifa cert renew  <host> [extra-host ...] [--days N]
-  qifa cert renew  --all  --provider <name> --email <addr> [--days N] [--env-file <path>] [--dns-resolvers host:port[,host:port...]]
+  qifa cert renew  <host> [extra-host ...] [--renew-days N]
+  qifa cert renew  --all  --provider <name> --email <addr> [--renew-days N] [--env-file <path>] [--dns-resolvers host:port[,host:port...]]
   qifa cert list
   qifa cert remove <host>
 
@@ -88,7 +88,7 @@ type certFlags struct {
 	email     string
 	staging   bool
 	envFile   string
-	days      int
+	renewDays int
 	all       bool
 	resolvers []string
 }
@@ -137,16 +137,16 @@ func parseCertFlags(args []string) (certFlags, error) {
 				return f, err
 			}
 			f.envFile = val
-		case a == "--days":
+		case a == "--renew-days":
 			val, err := nextValue(a, args, &i)
 			if err != nil {
 				return f, err
 			}
-			n, perr := parseDays(val)
+			n, perr := parseRenewDays(val)
 			if perr != nil {
 				return f, perr
 			}
-			f.days = n
+			f.renewDays = n
 		case a == "--dns-resolvers":
 			val, err := nextValue(a, args, &i)
 			if err != nil {
@@ -166,11 +166,11 @@ func parseCertFlags(args []string) (certFlags, error) {
 	return f, nil
 }
 
-func parseDays(s string) (int, error) {
+func parseRenewDays(s string) (int, error) {
 	n := 0
 	for _, c := range s {
 		if c < '0' || c > '9' {
-			return 0, fmt.Errorf("--days: %q is not a non-negative integer", s)
+			return 0, fmt.Errorf("--renew-days: %q is not a non-negative integer", s)
 		}
 		n = n*10 + int(c-'0')
 	}
@@ -223,7 +223,7 @@ func runCertRenew(ctx context.Context, args []string, stdout, stderr io.Writer, 
 	if err != nil {
 		return err
 	}
-	days := f.days
+	days := f.renewDays
 	if days == 0 {
 		days = 30
 	}
@@ -245,7 +245,7 @@ func runCertRenew(ctx context.Context, args []string, stdout, stderr io.Writer, 
 		}, days)
 	}
 	if f.host() == "" {
-		return errors.New("usage: qifa cert renew <host> [extra-host ...] [--days N] [--dns-resolvers host:port[,host:port...]]   (or: qifa cert renew --all ...)")
+		return errors.New("usage: qifa cert renew <host> [extra-host ...] [--renew-days N] [--dns-resolvers host:port[,host:port...]]   (or: qifa cert renew --all ...)")
 	}
 	if f.provider == "" {
 		return errors.New("--provider is required")

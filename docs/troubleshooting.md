@@ -45,21 +45,52 @@ Then re-run `qifa proxy boot` (or the deploy that was failing).
 
 lego v5 (`goacme/lego:latest` after ~mid-2025) moved `--dns`, `--email`,
 `--domains`, `--path`, `--accept-tos`, and `--server` from global flags
-to options of the `run` (and `renew`) subcommand. They have to come
-*after* the action name now, not before.
+to subcommand options. They have to come *after* the action name now,
+not before.
 
-If you see:
+lego 5.3.x went further and **removed the `renew` subcommand entirely** —
+`run` is now get-or-renew, deciding from `--renew-days` (renamed from
+`--days`) whether the cert on disk is due. A qifa build that still emits
+`lego renew …` fails on every issue *and* renew:
+
 ```
 time=... level=ERROR msg=Error error="flag provided but not defined: -dns"
 ```
-…you're running an older qifa binary against `goacme/lego:latest`.
 
-**Fix**: upgrade qifa to a build that puts the action name before the
-flags (any commit after this troubleshooting note landed). The flag
-ordering for v5+ is one-way: the patched qifa won't work with lego v4
-either, since `--dns` etc. are *global* flags in v4 and subcommand
-options in v5. Either run patched qifa + lego v5+ (current default),
-or pin a pre-patch qifa + lego v4. Don't mix.
+**Fix**: upgrade qifa to a build that issues `lego run` (any commit after
+this note was revised). The flag ordering is one-way: patched qifa won't
+work against lego v4, where those are global flags and `renew` still
+exists. Either run patched qifa + lego v5+ (current default), or pin a
+pre-patch qifa + a v4 image via `Options.LegoImage`. Don't mix.
+
+## Cert renewal failure: `Could not validate ARI 'replaces' field`
+
+```
+acme: error: 403 :: urn:ietf:params:acme:error:unauthorized ::
+Could not validate ARI 'replaces' field :: requester account did not
+request the certificate being replaced by this order
+```
+
+lego v5 uses ARI (RFC 9773) and points the new order at the cert it
+replaces. Let's Encrypt rejects that when it doesn't attribute the old
+cert to the requesting account, and the whole order 403s. qifa passes
+`--ari-disable` for this reason — ARI only schedules renewals early, so
+nothing is lost. If you invoke lego by hand, pass it yourself.
+
+## Cert renewal failure: DNS-01 `time limit exceeded`
+
+```
+dns01: time limit exceeded: last error: recursive nameservers:
+NS 1.1.1.1:53 did not return the expected TXT record
+```
+
+The authoritative record is live but a public recursive resolver is
+still serving a cached miss for the challenge name, and doesn't pick the
+TXT record up inside lego's two-minute window. qifa passes
+`--dns.propagation.disable-rns` so propagation is checked against the
+authoritative nameservers only — hosts that timed out three times with
+the recursive check on succeeded on the first attempt with it off.
+`--dns-resolvers` still governs CNAME and apex resolution.
 
 ## DNS provider auth: `cloudflare: some credentials information are missing`
 

@@ -149,17 +149,21 @@ type IssueOptions struct {
 
 // Issue acquires a fresh cert and writes it into the proxy volume.
 func (m *Manager) Issue(ctx context.Context, opts IssueOptions) error {
-	return m.runLego(ctx, "run", opts, nil)
+	return m.runLego(ctx, opts, nil)
 }
 
 // Renew refreshes a cert if it's within `days` of expiring. Returns
 // without error if the cert isn't due for renewal yet.
+//
+// lego v5 has no `renew` subcommand — `run` is get-or-renew, and decides
+// from --renew-days whether the cert on disk is due. An already-expired
+// cert has negative time remaining, so it always renews.
 func (m *Manager) Renew(ctx context.Context, opts IssueOptions, days int) error {
 	extra := []string{}
 	if days > 0 {
-		extra = append(extra, "--days", fmt.Sprintf("%d", days))
+		extra = append(extra, "--renew-days", fmt.Sprintf("%d", days))
 	}
-	return m.runLego(ctx, "renew", opts, extra)
+	return m.runLego(ctx, opts, extra)
 }
 
 // RenewAll iterates every cert currently in the proxy volume and runs
@@ -204,16 +208,29 @@ func (m *Manager) List(ctx context.Context) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
+	return parseCertList(out), nil
+}
+
+// parseCertList turns the remote `ls` output into hostnames, dropping
+// lego's `<host>.issuer.crt` companion files. Those aren't hosts, and
+// leaving them in makes `cert list` show phantom entries and
+// `renew --all` burn an ACME order failing on a name that doesn't exist.
+// Pure so it can be unit tested without an SSH round-trip.
+func parseCertList(out string) []string {
 	out = strings.TrimSpace(out)
 	if out == "" {
-		return nil, nil
+		return nil
 	}
-	hosts := strings.Split(out, "\n")
-	for i, h := range hosts {
-		hosts[i] = strings.TrimSpace(h)
+	var hosts []string
+	for _, h := range strings.Split(out, "\n") {
+		h = strings.TrimSpace(h)
+		if h == "" || strings.HasSuffix(h, ".issuer") {
+			continue
+		}
+		hosts = append(hosts, h)
 	}
 	sort.Strings(hosts)
-	return hosts, nil
+	return hosts
 }
 
 // Remove deletes <host>.crt and <host>.key from the proxy volume.
@@ -239,7 +256,7 @@ func (m *Manager) Remove(ctx context.Context, host string) error {
 
 // runLego pushes credentials (if any) to /dev/shm on the proxy host,
 // runs lego in a one-shot container, and cleans up on exit.
-func (m *Manager) runLego(ctx context.Context, action string, opts IssueOptions, extra []string) error {
+func (m *Manager) runLego(ctx context.Context, opts IssueOptions, extra []string) error {
 	if opts.Host == "" {
 		return fmt.Errorf("host is required")
 	}
@@ -263,43 +280,7 @@ func (m *Manager) runLego(ctx context.Context, action string, opts IssueOptions,
 	}
 	defer cleanup()
 
-	// lego v5 (2025+) moved --dns / --email / --domains / --path /
-	// --accept-tos / --server from global flags to options of the `run`
-	// (and `renew`) subcommand. The action name now has to come BEFORE
-	// those flags. This ordering does NOT work with lego v4 (where the
-	// same flags are global, before the action) — users pinning the
-	// image to v4 need an older qifa binary too. Default LegoImage
-	// `goacme/lego:latest` follows v5+ from mid-2025 on.
-	args := []string{
-		"docker run --rm",
-		envFileFlag,
-		"-v " + shellQuote(m.volumeName) + ":" + shellQuote(m.mountPoint()),
-		shellQuote(m.legoImage),
-		action,
-		"--dns " + shellQuote(opts.Provider),
-		"--email " + shellQuote(opts.Email),
-		"--domains " + shellQuote(opts.Host),
-	}
-	// Each extra host becomes another --domains flag — lego v4+ supports
-	// repeating it for SAN. The cert file still gets saved under
-	// opts.Host (the first --domains value).
-	for _, extra := range opts.ExtraHosts {
-		args = append(args, "--domains "+shellQuote(extra))
-	}
-	for _, r := range resolverArgs(opts.Resolvers) {
-		args = append(args, "--dns.resolvers "+shellQuote(r))
-	}
-	args = append(args,
-		"--path "+shellQuote(m.subdirPath()),
-		"--accept-tos",
-	)
-	if opts.Staging {
-		args = append(args, "--server", shellQuote("https://acme-staging-v02.api.letsencrypt.org/directory"))
-	}
-	for _, e := range extra {
-		args = append(args, shellQuote(e))
-	}
-	cmd := strings.Join(args, " ")
+	cmd := m.legoCommand(envFileFlag, opts, extra)
 	if err := m.ssh.Stream(ctx, m.proxyHost, cmd, m.out); err != nil {
 		return err
 	}
@@ -310,6 +291,64 @@ func (m *Manager) runLego(ctx context.Context, action string, opts IssueOptions,
 	// world-traversable, files world-readable. The volume itself is
 	// docker-private, so this isn't loosening anything that matters.
 	return m.fixCertPerms(ctx)
+}
+
+// legoCommand builds the remote `docker run … lego run …` command line.
+// Kept free of the SSH round-trip so the flag wiring is unit testable.
+//
+// lego v5 dropped the `renew` subcommand outright — `run` is get-or-renew
+// — and moved --dns / --email / --domains / --path / --accept-tos /
+// --server from global flags to options of `run`, so the action name
+// comes BEFORE them. None of this works against lego v4, where those are
+// global flags preceding the action: pinning Options.LegoImage to a v4
+// tag needs an older qifa binary too. Default LegoImage
+// `goacme/lego:latest` has been v5+ since mid-2025.
+func (m *Manager) legoCommand(envFileFlag string, opts IssueOptions, extra []string) string {
+	args := []string{
+		"docker run --rm",
+		envFileFlag,
+		"-v " + shellQuote(m.volumeName) + ":" + shellQuote(m.mountPoint()),
+		shellQuote(m.legoImage),
+		"run",
+		"--dns " + shellQuote(opts.Provider),
+		"--email " + shellQuote(opts.Email),
+		"--domains " + shellQuote(opts.Host),
+	}
+	// Each extra host becomes another --domains flag — lego supports
+	// repeating it for SAN. The cert file still gets saved under
+	// opts.Host (the first --domains value).
+	for _, e := range opts.ExtraHosts {
+		args = append(args, "--domains "+shellQuote(e))
+	}
+	for _, r := range resolverArgs(opts.Resolvers) {
+		args = append(args, "--dns.resolvers "+shellQuote(r))
+	}
+	args = append(args,
+		// Check propagation against the authoritative nameservers only.
+		// The recursive-resolver check is the half that fails in
+		// practice: a public resolver caches a miss for the challenge
+		// name and doesn't pick the TXT record up inside lego's window.
+		// That stalled roughly half of a 23-cert recovery run — hosts
+		// that timed out three times here succeeded first try with the
+		// check off. --dns.resolvers above still governs CNAME and apex
+		// resolution.
+		"--dns.propagation.disable-rns",
+		// Let's Encrypt rejects the ARI `replaces` field for a cert it
+		// doesn't attribute to the requesting account ("requester
+		// account did not request the certificate being replaced"),
+		// which fails the whole order with a 403. ARI only schedules
+		// renewals early, so nothing is lost by skipping it.
+		"--ari-disable",
+		"--path "+shellQuote(m.subdirPath()),
+		"--accept-tos",
+	)
+	if opts.Staging {
+		args = append(args, "--server", shellQuote("https://acme-staging-v02.api.letsencrypt.org/directory"))
+	}
+	for _, e := range extra {
+		args = append(args, shellQuote(e))
+	}
+	return strings.Join(args, " ")
 }
 
 // fixCertPerms makes the qifa cert subtree readable by whatever
