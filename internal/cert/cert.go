@@ -469,6 +469,14 @@ func (m *Manager) legoCommand(envFileFlag string, opts IssueOptions, extra []str
 		// which fails the whole order with a 403. ARI only schedules
 		// renewals early, so nothing is lost by skipping it.
 		"--ari-disable",
+		// lego sleeps a random 0-8 minutes before each renewal to
+		// spread load on the CA. That's per *certificate*, so a
+		// renew --all over a few dozen certs spends most of an hour
+		// asleep and can outrun the caller's timeout. qifa renews
+		// serially and callers do their own scheduling jitter (the
+		// weilabs timer uses RandomizedDelaySec), so the CA-friendly
+		// spread is already there without paying for it N times.
+		"--no-random-sleep",
 		"--path "+shellQuote(m.subdirPath()),
 		"--accept-tos",
 	)

@@ -76,6 +76,20 @@ func TestLegoCommandDisablesARIAndRecursiveChecks(t *testing.T) {
 	}
 }
 
+// lego's pre-renewal random sleep is per-certificate, so a renew --all
+// over a few dozen certs would spend most of an hour asleep.
+func TestLegoCommandDisablesPerCertRandomSleep(t *testing.T) {
+	cmd := testManager().legoCommand("", IssueOptions{
+		Host:     "reg.example.com",
+		Email:    "admin@example.com",
+		Provider: "cloudflare",
+	}, nil)
+
+	if !strings.Contains(cmd, "--no-random-sleep") {
+		t.Errorf("command is missing --no-random-sleep: %s", cmd)
+	}
+}
+
 // Renew passes --renew-days; lego v5 renamed it from --days.
 func TestRenewPassesRenewDaysNotDays(t *testing.T) {
 	cmd := testManager().legoCommand("", IssueOptions{
