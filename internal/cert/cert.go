@@ -22,6 +22,7 @@ import (
 	"encoding/pem"
 	"fmt"
 	"io"
+	"math"
 	"sort"
 	"strings"
 	"time"
@@ -235,8 +236,11 @@ type CertInfo struct {
 }
 
 // DaysLeft reports whole days until expiry, negative once expired.
+// Floors rather than truncating so a cert that expired earlier today
+// reads -1, not 0 — truncation rounds toward zero, which would report
+// an already-dead cert as if it still had the day left.
 func (c CertInfo) DaysLeft(now time.Time) int {
-	return int(c.NotAfter.Sub(now).Hours() / 24)
+	return int(math.Floor(c.NotAfter.Sub(now).Hours() / 24))
 }
 
 // CertNames returns the DNS SANs of the cert currently stored for host.

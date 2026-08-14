@@ -221,6 +221,15 @@ func TestCertInfoDaysLeftIsNegativeWhenExpired(t *testing.T) {
 	}
 }
 
+// A cert that died a few hours ago must not read as 0 days left —
+// truncation toward zero would report it as still having today.
+func TestCertInfoDaysLeftFloorsForCertExpiredToday(t *testing.T) {
+	info := CertInfo{NotAfter: time.Now().Add(-8 * time.Hour)}
+	if got := info.DaysLeft(time.Now()); got != -1 {
+		t.Fatalf("DaysLeft = %d, want -1 for a cert that expired earlier today", got)
+	}
+}
+
 func TestSanExtras(t *testing.T) {
 	tests := []struct {
 		name    string
