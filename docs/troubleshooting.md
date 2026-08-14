@@ -123,6 +123,54 @@ subsequent positionals become Subject Alternative Names. The same
 syntax works for `qifa cert renew`. `qifa cert remove` still takes a
 single host (it deletes one cert file).
 
+`cert renew --all` does **not** need the positionals: it reads each
+cert off the volume and re-requests the SANs already in it, so
+multi-domain certs keep every name. A host whose current cert can't be
+read is skipped and named in the summary rather than reissued
+single-name — shrinking a working cert is worse than not renewing it.
+
+Check what a cert actually covers with `qifa cert list --expiry`, which
+prints `host <TAB> days-left <TAB> SANs`.
+
+## Renewal succeeded but the old cert is still being served
+
+kamal-proxy reads the certificate files when a route is deployed and
+does **not** watch them afterwards, so a renewed cert on disk changes
+nothing on the wire. Restart the proxy (`docker restart kamal-proxy`,
+or `qifa proxy restart`) or redeploy the affected app.
+
+This is worth automating together: renewing without restarting looks
+entirely successful — clean lego output, fresh files, zero errors —
+while clients keep getting the expired cert.
+
+## Cert issuance failure: `Could not validate ARI 'replaces' field`
+
+```
+acme: error: 403 :: urn:ietf:params:acme:error:unauthorized ::
+Could not validate ARI 'replaces' field :: requester account did not
+request the certificate being replaced by this order
+```
+
+lego v5 uses ARI (RFC 9773) and points a renewal order at the cert it
+replaces. Let's Encrypt rejects that when it doesn't attribute the old
+cert to the requesting account, failing the whole order. qifa passes
+`--ari-disable` for this reason; pass it yourself if you invoke lego
+directly.
+
+## Pinning the lego image
+
+`LegoImage` defaults to an exact version, not `:latest`, and
+`--lego-image` / `QIFA_LEGO_IMAGE` override it (the flag wins).
+
+Resist the urge to track `:latest` in an unattended setting. qifa's
+command line is lego-v5-specific, so a major bump upstream breaks every
+issuance — and if a host prunes unused images on a timer, the broken
+version arrives on its own schedule rather than when you're watching.
+That combination expired 36 certs at once on 2026-08-13.
+
+Pinning a **v4** tag needs a qifa from before the v5 flag change; the
+two are not interchangeable in either direction.
+
 ---
 
 ### Hidden anchor: ssh strict_host_key_checking workaround
