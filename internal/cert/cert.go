@@ -375,8 +375,13 @@ func (m *Manager) Remove(ctx context.Context, host string) error {
 		shellQuote(m.volumeName),
 		shellQuote(m.mountPoint()),
 		shellQuote(m.alpineImg),
+		// lego writes four files per cert: the leaf, the issuer chain,
+		// the key, and a metadata sidecar. Removing only .crt/.key
+		// leaves the other two orphaned in the volume forever, so
+		// "remove" quietly didn't.
 		shellQuote(fmt.Sprintf(
-			"rm -f %s/certificates/%s.crt %s/certificates/%s.key",
+			"rm -f %s/certificates/%s.crt %s/certificates/%s.key %s/certificates/%s.issuer.crt %s/certificates/%s.json",
+			m.subdirPath(), host, m.subdirPath(), host,
 			m.subdirPath(), host, m.subdirPath(), host,
 		)),
 	)
