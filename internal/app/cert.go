@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/gokamal/gocart/internal/cert"
 	"github.com/gokamal/gocart/internal/config"
@@ -57,10 +58,10 @@ func runCert(ctx context.Context, args []string, stdout, stderr io.Writer, confi
 
 func certUsageError() error {
 	return errors.New(`usage:
-  qifa cert issue  <host> [extra-host ...] --provider <name> --email <addr> [--staging] [--env-file <path>] [--dns-resolvers host:port[,host:port...]]
+  qifa cert issue  <host> [extra-host ...] --provider <name> --email <addr> [--staging] [--env-file <path>] [--dns-resolvers host:port[,host:port...]] [--lego-image <ref>]
   qifa cert renew  <host> [extra-host ...] [--renew-days N]
-  qifa cert renew  --all  --provider <name> --email <addr> [--renew-days N] [--env-file <path>] [--dns-resolvers host:port[,host:port...]]
-  qifa cert list
+  qifa cert renew  --all  --provider <name> --email <addr> [--renew-days N] [--env-file <path>] [--dns-resolvers host:port[,host:port...]] [--lego-image <ref>]
+  qifa cert list   [--expiry]
   qifa cert remove <host>
 
 Pass extra positional hostnames after <host> to issue a multi-domain
@@ -76,7 +77,20 @@ resolvers (see cert.DefaultDNSResolvers) rather than whatever resolver the
 proxy host happens to be configured with, since that host resolver can
 hold a stale negative-cache entry for the exact challenge name from an
 unrelated earlier lookup and fail propagation checks that would otherwise
-succeed.`)
+succeed.
+
+--lego-image overrides the lego container image (or set QIFA_LEGO_IMAGE;
+the flag wins). The default is pinned to an exact version on purpose:
+qifa's command line is lego-v5-specific, so a floating :latest can break
+every issuance the moment upstream ships a new major. Only move the pin
+once you've verified the newer tag.
+
+--expiry makes "cert list" print "host <TAB> days-left <TAB> SANs" so a
+scheduled renewal can select due hosts without parsing certs in shell.
+
+"cert renew --all" recovers each cert's existing SANs from the cert on
+disk, so multi-domain certs keep every name. A host whose current cert
+can't be read is skipped rather than reissued single-name.`)
 }
 
 type certFlags struct {
@@ -90,7 +104,9 @@ type certFlags struct {
 	envFile   string
 	renewDays int
 	all       bool
+	expiry    bool
 	resolvers []string
+	legoImage string
 }
 
 // host returns the primary FQDN (hosts[0]) or "" if none was provided.
@@ -117,6 +133,8 @@ func parseCertFlags(args []string) (certFlags, error) {
 		switch {
 		case a == "--all":
 			f.all = true
+		case a == "--expiry":
+			f.expiry = true
 		case a == "--staging":
 			f.staging = true
 		case a == "--provider":
@@ -147,6 +165,12 @@ func parseCertFlags(args []string) (certFlags, error) {
 				return f, perr
 			}
 			f.renewDays = n
+		case a == "--lego-image":
+			val, err := nextValue(a, args, &i)
+			if err != nil {
+				return f, err
+			}
+			f.legoImage = val
 		case a == "--dns-resolvers":
 			val, err := nextValue(a, args, &i)
 			if err != nil {
@@ -191,7 +215,7 @@ func runCertIssue(ctx context.Context, args []string, stdout, stderr io.Writer, 
 	if f.email == "" {
 		return errors.New("--email is required")
 	}
-	mgr, err := newCertManager(stdout, configFile)
+	mgr, err := newCertManager(stdout, configFile, f.legoImage)
 	if err != nil {
 		return err
 	}
@@ -215,7 +239,7 @@ func runCertRenew(ctx context.Context, args []string, stdout, stderr io.Writer, 
 	if err != nil {
 		return err
 	}
-	mgr, err := newCertManager(stdout, configFile)
+	mgr, err := newCertManager(stdout, configFile, f.legoImage)
 	if err != nil {
 		return err
 	}
@@ -265,10 +289,14 @@ func runCertRenew(ctx context.Context, args []string, stdout, stderr io.Writer, 
 }
 
 func runCertList(ctx context.Context, args []string, stdout, stderr io.Writer, configFile string) error {
-	if len(args) > 0 {
-		return errors.New("qifa cert list takes no arguments")
+	f, err := parseCertFlags(args)
+	if err != nil {
+		return err
 	}
-	mgr, err := newCertManager(stdout, configFile)
+	if len(f.hosts) > 0 {
+		return errors.New("qifa cert list takes no positional arguments")
+	}
+	mgr, err := newCertManager(stdout, configFile, f.legoImage)
 	if err != nil {
 		return err
 	}
@@ -280,8 +308,28 @@ func runCertList(ctx context.Context, args []string, stdout, stderr io.Writer, c
 		fmt.Fprintln(stdout, "no qifa-managed certs found")
 		return nil
 	}
+	if !f.expiry {
+		for _, h := range hosts {
+			fmt.Fprintln(stdout, h)
+		}
+		return nil
+	}
+	// --expiry: host <TAB> days-left <TAB> comma-separated SANs. Tab
+	// separated and unadorned so a scheduled renewal can pick the due
+	// hosts out with awk instead of shelling out to openssl.
+	now := time.Now()
+	var failed []string
 	for _, h := range hosts {
-		fmt.Fprintln(stdout, h)
+		info, err := mgr.CertInfo(ctx, h)
+		if err != nil {
+			failed = append(failed, h)
+			fmt.Fprintf(stdout, "%s\tERROR\t%v\n", h, err)
+			continue
+		}
+		fmt.Fprintf(stdout, "%s\t%d\t%s\n", h, info.DaysLeft(now), strings.Join(info.DNSNames, ","))
+	}
+	if len(failed) > 0 {
+		return fmt.Errorf("could not read %d cert(s): %s", len(failed), strings.Join(failed, " "))
 	}
 	return nil
 }
@@ -297,7 +345,7 @@ func runCertRemove(ctx context.Context, args []string, stdout, stderr io.Writer,
 	if len(f.extraHosts()) > 0 {
 		return fmt.Errorf("qifa cert remove takes one host; got %d extra (%q)", len(f.extraHosts()), f.extraHosts())
 	}
-	mgr, err := newCertManager(stdout, configFile)
+	mgr, err := newCertManager(stdout, configFile, f.legoImage)
 	if err != nil {
 		return err
 	}
@@ -310,7 +358,7 @@ func runCertRemove(ctx context.Context, args []string, stdout, stderr io.Writer,
 
 // newCertManager loads the config file to derive the proxy host
 // and SSH config, then constructs a cert.Manager.
-func newCertManager(out io.Writer, configFile string) (*cert.Manager, error) {
+func newCertManager(out io.Writer, configFile, legoImage string) (*cert.Manager, error) {
 	cfg, err := config.Load(configFile)
 	if err != nil {
 		return nil, fmt.Errorf("qifa cert needs a config file (tried %s): %w", configFile, err)
@@ -320,7 +368,24 @@ func newCertManager(out io.Writer, configFile string) (*cert.Manager, error) {
 		return nil, fmt.Errorf("can't find proxy host: set proxy_boot.hosts (or servers.<role>.hosts) in %s", configFile)
 	}
 	client := ssh.New(cfg.SSH)
-	return cert.New(client, host, out, cert.Options{}), nil
+	return cert.New(client, host, out, cert.Options{
+		LegoImage:   resolveLegoImage(legoImage),
+		AlpineImage: os.Getenv("QIFA_ALPINE_IMAGE"),
+	}), nil
+}
+
+// resolveLegoImage picks the lego image for this run: --lego-image wins,
+// then QIFA_LEGO_IMAGE (what an unattended runner sets), then "" so
+// cert.New falls back to its pinned default.
+//
+// Deliberately QIFA_LEGO_IMAGE and not LEGO_IMAGE: certEnvPrefixes
+// forwards LEGO_* into the lego container, where lego itself would
+// interpret it. QIFA_* is not forwarded.
+func resolveLegoImage(flag string) string {
+	if flag != "" {
+		return flag
+	}
+	return os.Getenv("QIFA_LEGO_IMAGE")
 }
 
 // proxyHostFromConfig picks the canonical SSH target for cert ops.

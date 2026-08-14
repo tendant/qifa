@@ -14,26 +14,38 @@
 package cert
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/x509"
 	"encoding/hex"
+	"encoding/pem"
 	"fmt"
 	"io"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/gokamal/gocart/internal/ssh"
 )
 
 const (
 	// LegoImage is the lego container image used for cert acquisition
-	// and renewal. Pinned to :latest by default; override per-Manager
-	// for reproducibility.
-	LegoImage = "goacme/lego:latest"
+	// and renewal. Pinned to an exact version, NOT :latest — qifa's
+	// command line is lego-v5-specific (`run` as get-or-renew,
+	// --renew-days, --ari-disable), so a major bump upstream silently
+	// breaks every issuance. That is exactly how 36 certs hard-expired
+	// on 2026-08-13: a nightly `docker image prune` dropped the cached
+	// image and the re-pull of :latest picked up a v5 that the
+	// then-current qifa couldn't drive. Override with --lego-image or
+	// QIFA_LEGO_IMAGE once you've verified a newer tag.
+	LegoImage = "goacme/lego:v5.3.1"
 
 	// AlpineImage is the helper image used for filesystem operations
-	// inside the proxy volume (listing certs, removing files).
-	AlpineImage = "alpine:latest"
+	// inside the proxy volume (listing certs, reading them back,
+	// removing files, fixing perms). Pinned for the same reason as
+	// LegoImage, though alpine is far less likely to break us.
+	AlpineImage = "alpine:3.20"
 
 	// ProxyVolume is the named docker volume kamal-proxy mounts as its
 	// state directory. Must match what `qifa proxy boot` creates.
@@ -167,8 +179,9 @@ func (m *Manager) Renew(ctx context.Context, opts IssueOptions, days int) error 
 }
 
 // RenewAll iterates every cert currently in the proxy volume and runs
-// Renew on each. Returns the first error but continues past failures
-// so one expired-account cert can't block the others.
+// Renew on each, preserving each cert's existing SAN list. Continues
+// past failures so one bad cert can't block the others, and returns an
+// error naming every host that failed.
 func (m *Manager) RenewAll(ctx context.Context, opts IssueOptions, days int) error {
 	hosts, err := m.List(ctx)
 	if err != nil {
@@ -178,17 +191,130 @@ func (m *Manager) RenewAll(ctx context.Context, opts IssueOptions, days int) err
 		fmt.Fprintln(m.out, "no certs to renew")
 		return nil
 	}
-	var firstErr error
+	var failed []string
 	for _, h := range hosts {
 		fmt.Fprintf(m.out, "==> %s\n", h)
+		// List() only knows cert filenames, so a multi-domain cert
+		// looks single-name here. Recover the SANs from the cert on
+		// disk — reissuing without them silently shrinks the cert and
+		// breaks TLS on every host but the first.
+		names, err := m.CertNames(ctx, h)
+		if err != nil {
+			failed = append(failed, h)
+			fmt.Fprintf(m.out, "  (skipped %s: can't read its current SANs: %v)\n", h, err)
+			continue
+		}
 		hostOpts := opts
 		hostOpts.Host = h
-		if err := m.Renew(ctx, hostOpts, days); err != nil && firstErr == nil {
-			firstErr = err
+		hostOpts.ExtraHosts = sanExtras(h, names)
+		if err := m.Renew(ctx, hostOpts, days); err != nil {
+			failed = append(failed, h)
 			fmt.Fprintf(m.out, "  (renew failed for %s: %v — continuing)\n", h, err)
 		}
 	}
-	return firstErr
+	fmt.Fprintf(m.out, "\n%d/%d certs ok", len(hosts)-len(failed), len(hosts))
+	if len(failed) > 0 {
+		// Name every failure on the last line: for an unattended run
+		// this is what a human reads out of the log.
+		fmt.Fprintf(m.out, ", %d failed: %s\n", len(failed), strings.Join(failed, " "))
+		return fmt.Errorf("%d of %d certs failed: %s", len(failed), len(hosts), strings.Join(failed, " "))
+	}
+	fmt.Fprintln(m.out)
+	return nil
+}
+
+// CertInfo describes one cert stored in the proxy volume.
+type CertInfo struct {
+	// Host is the cert filename stem — the primary FQDN.
+	Host string
+	// NotAfter is the leaf's expiry.
+	NotAfter time.Time
+	// DNSNames are the leaf's SANs, in certificate order (lego puts
+	// the primary first).
+	DNSNames []string
+}
+
+// DaysLeft reports whole days until expiry, negative once expired.
+func (c CertInfo) DaysLeft(now time.Time) int {
+	return int(c.NotAfter.Sub(now).Hours() / 24)
+}
+
+// CertNames returns the DNS SANs of the cert currently stored for host.
+func (m *Manager) CertNames(ctx context.Context, host string) ([]string, error) {
+	info, err := m.CertInfo(ctx, host)
+	if err != nil {
+		return nil, err
+	}
+	return info.DNSNames, nil
+}
+
+// CertInfo reads the cert stored for host and reports its expiry and
+// SANs. The volume is docker-private, so the cert is read out through
+// the alpine helper rather than from a host path.
+func (m *Manager) CertInfo(ctx context.Context, host string) (CertInfo, error) {
+	cmd := fmt.Sprintf(
+		"docker run --rm -v %s:%s %s cat %s",
+		shellQuote(m.volumeName),
+		shellQuote(m.mountPoint()),
+		shellQuote(m.alpineImg),
+		shellQuote(fmt.Sprintf("%s/certificates/%s.crt", m.subdirPath(), host)),
+	)
+	out, err := m.ssh.Run(ctx, m.proxyHost, cmd)
+	if err != nil {
+		return CertInfo{}, fmt.Errorf("read cert for %s: %w", host, err)
+	}
+	leaf, err := leafFromPEM([]byte(out))
+	if err != nil {
+		return CertInfo{}, fmt.Errorf("cert for %s: %w", host, err)
+	}
+	return CertInfo{Host: host, NotAfter: leaf.NotAfter, DNSNames: leaf.DNSNames}, nil
+}
+
+// leafFromPEM pulls the leaf out of a lego .crt bundle (leaf first,
+// then the issuer chain). Pure, so cert parsing is testable without
+// docker or SSH.
+func leafFromPEM(data []byte) (*x509.Certificate, error) {
+	// ssh.Client.Run trims its output, but pem.Decode needs the END
+	// line terminated — put the newline back before parsing.
+	data = append(bytes.TrimSpace(data), '\n')
+	for block, rest := pem.Decode(data); block != nil; block, rest = pem.Decode(rest) {
+		if block.Type != "CERTIFICATE" {
+			continue
+		}
+		leaf, err := x509.ParseCertificate(block.Bytes)
+		if err != nil {
+			return nil, fmt.Errorf("parse leaf certificate: %w", err)
+		}
+		return leaf, nil
+	}
+	return nil, fmt.Errorf("no CERTIFICATE block found")
+}
+
+// dnsNamesFromPEM returns the leaf's DNS SANs.
+func dnsNamesFromPEM(data []byte) ([]string, error) {
+	leaf, err := leafFromPEM(data)
+	if err != nil {
+		return nil, err
+	}
+	return leaf.DNSNames, nil
+}
+
+// sanExtras returns the --domains values to add beyond the primary:
+// every DNS name in the existing cert except the primary itself,
+// de-duplicated. DNS names are case-insensitive, so compare folded but
+// emit the name as it appears in the cert.
+func sanExtras(primary string, names []string) []string {
+	seen := map[string]bool{strings.ToLower(primary): true}
+	var extras []string
+	for _, n := range names {
+		key := strings.ToLower(n)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		extras = append(extras, n)
+	}
+	return extras
 }
 
 // List returns the FQDNs that currently have a cert+key pair in the
