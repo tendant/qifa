@@ -366,7 +366,8 @@ func TestDeployerSkipsPullWhenTheDigestIsAlreadyOnTheHost(t *testing.T) {
 
 	env := newIntegrationEnv(t)
 	cfg := env.config(t, config.BuilderHostPerTarget, "local", "nginx:1.27-alpine", config.Registry{})
-	cfg.Builder = nil // external image — pull-only
+	cfg.Builder = nil                  // external image — pull-only
+	cfg.PullPolicy = config.PullAlways // the stricter path: tags re-resolved
 	proxyDisabled := false
 	web := cfg.Servers["web"]
 	web.Port = 19088
@@ -456,6 +457,13 @@ func TestDeployerPullPolicyMissingSkipsTheRegistryEntirely(t *testing.T) {
 // The safety half of the same rule: a moving tag must still be re-resolved
 // under the default policy, or a deploy would silently ship a stale image.
 func TestDeployerDefaultPolicyStillResolvesTags(t *testing.T) {
+	// An unset policy is the default, "missing" — the same answer a loaded
+	// config gives, so code paths that build a Config directly do not diverge.
+	unset := &config.Config{}
+	if !unset.SkipPullIfPresent("nginx:1.27-alpine") {
+		t.Error("an unset policy should behave as the default (missing)")
+	}
+
 	cfg := &config.Config{PullPolicy: config.PullAlways}
 	if cfg.SkipPullIfPresent("nginx:1.27-alpine") {
 		t.Error("a tag must not be skipped under pull_policy: always")

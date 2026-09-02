@@ -200,13 +200,12 @@ Most deploy failures are really "this host could not reach the registry",
 and the reason is one line buried in docker's pull output on a machine you
 are not watching. qifa handles that specifically:
 
-- **An image the host already has is not fetched again.** External images are
-  resolved to `repo@digest` before the rollout, and a digest names exact
-  content, so a present one is never re-pulled — no registry round trip, and
-  no failed deploy when the registry is unreachable but the image is right
-  there. `pull_policy: missing` extends that to tags (never contacts the
-  registry for an image the host has); the default `always` still re-resolves
-  tags, so a moving tag picks up new builds.
+- **An image the host already has is not fetched again** (`pull_policy:
+  missing`, the default). A deploy of an unchanged image contacts no registry
+  at all, so a flaky link cannot fail it. Bumping the tag or digest in the
+  config still pulls, because the host does not have that one. Set
+  `pull_policy: always` for an image tracked by a moving tag (`:latest`),
+  where re-resolving on every deploy is the point.
 - **Transient network faults are retried.** DNS failures, TLS handshake
   timeouts, resets and rate limits get 3 attempts by default. Tune with
   `QIFA_PULL_RETRIES` (default 2 extra attempts) and `QIFA_PULL_RETRY_WAIT`

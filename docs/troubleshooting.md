@@ -34,16 +34,21 @@ what to check. The knobs:
 
 Set `QIFA_PULL_RETRIES=0` to fail fast, or raise it on a genuinely flaky link.
 
-If the host already has the image, qifa does not fetch it again: an
-already-present digest-pinned reference is always skipped, and
+If the host already has the image, qifa does not fetch it again — that is the
+default:
 
 ```yaml
-pull_policy: missing   # default: always
+pull_policy: missing   # default; "always" re-pulls every deploy
 ```
 
-extends the skip to tags, so a redeploy of an unchanged image never touches
-the registry at all. The cost is that a moving tag (`:latest`) stops being
-re-resolved — the host keeps what it has until you prune it or pin a new tag.
+So a redeploy of an unchanged image never touches the registry, and an
+unreachable registry cannot fail it. Changing the tag or digest in the config
+still pulls, because the host does not have that one.
+
+The cost is that a moving tag stops being re-resolved: with `image: app:latest`
+and `pull_policy: missing`, the host keeps whatever `latest` meant when it
+first pulled. Images deliberately tracked by a moving tag want
+`pull_policy: always`.
 
 What the diagnosed causes mean:
 

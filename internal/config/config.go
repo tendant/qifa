@@ -284,8 +284,14 @@ const (
 // Pull policies decide whether qifa contacts the registry for an image the
 // host may already have.
 //
-//	always  (default) — pull every time, so a moving tag picks up new builds
-//	missing           — skip the pull when the host already has the image
+//	missing (default) — use what the host has; pull only what it lacks
+//	always            — pull every time, so a moving tag picks up new builds
+//
+// The default is "missing" because a deploy of an unchanged image should not
+// depend on a registry being reachable: the bytes are already on the host.
+// The trade is that a moving tag (:latest) stops being re-resolved — the host
+// keeps what it has until the tag in the config changes. Set "always" for
+// images deliberately tracked by a moving tag.
 //
 // A digest-pinned reference (repo@sha256:…) is skipped under either policy
 // when it is already present: the content is addressed by its hash, so a pull
@@ -298,8 +304,11 @@ const (
 
 // SkipPullIfPresent reports whether an already-present imageRef may be used
 // without contacting the registry.
+//
+// An empty policy is the default, "missing" — so a Config built in code
+// behaves the same as one loaded from disk, where applyDefaults fills it in.
 func (c *Config) SkipPullIfPresent(imageRef string) bool {
-	if c.PullPolicy == PullMissing {
+	if c.PullPolicy != PullAlways {
 		return true
 	}
 	return IsDigestPinned(imageRef)
@@ -557,7 +566,7 @@ func applyDefaults(cfg *Config) {
 		cfg.ProxyBoot.AppsConfigDir = ".kamal/proxy/apps-config"
 	}
 	if cfg.PullPolicy == "" {
-		cfg.PullPolicy = PullAlways
+		cfg.PullPolicy = PullMissing
 	}
 	if cfg.Prune.RetainContainers == 0 {
 		cfg.Prune.RetainContainers = 5
@@ -641,11 +650,11 @@ env:
   secret:
     - DATABASE_URL
 
-# pull_policy: always (default) re-checks the registry on every deploy, so a
-# moving tag picks up new builds. "missing" reuses whatever the host already
-# has and never contacts the registry for it — useful on flaky links. An
-# already-present digest-pinned image is never re-pulled under either policy.
-# pull_policy: always
+# pull_policy: missing (default) uses the image the host already has and pulls
+# only what it lacks, so a deploy of an unchanged image needs no registry at
+# all. Set "always" for an image tracked by a moving tag (:latest), where the
+# point is to re-resolve it on every deploy.
+# pull_policy: missing
 
 # Omit the builder block to deploy an externally built image (image must
 # include a :tag or @digest). Set host: per_target to build on each target,
