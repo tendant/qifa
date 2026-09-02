@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -134,8 +135,11 @@ type Server struct {
 	Privileged bool `yaml:"privileged"`
 	// ExtraPorts publishes additional host:container ports beyond the
 	// AppPort one used by the proxy/non-proxy path. Each entry is a string
-	// in docker `-p` form: "hostport:containerport" or
-	// "hostport:containerport/proto". Useful when a container exposes
+	// in docker `-p` form: "hostport:containerport",
+	// "hostport:containerport/proto", or with a bind IP,
+	// "ip:hostport:containerport" ("127.0.0.1:64602:6002" publishes on
+	// loopback only, keeping the port off the public internet without a
+	// firewall rule). IPv6 must be bracketed: "[::1]:8080:80". Useful when a container exposes
 	// more than one port that needs to be reachable from outside the
 	// docker network (e.g. Concourse TSA on 2222 while ATC stays on 8080
 	// behind kamal-proxy). Either side may also be an equal-width range
@@ -720,9 +724,15 @@ func validatePortPublish(s string) error {
 		}
 		core = core[:i]
 	}
+	// Optional bind-IP prefix, docker's "ip:hostport:containerport" form.
+	// IPv6 must be bracketed, exactly as docker requires: [::1]:8080:80.
+	core, err := stripBindIP(core, s)
+	if err != nil {
+		return err
+	}
 	parts := strings.Split(core, ":")
 	if len(parts) != 2 {
-		return fmt.Errorf("want \"hostport:containerport[/proto]\", got %q", s)
+		return fmt.Errorf("want \"[ip:]hostport:containerport[/proto]\", got %q", s)
 	}
 	hostWidth, err := validatePortOrRange(parts[0], "hostport")
 	if err != nil {
@@ -741,6 +751,37 @@ func validatePortPublish(s string) error {
 // validatePortOrRange validates a single port ("8080") or an inclusive
 // range ("50000-50100"), returning how many ports it covers (1 for a
 // single port) so the caller can check both sides of a mapping line up.
+// stripBindIP removes and validates an optional leading bind IP, returning the
+// remaining "hostport:containerport". Docker publishes on every interface
+// without one; with one, only on that address — which is how a port is kept
+// off the public internet without a firewall rule.
+func stripBindIP(core, original string) (string, error) {
+	if strings.HasPrefix(core, "[") {
+		end := strings.Index(core, "]")
+		if end < 0 {
+			return "", fmt.Errorf("%q: unclosed [ in the bind IP", original)
+		}
+		ip := core[1:end]
+		rest := core[end+1:]
+		if !strings.HasPrefix(rest, ":") {
+			return "", fmt.Errorf("%q: expected \":\" after the bracketed bind IP", original)
+		}
+		if net.ParseIP(ip) == nil {
+			return "", fmt.Errorf("%q: %q is not a valid IP address", original, ip)
+		}
+		return rest[1:], nil
+	}
+	parts := strings.Split(core, ":")
+	if len(parts) != 3 {
+		return core, nil // no IP prefix; validated as-is by the caller
+	}
+	if net.ParseIP(parts[0]) == nil {
+		// An unbracketed IPv6 lands here too, which docker also rejects.
+		return "", fmt.Errorf("%q: %q is not a valid IP address (bracket IPv6: [::1]:8080:80)", original, parts[0])
+	}
+	return parts[1] + ":" + parts[2], nil
+}
+
 func validatePortOrRange(p, label string) (int, error) {
 	if i := strings.Index(p, "-"); i >= 0 {
 		start, err1 := strconv.Atoi(p[:i])

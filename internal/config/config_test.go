@@ -457,6 +457,33 @@ func TestValidatePortPublishSinglePorts(t *testing.T) {
 	}
 }
 
+func TestValidatePortPublishBindIP(t *testing.T) {
+	cases := []struct {
+		in      string
+		wantErr bool
+	}{
+		{"127.0.0.1:64602:6002", false},  // loopback only — off the public internet
+		{"0.0.0.0:8080:80", false},       // explicit all-interfaces
+		{"10.0.0.11:8080:80/udp", false}, // with a protocol
+		{"[::1]:8080:80", false},         // IPv6 must be bracketed
+		{"[::]:8080:80/tcp", false},
+		{"127.0.0.1:50000-50100:50000-50100", false}, // ranges still apply
+		{"not-an-ip:8080:80", true},
+		{":8080:80", true},             // empty IP
+		{"::1:8080:80", true},          // unbracketed IPv6, as docker rejects
+		{"[::1:8080:80", true},         // unclosed bracket
+		{"[::1]8080:80", true},         // missing colon after the bracket
+		{"127.0.0.1:8080:80:90", true}, // one field too many
+		{"127.0.0.1:0:80", true},       // invalid port with a valid IP
+	}
+	for _, c := range cases {
+		err := validatePortPublish(c.in)
+		if (err != nil) != c.wantErr {
+			t.Errorf("validatePortPublish(%q) error = %v, wantErr %v", c.in, err, c.wantErr)
+		}
+	}
+}
+
 func TestValidatePortPublishRanges(t *testing.T) {
 	cases := []struct {
 		in      string
