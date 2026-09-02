@@ -15,13 +15,13 @@ func TestDeployCommandIncludesConfiguredFlags(t *testing.T) {
 
 	p := &KamalProxy{
 		app: config.Proxy{
-			Host:            "app.example.com",
-			Hosts:           []string{"www.example.com"},
-			DeployTimeout:   45 * time.Second,
-			DrainTimeout:    20 * time.Second,
-			TargetTimeout:   15 * time.Second,
-			SSL:             true,
-			TLSRedirect:     &tlsRedirect,
+			Host:          "app.example.com",
+			Hosts:         []string{"www.example.com"},
+			DeployTimeout: 45 * time.Second,
+			DrainTimeout:  20 * time.Second,
+			TargetTimeout: 15 * time.Second,
+			SSL:           true,
+			TLSRedirect:   &tlsRedirect,
 			TLS: &config.TLS{
 				Source:  "kamal",
 				Staging: true,
@@ -228,12 +228,12 @@ func TestBootCommandUsesConfiguredPorts(t *testing.T) {
 	command := p.bootCommand()
 	for _, fragment := range []string{
 		"docker network create 'kamal'",
-		"mkdir -p '.kamal/proxy/apps-config'",
+		`mkdir -p "$HOME"/'.kamal/proxy/apps-config'`,
 		"-p 8080:80",
 		"-p 8443:443",
 		"--network 'kamal'",
 		"--volume 'kamal-proxy-config:/home/kamal-proxy/.config/kamal-proxy'",
-		"--volume '.kamal/proxy/apps-config:/home/kamal-proxy/.apps-config'",
+		`--volume "$HOME"/'.kamal/proxy/apps-config:/home/kamal-proxy/.apps-config'`,
 		"--log-opt max-size=10m",
 		"kamal-proxy run",
 		"basecamp/kamal-proxy:v0.9.2",
@@ -241,5 +241,51 @@ func TestBootCommandUsesConfiguredPorts(t *testing.T) {
 		if !strings.Contains(command, fragment) {
 			t.Fatalf("missing fragment %q in %q", fragment, command)
 		}
+	}
+}
+
+// A relative apps_config_dir — the default — must reach docker as a path, not
+// as a volume name: docker reads a relative --volume source as a named volume
+// and rejects any name containing "/", so `qifa proxy boot` failed outright
+// with the shipped defaults.
+func TestBootCommandAnchorsRelativeAppsConfigDirToHome(t *testing.T) {
+	p := &KamalProxy{boot: config.ProxyBoot{AppsConfigDir: ".kamal/proxy/apps-config"}}
+	command := p.bootCommand()
+
+	if strings.Contains(command, "--volume '.kamal/proxy/apps-config:") {
+		t.Fatalf("relative volume source would be read as a volume name:\n%s", command)
+	}
+	want := `--volume "$HOME"/'.kamal/proxy/apps-config:/home/kamal-proxy/.apps-config'`
+	if !strings.Contains(command, want) {
+		t.Fatalf("missing %q in:\n%s", want, command)
+	}
+}
+
+func TestBootCommandKeepsAbsoluteAppsConfigDir(t *testing.T) {
+	p := &KamalProxy{boot: config.ProxyBoot{AppsConfigDir: "/srv/qifa/apps-config"}}
+	command := p.bootCommand()
+
+	for _, want := range []string{
+		"mkdir -p '/srv/qifa/apps-config'",
+		"--volume '/srv/qifa/apps-config:/home/kamal-proxy/.apps-config'",
+	} {
+		if !strings.Contains(command, want) {
+			t.Fatalf("missing %q in:\n%s", want, command)
+		}
+	}
+	if strings.Contains(command, `"$HOME"/'/srv`) {
+		t.Fatalf("absolute path must not be anchored to $HOME:\n%s", command)
+	}
+}
+
+// A ~/ path means the same thing as a relative one and must expand the same
+// way; docker would otherwise get a literal "~" directory.
+func TestBootCommandExpandsTildeAppsConfigDir(t *testing.T) {
+	p := &KamalProxy{boot: config.ProxyBoot{AppsConfigDir: "~/qifa/apps-config"}}
+	command := p.bootCommand()
+
+	want := `--volume "$HOME"/'qifa/apps-config:/home/kamal-proxy/.apps-config'`
+	if !strings.Contains(command, want) {
+		t.Fatalf("missing %q in:\n%s", want, command)
 	}
 }

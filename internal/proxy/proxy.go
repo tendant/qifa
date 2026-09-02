@@ -203,13 +203,22 @@ func (k *KamalProxy) bootCommand() string {
 	if appsConfigDir == "" {
 		appsConfigDir = ".kamal/proxy/apps-config"
 	}
+	// Docker reads a relative --volume source as a named VOLUME, and a name
+	// containing "/" is rejected outright:
+	//   ".kamal/proxy/apps-config" includes invalid characters for a local
+	//   volume name … If you intended to pass a host directory, use absolute
+	//   path.
+	// The default apps_config_dir is relative, meaning "in the deploy user's
+	// home" — which is where the mkdir below put it — so expand it against
+	// $HOME on the remote side rather than handing docker a name.
+	appsConfigPath, appsConfigMount := remotePath(appsConfigDir, "/home/kamal-proxy/.apps-config")
 	publishFlags := publishArgs(httpPort, httpsPort, k.boot.BindIPs)
 	command := strings.Join([]string{
 		"echo '==> creating docker network " + network + "'",
 		"docker network create " + shellQuote(network) + " >/dev/null 2>&1 || true",
-		"mkdir -p " + shellQuote(appsConfigDir),
+		"mkdir -p " + appsConfigPath,
 		"echo '==> starting " + proxyContainerName + " from " + imageRef + "'",
-		"docker ps --filter " + shellQuote("name=^"+proxyContainerName) + " --format '{{.Names}}' | grep -qx " + shellQuote(proxyContainerName) + " || (docker rm -f " + shellQuote(proxyContainerName) + " >/dev/null 2>&1 || true; docker run -d --restart unless-stopped --name " + shellQuote(proxyContainerName) + " --network " + shellQuote(network) + " --volume " + shellQuote(stateVolume+":/home/kamal-proxy/.config/kamal-proxy") + " --volume " + shellQuote(appsConfigDir+":/home/kamal-proxy/.apps-config") + " " + publishFlags + " --log-opt max-size=10m " + shellQuote(imageRef) + " kamal-proxy run)",
+		"docker ps --filter " + shellQuote("name=^"+proxyContainerName) + " --format '{{.Names}}' | grep -qx " + shellQuote(proxyContainerName) + " || (docker rm -f " + shellQuote(proxyContainerName) + " >/dev/null 2>&1 || true; docker run -d --restart unless-stopped --name " + shellQuote(proxyContainerName) + " --network " + shellQuote(network) + " --volume " + shellQuote(stateVolume+":/home/kamal-proxy/.config/kamal-proxy") + " --volume " + appsConfigMount + " " + publishFlags + " --log-opt max-size=10m " + shellQuote(imageRef) + " kamal-proxy run)",
 		// Wait for the container to actually be up. If it exited immediately
 		// (bad port bind, bad image), print its logs before failing — otherwise
 		// the operator sees only "exit status 1" with no reason at all.
@@ -277,6 +286,19 @@ func (k *KamalProxy) Stop(ctx context.Context, host, service, message string, dr
 func (k *KamalProxy) Resume(ctx context.Context, host, service string) error {
 	_, err := k.client.Run(ctx, host, "docker exec "+shellQuote(proxyContainerName)+" kamal-proxy resume "+shellQuote(service))
 	return err
+}
+
+// remotePath renders a configured host path as two shell fragments: the path
+// itself, and a "<path>:<dest>" volume argument. An absolute path is quoted
+// as-is; a relative one (or a ~/ one) is anchored to the remote user's $HOME,
+// which the remote shell expands. Adjacent quoted fragments concatenate into
+// a single word in sh, so "$HOME"/'rel' is one path.
+func remotePath(path, dest string) (quotedPath, quotedMount string) {
+	rel := strings.TrimPrefix(path, "~/")
+	if strings.HasPrefix(rel, "/") {
+		return shellQuote(rel), shellQuote(rel + ":" + dest)
+	}
+	return `"$HOME"/` + shellQuote(rel), `"$HOME"/` + shellQuote(rel+":"+dest)
 }
 
 func shellQuote(value string) string {

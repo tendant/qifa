@@ -83,6 +83,12 @@ servers:
       - 127.0.0.1:2222
     port: 3000
 
+# The shared proxy container is the operator's to launch (qifa proxy boot);
+# app deploys only verify it is running.
+proxy_boot:
+  hosts:
+    - 127.0.0.1:2222
+
 proxy:
   host: localhost
   app_port: 3000
@@ -148,6 +154,7 @@ EOF
 
 (
   cd "$WEB_DIR"
+  "$BIN_DIR/qifa" proxy boot
   "$BIN_DIR/qifa" deploy
   curl -fsS -H 'Host: localhost' http://127.0.0.1:8080/up
   curl -fsS -H 'Host: localhost' http://127.0.0.1:8080/version

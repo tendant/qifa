@@ -312,7 +312,7 @@ func (r *Remote) BuildxPush(ctx context.Context, host string, cfg *config.Config
 			"git -C " + shellQuote(repoDir) + " checkout " + shellQuote(cfg.Builder.Ref),
 			withDockerConfig(dockerConfigDir, buildxCommand(BuildSpec{
 				ContextDir: contextDir,
-				Dockerfile: filepath.Join(contextDir, cfg.Builder.Dockerfile),
+				Dockerfile: remoteDockerfileIn("", contextDir, cfg.Builder.Dockerfile),
 				Platform:   cfg.Builder.Platform,
 			}, imageRef)),
 		}, " && ")
@@ -335,7 +335,7 @@ func (r *Remote) BuildxPush(ctx context.Context, host string, cfg *config.Config
 		"tar -xf " + shellQuote(remoteArchive) + " -C " + shellQuote(remoteContext),
 		withDockerConfig(dockerConfigDir, buildxCommand(BuildSpec{
 			ContextDir: remoteContext,
-			Dockerfile: filepath.Join(remoteContext, cfg.Builder.Dockerfile),
+			Dockerfile: remoteDockerfileIn(cfg.Builder.Context, remoteContext, cfg.Builder.Dockerfile),
 			Platform:   cfg.Builder.Platform,
 		}, imageRef)),
 		"rm -f " + shellQuote(remoteArchive),
@@ -358,7 +358,7 @@ func (r *Remote) Build(ctx context.Context, host string, cfg *config.Config, ima
 			"echo '==> running docker build'",
 			buildCommand(BuildSpec{
 				ContextDir: contextDir,
-				Dockerfile: filepath.Join(contextDir, cfg.Builder.Dockerfile),
+				Dockerfile: remoteDockerfileIn("", contextDir, cfg.Builder.Dockerfile),
 				Platform:   cfg.Builder.Platform,
 			}, imageRef),
 		}, " && ")
@@ -387,7 +387,7 @@ func (r *Remote) Build(ctx context.Context, host string, cfg *config.Config, ima
 		"echo '==> running docker build'",
 		buildCommand(BuildSpec{
 			ContextDir: remoteContext,
-			Dockerfile: filepath.Join(remoteContext, cfg.Builder.Dockerfile),
+			Dockerfile: remoteDockerfileIn(cfg.Builder.Context, remoteContext, cfg.Builder.Dockerfile),
 			Platform:   cfg.Builder.Platform,
 		}, imageRef),
 		"rm -f " + shellQuote(remoteArchive),
@@ -639,6 +639,36 @@ func (r *Remote) ExecStream(ctx context.Context, host, name, command string, out
 	return r.client.Stream(ctx, host, "docker exec "+shellQuote(name)+" sh -lc "+shellQuote(command), out)
 }
 
+// dockerfileIn resolves builder.dockerfile against a build context on the
+// machine that will run the build. An absolute path is honoured as-is —
+// `docker build -f /abs/Dockerfile ctx` is valid and people write it —
+// whereas joining it to the context produced paths like
+// "<context>/private/tmp/..." and the opaque error "unable to evaluate
+// symlinks in Dockerfile path".
+func dockerfileIn(contextDir, dockerfile string) string {
+	if filepath.IsAbs(dockerfile) {
+		return dockerfile
+	}
+	return filepath.Join(contextDir, dockerfile)
+}
+
+// remoteDockerfileIn resolves it against the context as it exists on the
+// REMOTE host, where a local absolute path does not exist. An absolute path
+// that points inside the local context keeps its position within the
+// uploaded copy; anything else falls back to its base name, which is where a
+// single-file Dockerfile lands.
+func remoteDockerfileIn(localContext, remoteContext, dockerfile string) string {
+	if !filepath.IsAbs(dockerfile) {
+		return filepath.Join(remoteContext, dockerfile)
+	}
+	if localContext != "" {
+		if rel, err := filepath.Rel(localContext, dockerfile); err == nil && !strings.HasPrefix(rel, "..") {
+			return filepath.Join(remoteContext, rel)
+		}
+	}
+	return filepath.Join(remoteContext, filepath.Base(dockerfile))
+}
+
 func runLocal(ctx context.Context, binary string, args ...string) error {
 	return runLocalEnv(ctx, nil, binary, args...)
 }
@@ -797,14 +827,14 @@ func localBuildSpec(ctx context.Context, cfg *config.Config) (BuildSpec, func(),
 		contextDir := filepath.Join(repoDir, cfg.Builder.Subdir)
 		return BuildSpec{
 			ContextDir: contextDir,
-			Dockerfile: filepath.Join(contextDir, cfg.Builder.Dockerfile),
+			Dockerfile: dockerfileIn(contextDir, cfg.Builder.Dockerfile),
 			Platform:   cfg.Builder.Platform,
 		}, cleanup, nil
 	}
 	contextDir := filepath.Clean(cfg.Builder.Context)
 	return BuildSpec{
 		ContextDir: contextDir,
-		Dockerfile: filepath.Join(contextDir, cfg.Builder.Dockerfile),
+		Dockerfile: dockerfileIn(contextDir, cfg.Builder.Dockerfile),
 		Platform:   cfg.Builder.Platform,
 	}, func() {}, nil
 }

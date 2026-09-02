@@ -8,7 +8,7 @@ PasswordAuthentication no
 KbdInteractiveAuthentication no
 ChallengeResponseAuthentication no
 PubkeyAuthentication yes
-AuthorizedKeysFile /test-ssh/authorized_keys
+AuthorizedKeysFile /root/.ssh/authorized_keys
 PidFile /run/sshd.pid
 PrintMotd no
 Subsystem sftp /usr/lib/ssh/sftp-server
