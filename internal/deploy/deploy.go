@@ -281,7 +281,7 @@ func (d *Deployer) deployHost(ctx context.Context, deployment state.Deployment, 
 		if err := d.updateStatus(deployment, state.StatusPulling); err != nil {
 			return err
 		}
-		if err := d.remoteDocker.Pull(ctx, host, dockerConfigDir, imageRef); err != nil {
+		if err := d.pullImage(ctx, host, dockerConfigDir, imageRef); err != nil {
 			return err
 		}
 	}
@@ -682,7 +682,10 @@ func (d *Deployer) resolveImage(ctx context.Context) (imageRef, version string, 
 			return "", "", err
 		}
 	}
-	if err := d.remoteDocker.Pull(ctx, first, dockerConfigDir, d.cfg.Image); err != nil {
+	// A digest-pinned config image needs no resolution at all, and a present
+	// one under pull_policy: missing can be read locally. Otherwise the tag
+	// has to be resolved against the registry, which is what the pull does.
+	if err := d.pullImage(ctx, first, dockerConfigDir, d.cfg.Image); err != nil {
 		return "", "", err
 	}
 	digest, err := d.remoteDocker.ImageDigest(ctx, first, d.cfg.Image)
@@ -691,6 +694,32 @@ func (d *Deployer) resolveImage(ctx context.Context) (imageRef, version string, 
 	}
 	repo := config.ImageRepo(d.cfg.Image)
 	return repo + "@" + digest, shortDigest(digest), nil
+}
+
+// pullImage fetches imageRef on host unless the host already has it and the
+// configured policy allows using what is there.
+//
+// The default (pull_policy: always) still skips the pull for a digest-pinned
+// reference that is present: a digest addresses exact content, so a pull can
+// only cost a registry round trip — and fail the deploy when the link to the
+// registry is down even though the right image is already on the host. Since
+// external images are resolved to repo@digest before the rollout, that covers
+// every per-host pull of an unchanged image.
+//
+// pull_policy: missing extends the same skip to tags, at the cost of never
+// noticing that a moving tag now points somewhere else.
+func (d *Deployer) pullImage(ctx context.Context, host, dockerConfigDir, imageRef string) error {
+	if d.cfg.SkipPullIfPresent(imageRef) {
+		exists, err := d.remoteDocker.ImageExists(ctx, host, imageRef)
+		if err != nil {
+			return err
+		}
+		if exists {
+			d.log.Printf("%s already present on %s — skipping pull", imageRef, host)
+			return nil
+		}
+	}
+	return d.remoteDocker.Pull(ctx, host, dockerConfigDir, imageRef)
 }
 
 func shortDigest(digest string) string {
@@ -1312,7 +1341,7 @@ func (d *Deployer) AccessoryBoot(ctx context.Context, name string) error {
 		if !ok {
 			return fmt.Errorf("accessory %q: source: local — image %q not found on host %s (build or load it out-of-band before booting)", name, accessory.Image, accessory.Host)
 		}
-	} else if err := d.remoteDocker.Pull(ctx, accessory.Host, "", accessory.Image); err != nil {
+	} else if err := d.pullImage(ctx, accessory.Host, "", accessory.Image); err != nil {
 		return err
 	}
 	if err := d.remoteDocker.StopAndRemove(ctx, accessory.Host, containerName); err != nil {

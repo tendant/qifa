@@ -34,6 +34,17 @@ what to check. The knobs:
 
 Set `QIFA_PULL_RETRIES=0` to fail fast, or raise it on a genuinely flaky link.
 
+If the host already has the image, qifa does not fetch it again: an
+already-present digest-pinned reference is always skipped, and
+
+```yaml
+pull_policy: missing   # default: always
+```
+
+extends the skip to tags, so a redeploy of an unchanged image never touches
+the registry at all. The cost is that a moving tag (`:latest`) stops being
+re-resolved — the host keeps what it has until you prune it or pin a new tag.
+
 What the diagnosed causes mean:
 
 - **DNS failure** — the host has no resolver for the registry name. Private

@@ -16,6 +16,7 @@ type Config struct {
 	Service     string               `yaml:"service"`
 	Image       string               `yaml:"image"`
 	Source      string               `yaml:"source"`
+	PullPolicy  string               `yaml:"pull_policy"`
 	Servers     map[string]Server    `yaml:"servers"`
 	Proxy       Proxy                `yaml:"proxy"`
 	Registry    Registry             `yaml:"registry"`
@@ -166,15 +167,15 @@ type Proxy struct {
 // TLS controls who issues, renews, and serves the cert when proxy.ssl
 // is true. Three sources, picked per-app:
 //
-//   kamal:  kamal-proxy autocert (HTTP-01). Needs port 80 publicly
-//           reachable; kamal-proxy renews silently. Lowest overhead
-//           for public hosts.
-//   qifa:   qifa-issued via lego. DNS-01 by default (works for
-//           tailscale-private hosts and wildcards). Renewed by
-//           `qifa cert renew`; affected apps must be redeployed for
-//           kamal-proxy to pick up the new cert.
-//   static: BYO. User owns acquisition and renewal entirely; qifa
-//           just plumbs paths to kamal-proxy.
+//	kamal:  kamal-proxy autocert (HTTP-01). Needs port 80 publicly
+//	        reachable; kamal-proxy renews silently. Lowest overhead
+//	        for public hosts.
+//	qifa:   qifa-issued via lego. DNS-01 by default (works for
+//	        tailscale-private hosts and wildcards). Renewed by
+//	        `qifa cert renew`; affected apps must be redeployed for
+//	        kamal-proxy to pick up the new cert.
+//	static: BYO. User owns acquisition and renewal entirely; qifa
+//	        just plumbs paths to kamal-proxy.
 type TLS struct {
 	Source string `yaml:"source"`
 
@@ -245,13 +246,15 @@ type Env struct {
 // as externally produced and qifa just pulls it.
 //
 // Host:
-//   ""           build locally (where qifa runs); requires registry.
-//   "per_target" build on each deployment target; forbids registry.
-//   anything else  treated as an SSH-reachable host to build on; requires registry.
+//
+//	""           build locally (where qifa runs); requires registry.
+//	"per_target" build on each deployment target; forbids registry.
+//	anything else  treated as an SSH-reachable host to build on; requires registry.
 //
 // Source is inferred from the presence of Repo:
-//   Repo set     git source; requires Ref; forbids Context.
-//   Repo unset   local source; requires Context (defaults to ".").
+//
+//	Repo set     git source; requires Ref; forbids Context.
+//	Repo unset   local source; requires Context (defaults to ".").
 type Builder struct {
 	Host       string `yaml:"host"`
 	Context    string `yaml:"context"`
@@ -274,6 +277,35 @@ const (
 
 // ImageSource returns the effective origin of the app image. Defaults to
 // registry. Only meaningful when Builder == nil.
+// Pull policies decide whether qifa contacts the registry for an image the
+// host may already have.
+//
+//	always  (default) — pull every time, so a moving tag picks up new builds
+//	missing           — skip the pull when the host already has the image
+//
+// A digest-pinned reference (repo@sha256:…) is skipped under either policy
+// when it is already present: the content is addressed by its hash, so a pull
+// cannot produce anything different. It can only cost a round trip and fail
+// on a flaky link.
+const (
+	PullAlways  = "always"
+	PullMissing = "missing"
+)
+
+// SkipPullIfPresent reports whether an already-present imageRef may be used
+// without contacting the registry.
+func (c *Config) SkipPullIfPresent(imageRef string) bool {
+	if c.PullPolicy == PullMissing {
+		return true
+	}
+	return IsDigestPinned(imageRef)
+}
+
+// IsDigestPinned reports whether a reference names an immutable digest.
+func IsDigestPinned(imageRef string) bool {
+	return strings.Contains(imageRef, "@sha256:")
+}
+
 func (c *Config) ImageSource() string {
 	if strings.TrimSpace(c.Source) == "" {
 		return SourceRegistry
@@ -409,6 +441,11 @@ func (c *Config) Validate() error {
 	if err := c.validateSource(); err != nil {
 		return err
 	}
+	switch c.PullPolicy {
+	case "", PullAlways, PullMissing: // "" means the default, applied on load
+	default:
+		return fmt.Errorf("config.pull_policy: %q is not valid (use %q or %q)", c.PullPolicy, PullAlways, PullMissing)
+	}
 	for name, acc := range c.Accessories {
 		switch strings.TrimSpace(acc.Source) {
 		case "", SourceRegistry, SourceLocal:
@@ -515,6 +552,9 @@ func applyDefaults(cfg *Config) {
 	if cfg.ProxyBoot.AppsConfigDir == "" {
 		cfg.ProxyBoot.AppsConfigDir = ".kamal/proxy/apps-config"
 	}
+	if cfg.PullPolicy == "" {
+		cfg.PullPolicy = PullAlways
+	}
 	if cfg.Prune.RetainContainers == 0 {
 		cfg.Prune.RetainContainers = 5
 	}
@@ -596,6 +636,12 @@ env:
     APP_ENV: production
   secret:
     - DATABASE_URL
+
+# pull_policy: always (default) re-checks the registry on every deploy, so a
+# moving tag picks up new builds. "missing" reuses whatever the host already
+# has and never contacts the registry for it — useful on flaky links. An
+# already-present digest-pinned image is never re-pulled under either policy.
+# pull_policy: always
 
 # Omit the builder block to deploy an externally built image (image must
 # include a :tag or @digest). Set host: per_target to build on each target,

@@ -355,6 +355,120 @@ func TestDeployerFailedPullIsDiagnosed(t *testing.T) {
 	}
 }
 
+// An image the host already has must not be fetched again. External images
+// are resolved to repo@digest before the rollout, and a digest names exact
+// content, so re-pulling one can only cost a registry round trip — and fail
+// the deploy when the registry is unreachable but the right image is right
+// there.
+func TestDeployerSkipsPullWhenTheDigestIsAlreadyOnTheHost(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	env := newIntegrationEnv(t)
+	cfg := env.config(t, config.BuilderHostPerTarget, "local", "nginx:1.27-alpine", config.Registry{})
+	cfg.Builder = nil // external image — pull-only
+	proxyDisabled := false
+	web := cfg.Servers["web"]
+	web.Port = 19088
+	web.AppPort = 80
+	web.Proxy = &proxyDisabled
+	cfg.Servers["web"] = web
+	delete(cfg.Servers, "worker")
+
+	store, err := state.NewStore(filepath.Join(env.root, ".qifa", "state.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	deployer, err := New(cfg, store, &stdout, &stderr)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := deployer.Deploy(ctx); err != nil {
+		t.Fatalf("first deploy: %v\n%s", err, stdout.String())
+	}
+	// Tag resolution + the rollout pull of the resolved digest.
+	first := strings.Count(readIfExists(filepath.Join(env.stateDir, "docker_calls.log")), "pull pull")
+	if first != 2 {
+		t.Fatalf("want 2 pulls on a cold host, got %d", first)
+	}
+
+	stdout.Reset()
+	if err := deployer.Deploy(ctx); err != nil {
+		t.Fatalf("second deploy: %v\n%s", err, stdout.String())
+	}
+
+	// The tag is still resolved against the registry (pull_policy: always, and
+	// a tag can move), but the digest pull must be skipped.
+	total := strings.Count(readIfExists(filepath.Join(env.stateDir, "docker_calls.log")), "pull pull")
+	if got := total - first; got != 1 {
+		t.Errorf("want 1 pull on redeploy (tag resolve only), got %d:\n%s", got,
+			readIfExists(filepath.Join(env.stateDir, "docker_calls.log")))
+	}
+	if !strings.Contains(stdout.String(), "already present") {
+		t.Errorf("the skip should be reported:\n%s", stdout.String())
+	}
+}
+
+// pull_policy: missing extends the skip to tags, so a redeploy of an image the
+// host already has touches the registry not at all.
+func TestDeployerPullPolicyMissingSkipsTheRegistryEntirely(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	env := newIntegrationEnv(t)
+	cfg := env.config(t, config.BuilderHostPerTarget, "local", "nginx:1.27-alpine", config.Registry{})
+	cfg.Builder = nil
+	cfg.PullPolicy = config.PullMissing
+	proxyDisabled := false
+	web := cfg.Servers["web"]
+	web.Port = 19089
+	web.AppPort = 80
+	web.Proxy = &proxyDisabled
+	cfg.Servers["web"] = web
+	delete(cfg.Servers, "worker")
+
+	store, err := state.NewStore(filepath.Join(env.root, ".qifa", "state.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	deployer, err := New(cfg, store, &stdout, &stderr)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := deployer.Deploy(ctx); err != nil {
+		t.Fatalf("first deploy: %v\n%s", err, stdout.String())
+	}
+	first := strings.Count(readIfExists(filepath.Join(env.stateDir, "docker_calls.log")), "pull pull")
+
+	if err := deployer.Deploy(ctx); err != nil {
+		t.Fatalf("second deploy: %v\n%s", err, stdout.String())
+	}
+	total := strings.Count(readIfExists(filepath.Join(env.stateDir, "docker_calls.log")), "pull pull")
+	if got := total - first; got != 0 {
+		t.Errorf("want no pulls at all on redeploy under pull_policy: missing, got %d", got)
+	}
+}
+
+// The safety half of the same rule: a moving tag must still be re-resolved
+// under the default policy, or a deploy would silently ship a stale image.
+func TestDeployerDefaultPolicyStillResolvesTags(t *testing.T) {
+	cfg := &config.Config{PullPolicy: config.PullAlways}
+	if cfg.SkipPullIfPresent("nginx:1.27-alpine") {
+		t.Error("a tag must not be skipped under pull_policy: always")
+	}
+	if !cfg.SkipPullIfPresent("nginx@sha256:abc123") {
+		t.Error("a digest names exact content; re-pulling it cannot change anything")
+	}
+	missing := &config.Config{PullPolicy: config.PullMissing}
+	if !missing.SkipPullIfPresent("nginx:1.27-alpine") {
+		t.Error("pull_policy: missing should skip a present tag")
+	}
+}
+
 func TestDeployerRollbackToExplicitVersion(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -864,7 +978,21 @@ case "$cmd" in
       echo 'Error response from daemon: Get "https://registry.example.com/v2/": dial tcp: lookup registry.example.com on 10.0.0.2:53: no such host' >&2
       exit 1
     fi
+    # Record what is now local, so docker image inspect can answer honestly
+    # and the pull-skipping policy is actually exercised.
+    printf '%%s\n' "$1" >> "$state/images.txt"
     exit 0
+    ;;
+  image)
+    # docker image inspect <ref>: present only if a pull recorded it.
+    if [ "${1:-}" = "inspect" ]; then
+      shift
+      if grep -qxF "$1" "$state/images.txt" 2>/dev/null; then exit 0; fi
+      echo "Error: No such image: $1" >&2
+      exit 1
+    fi
+    echo "unsupported docker image command: $*" >&2
+    exit 1
     ;;
   build|push|info|login|buildx)
     exit 0
