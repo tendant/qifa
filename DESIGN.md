@@ -30,6 +30,7 @@ qifa/
   internal/config/     YAML schema, validation, defaults
   internal/deploy/     orchestrator (Deploy, Rollback, Stop, Start, ...)
   internal/docker/     Docker shell wrappers (Local + Remote over SSH)
+  internal/dockererr/  failure classification + remote connectivity diagnostics
   internal/proxy/      kamal-proxy boot + register/deregister
   internal/registry/   per-host docker login isolation
   internal/secrets/    env file rendering
@@ -67,6 +68,7 @@ qifa proxy upgrade      # re-create container with current proxy_boot config (e.
 qifa proxy remove [--purge]   # rm container; --purge also drops the state volume
 qifa proxy logs [--follow] [--lines N]
 qifa proxy details      # docker exec kamal-proxy kamal-proxy list  (registered routes)
+qifa doctor             # read-only preflight of every host (ssh, docker, registry, disk, clock)
 qifa status             # deployment history (audit) + active containers (live)
 qifa logs               # docker logs from the active container
 qifa app exec <command> # docker exec in the active container
@@ -440,6 +442,19 @@ affected by `qifa remove`, `qifa prune`, or `qifa sweep`.
 `golang.org/x/crypto/ssh` with parallel fanout, per-host timeout, streaming
 logs, sudo support, and known_hosts verification.
 
+### Local Transport
+
+The reserved host name `local` executes through `/bin/sh` on the machine
+running qifa instead of dialling SSH. It is a branch inside `ssh.Client`
+(`Run`, `Stream`, `Upload`, `Download`) rather than an interface seam, so
+every caller — deploy, docker, proxy, cert, lock, the connectivity probe —
+is unchanged and unaware. Failures produce the same `*RemoteError`, so the
+same classification and diagnostics apply.
+
+Opt-in by exact name: `localhost` and `127.0.0.1` remain SSH targets, since
+a local sshd (a VM, a container, the e2e harness) is a distinct thing.
+Local and remote hosts can appear in the same role.
+
 ## Docker Layer
 
 Shells out to `docker` over SSH on remote hosts and locally for the local
@@ -448,6 +463,30 @@ build path. Methods used today:
 ```bash
 docker build / push / pull / run / stop / rm / start / ps / inspect / logs / exec / image prune
 ```
+
+### Failure Diagnosis
+
+Remote docker failures arrive as an exit status plus whatever the command
+printed, which is why an unreachable registry historically looked like
+"exit status 1" at the end of a page of progress bars. Three layers address
+that, all in `internal/dockererr`:
+
+1. **Capture.** `ssh.RemoteError` carries the command, exit status and a
+   bounded tail (64 KB) of the *combined* output — docker reports some
+   failures on stdout.
+2. **Classify.** A pattern table maps docker's own wording to a cause (DNS,
+   daemon proxy, TLS trust, auth, missing tag, rate limit, disk, platform,
+   clock), a hint, and a `Retryable` flag. Pulls and pushes retry the
+   retryable ones (`QIFA_PULL_RETRIES`, default 2 extra attempts); a stalled
+   transfer is reported while it stalls (`QIFA_PULL_STALL_WARN`).
+3. **Diagnose.** When the cause is (or might be) a network fault, one POSIX
+   `sh` probe runs on the failing host and reports DNS, TCP, the registry's
+   `/v2/` endpoint, the *daemon's* proxy env, mirrors and insecure
+   registries, free space under the docker root, and clock skew. The result
+   is attached to the error, so there is no second command to run.
+
+`qifa doctor` runs the same probe deliberately, across every host, plus a
+`docker manifest inspect` that exercises credentials without pulling layers.
 
 ## Proxy Integration
 

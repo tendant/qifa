@@ -27,6 +27,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gokamal/gocart/internal/dockererr"
 	"github.com/gokamal/gocart/internal/ssh"
 )
 
@@ -417,7 +418,9 @@ func (m *Manager) runLego(ctx context.Context, opts IssueOptions, extra []string
 
 	cmd := m.legoCommand(envFileFlag, opts, extra)
 	if err := m.ssh.Stream(ctx, m.proxyHost, cmd, m.out); err != nil {
-		return err
+		// The lego helper runs as a container, so this fails for registry and
+		// network reasons as often as for ACME ones. Diagnose both.
+		return dockererr.WrapKnownNetwork(ctx, m.ssh, "issue certificate with", m.proxyHost, m.legoImage, 1, err)
 	}
 	// lego (running as root inside the helper container) writes certs
 	// as root mode 600. kamal-proxy runs as a non-root user (uid 1001

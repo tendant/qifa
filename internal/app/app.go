@@ -244,6 +244,10 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		default:
 			return errors.New("usage: qifa lock <status|release>")
 		}
+	case "doctor":
+		return withRuntime(ctx, stdout, stderr, configFile, func(rt *runtime) error {
+			return rt.deployer.Doctor(ctx, stdout)
+		})
 	case "status":
 		return withRuntime(ctx, stdout, stderr, configFile, func(rt *runtime) error {
 			return rt.deployer.Status(ctx, stdout)
@@ -403,6 +407,7 @@ func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "  sync")
 	fmt.Fprintln(w, "  lock <status|release>")
 	fmt.Fprintln(w, "  proxy <boot|start|stop|restart|upgrade|remove [--purge]|logs [--follow] [--lines N]|details>")
+	fmt.Fprintln(w, "  doctor")
 	fmt.Fprintln(w, "  status")
 	fmt.Fprintln(w, "  logs [--follow] [--lines N]")
 	fmt.Fprintln(w, "  app exec <command>")

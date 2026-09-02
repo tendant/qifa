@@ -552,6 +552,9 @@ func WriteSample(path string) error {
 const sampleConfig = `service: myapp
 image: registry.example.com/myapp
 
+# Hosts are SSH targets. The reserved name "local" runs on this machine
+# directly, with no SSH — handy for single-box self-hosting:
+#   hosts: [local]
 servers:
   web:
     hosts:

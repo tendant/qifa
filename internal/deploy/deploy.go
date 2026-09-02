@@ -1028,13 +1028,50 @@ func (d *Deployer) ProxyBoot(ctx context.Context) error {
 	if len(d.cfg.ProxyBoot.Hosts) == 0 {
 		return errors.New("config.proxy_boot.hosts is required")
 	}
+	if err := d.pullProxyImage(ctx, false); err != nil {
+		return err
+	}
 	return d.proxy.Boot(ctx)
 }
 
-func (d *Deployer) ProxyStart(ctx context.Context) error    { return d.proxy.Start(ctx) }
-func (d *Deployer) ProxyStop(ctx context.Context) error     { return d.proxy.StopProxy(ctx) }
-func (d *Deployer) ProxyRestart(ctx context.Context) error  { return d.proxy.Restart(ctx) }
-func (d *Deployer) ProxyUpgrade(ctx context.Context) error  { return d.proxy.Upgrade(ctx) }
+// pullProxyImage fetches the kamal-proxy image on every proxy host before the
+// boot command runs. `docker run` would pull it anyway, but buffered and
+// silently: a proxy boot that is really a stalled 200 MB pull looks like a
+// hang, and when it fails the operator gets an exit status with no output.
+// Pulling first means live progress, retries, and a diagnosed error.
+func (d *Deployer) pullProxyImage(ctx context.Context, force bool) error {
+	image := d.proxy.Image()
+	for _, host := range d.cfg.ProxyBoot.Hosts {
+		if err := d.remoteDocker.EnsureDocker(ctx, host); err != nil {
+			return err
+		}
+		if !force {
+			exists, err := d.remoteDocker.ImageExists(ctx, host, image)
+			if err != nil {
+				return err
+			}
+			if exists {
+				continue
+			}
+		}
+		if err := d.remoteDocker.Pull(ctx, host, "", image); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (d *Deployer) ProxyStart(ctx context.Context) error   { return d.proxy.Start(ctx) }
+func (d *Deployer) ProxyStop(ctx context.Context) error    { return d.proxy.StopProxy(ctx) }
+func (d *Deployer) ProxyRestart(ctx context.Context) error { return d.proxy.Restart(ctx) }
+func (d *Deployer) ProxyUpgrade(ctx context.Context) error {
+	// An upgrade exists to pick up a new proxy build, so always re-pull —
+	// otherwise a moving tag (:latest) would silently re-run the old image.
+	if err := d.pullProxyImage(ctx, true); err != nil {
+		return err
+	}
+	return d.proxy.Upgrade(ctx)
+}
 func (d *Deployer) ProxyRemove(ctx context.Context, purge bool) error {
 	return d.proxy.RemoveProxy(ctx, purge)
 }
@@ -1256,12 +1293,7 @@ func (d *Deployer) Exec(ctx context.Context, command string, out io.Writer) erro
 	if err != nil {
 		return err
 	}
-	result, err := d.remoteDocker.Exec(ctx, host, container, command)
-	if err != nil {
-		return err
-	}
-	_, err = fmt.Fprintln(out, result)
-	return err
+	return d.remoteDocker.ExecStream(ctx, host, container, command, out)
 }
 
 func (d *Deployer) AccessoryBoot(ctx context.Context, name string) error {
@@ -1366,12 +1398,7 @@ func (d *Deployer) AccessoryExec(ctx context.Context, name, command string, out 
 	if err != nil {
 		return err
 	}
-	result, err := d.remoteDocker.Exec(ctx, accessory.Host, accessoryContainer(d.cfg.Service, name), command)
-	if err != nil {
-		return err
-	}
-	_, err = fmt.Fprintln(out, result)
-	return err
+	return d.remoteDocker.ExecStream(ctx, accessory.Host, accessoryContainer(d.cfg.Service, name), command, out)
 }
 
 func (d *Deployer) accessoryTarget(name string) (config.Accessory, string, error) {

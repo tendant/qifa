@@ -1,5 +1,107 @@
 # Troubleshooting
 
+## Start here: `qifa doctor`
+
+Before debugging a failed deploy by hand, run:
+
+```sh
+qifa doctor
+```
+
+It checks every host qifa will touch (app, proxy, accessory, builder) and
+prints one line per check: SSH, the docker CLI and daemon, DNS/TCP/HTTPS to
+the registry, whether the image's manifest is actually reachable *and
+authorized* with your credentials, the daemon's proxy settings, registry
+mirrors and insecure registries, free space under the docker root, clock
+skew, and whether kamal-proxy is running. It exits non-zero if anything
+failed. Every check is read-only.
+
+The same host report is attached automatically to a failed pull, so you
+usually do not need to run `doctor` separately — it is there for checking a
+new host before the first deploy, or after changing a network.
+
+## `docker pull` fails on the remote host
+
+qifa retries transient network faults (DNS, TLS handshake timeout, connection
+reset, rate limits) before giving up, and the final error names the cause and
+what to check. The knobs:
+
+| variable | default | meaning |
+| --- | --- | --- |
+| `QIFA_PULL_RETRIES` | `2` | extra attempts after the first for pull/push |
+| `QIFA_PULL_RETRY_WAIT` | `5s` | wait between attempts |
+| `QIFA_PULL_STALL_WARN` | `45s` | warn when a pull/build prints nothing for this long |
+
+Set `QIFA_PULL_RETRIES=0` to fail fast, or raise it on a genuinely flaky link.
+
+What the diagnosed causes mean:
+
+- **DNS failure** — the host has no resolver for the registry name. Private
+  registries usually need an internal DNS server or an `/etc/hosts` entry.
+  Docker Hub needs `registry-1.docker.io`, `auth.docker.io` **and**
+  `production.cloudflare.docker.com` to resolve, not just `docker.io`.
+- **The Docker daemon's HTTP proxy is unreachable** (`proxyconnect tcp`) —
+  the *daemon* reads `HTTP_PROXY`/`HTTPS_PROXY` from its systemd unit, not
+  from your shell or from `/etc/environment`. Exporting a proxy in the SSH
+  session changes nothing:
+
+  ```sh
+  systemctl show docker --property=Environment
+  cat /etc/systemd/system/docker.service.d/*.conf
+  # after editing:
+  systemctl daemon-reload && systemctl restart docker
+  ```
+
+- **TLS handshake timeout / connection reset mid-transfer** — usually a path
+  problem rather than a registry problem. If large layers consistently die at
+  a similar point on a VPN or overlay network, suspect MTU:
+  `ping -M do -s 1400 <registry>` and lower the interface MTU if it fails.
+- **The host does not trust the registry's TLS certificate** — install the CA
+  at `/etc/docker/certs.d/<registry>/ca.crt` and restart docker. If the
+  message says "not yet valid", check the `clock` line in the diagnostics
+  first: a host whose clock is days off fails every registry handshake.
+- **Unauthorized** — qifa uploads a docker config built from
+  `registry.username` + `registry.password_env` to the host; it does not use
+  the host's own `~/.docker/config.json`. The password env var must be
+  exported **where qifa runs**. `qifa doctor` reports this explicitly.
+- **`manifest unknown` / `not found`** — wrong tag, or a private repository
+  with no credentials: the registry returns the same answer for both.
+- **`toomanyrequests`** — anonymous Docker Hub pulls are rate-limited per
+  source IP. Authenticate, or mirror the image into a private registry.
+- **`no space left on device`** — free space under the docker root
+  (`docker system prune -af --volumes`); the `disk` check fails below 2G.
+- **`no matching manifest for linux/...`** — the image has no build for the
+  host's architecture. Set `builder.platform: linux/amd64`, or build a
+  manifest list with `builder.platform: "linux/amd64,linux/arm64"`.
+
+## `qifa proxy boot` hangs or fails with just an exit status
+
+Booting the proxy runs `docker run basecamp/kamal-proxy`, which pulls the
+image if it is missing — buffered, so a stalled 200 MB pull looked like a
+hang. qifa now pulls the proxy image explicitly first (live progress,
+retries, diagnosed errors), and if the container starts but does not stay
+running, the boot failure includes its state and last 30 log lines instead of
+`exit status 1`.
+
+## Deploying to the machine qifa runs on
+
+Set the host to the reserved name `local`:
+
+```yaml
+servers:
+  web:
+    hosts: [local]
+```
+
+Commands then run through `/bin/sh` on this machine — no sshd, key, or
+`known_hosts` entry needed, which also sidesteps every SSH problem below.
+`localhost` and `127.0.0.1` still mean SSH by design; only the exact string
+`local` switches transport.
+
+On macOS, Docker Desktop keeps containers in a Linux VM whose bridge IPs the
+host cannot reach, so the kamal-proxy path (which healthchecks a container by
+IP) will not work. Use `proxy: false` with a published `port:` there.
+
 ## `knownhosts: key mismatch` during SSH
 
 qifa's Go SSH client (`golang.org/x/crypto/ssh/knownhosts`) treats any

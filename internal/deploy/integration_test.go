@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/gokamal/gocart/internal/config"
+	sshpkg "github.com/gokamal/gocart/internal/ssh"
 	"github.com/gokamal/gocart/internal/state"
 )
 
@@ -294,6 +295,66 @@ func TestDeployerExternalImageSkipsBuild(t *testing.T) {
 	}
 }
 
+// A pull that fails for network reasons is the hardest deploy failure to
+// debug: the real cause is one line inside pages of progress output on a
+// machine the operator is not looking at. Assert that qifa retries it, then
+// reports the cause, the fix and the host's own connectivity report.
+func TestDeployerFailedPullIsDiagnosed(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	t.Setenv("QIFA_PULL_RETRIES", "1")
+	t.Setenv("QIFA_PULL_RETRY_WAIT", "10ms")
+
+	env := newIntegrationEnv(t)
+	cfg := env.config(t, config.BuilderHostPerTarget, "registry", "registry.example.com/testapp:v1", config.Registry{})
+	cfg.Builder = nil // external image — pull-only
+	delete(cfg.Servers, "worker")
+
+	if err := os.WriteFile(filepath.Join(env.stateDir, "fail_pull"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := state.NewStore(filepath.Join(env.root, ".qifa", "state.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	deployer, err := New(cfg, store, &stdout, &stderr)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = deployer.Deploy(ctx)
+	if err == nil {
+		t.Fatal("expected the deploy to fail when the host cannot pull")
+	}
+	message := err.Error()
+	for _, want := range []string{
+		"pull image registry.example.com/testapp:v1",
+		"after 2 attempts",
+		"cannot resolve the registry hostname",
+		"docker said:",
+		"no such host",
+		"what to check:",
+		"/etc/resolv.conf",
+		"host diagnostics",
+	} {
+		if !strings.Contains(message, want) {
+			t.Errorf("error message is missing %q. Full message:\n%s", want, message)
+		}
+	}
+
+	// The retry has to actually happen, and be visible while it happens.
+	calls := readIfExists(filepath.Join(env.stateDir, "docker_calls.log"))
+	if got := strings.Count(calls, "pull pull"); got != 2 {
+		t.Errorf("want 2 pull attempts, got %d:\n%s", got, calls)
+	}
+	if !strings.Contains(stdout.String(), "retrying pull") {
+		t.Errorf("the retry should be announced on stdout:\n%s", stdout.String())
+	}
+}
+
 func TestDeployerRollbackToExplicitVersion(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -547,6 +608,102 @@ func TestDeployerNonProxyRedeployReplacesActiveContainer(t *testing.T) {
 	}
 }
 
+// Deploying to the machine qifa runs on should not require sshd, a key, or a
+// known_hosts entry. The ssh.key here points at a file that does not exist, so
+// the deploy can only pass if nothing ever opens an SSH connection.
+func TestDeployerLocalTransportNeedsNoSSH(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	env := newIntegrationEnv(t)
+	cfg := env.config(t, config.BuilderHostPerTarget, "local", "testapp", config.Registry{})
+	cfg.SSH = config.SSH{User: "nobody", Key: filepath.Join(env.root, "definitely-not-a-key")}
+
+	proxyDisabled := false
+	web := cfg.Servers["web"]
+	web.Hosts = []string{sshpkg.LocalHost}
+	web.Port = 19081
+	web.AppPort = 80
+	web.Proxy = &proxyDisabled
+	cfg.Servers["web"] = web
+	delete(cfg.Servers, "worker")
+	cfg.ProxyBoot.Hosts = []string{sshpkg.LocalHost}
+	cfg.Accessories = nil
+
+	store, err := state.NewStore(filepath.Join(env.root, ".qifa", "state.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	deployer, err := New(cfg, store, &stdout, &stderr)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := deployer.Deploy(ctx); err != nil {
+		t.Fatalf("local deploy failed: %v\nstdout:\n%s\ndocker calls:\n%s", err, stdout.String(),
+			readIfExists(filepath.Join(env.stateDir, "docker_calls.log")))
+	}
+
+	calls := readIfExists(filepath.Join(env.stateDir, "docker_calls.log"))
+	if !strings.Contains(calls, "build build") {
+		t.Errorf("expected a local build, got:\n%s", calls)
+	}
+	if !strings.Contains(calls, "run -d --restart unless-stopped --name testapp-web-") {
+		t.Errorf("expected the container to be started, got:\n%s", calls)
+	}
+
+	deployments, _, err := store.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(deployments) == 0 || deployments[len(deployments)-1].Status != state.StatusSucceeded {
+		t.Fatalf("expected a succeeded deployment, got %+v", deployments)
+	}
+}
+
+// A failure on the local transport must be explained the same way a remote one
+// is — the whole point of the transport is that it changes nothing else.
+func TestDeployerLocalTransportDiagnosesFailedPull(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	t.Setenv("QIFA_PULL_RETRIES", "0")
+
+	env := newIntegrationEnv(t)
+	cfg := env.config(t, config.BuilderHostPerTarget, "registry", "registry.example.com/testapp:v1", config.Registry{})
+	cfg.Builder = nil // external image — pull-only
+	web := cfg.Servers["web"]
+	web.Hosts = []string{sshpkg.LocalHost}
+	cfg.Servers["web"] = web
+	delete(cfg.Servers, "worker")
+	cfg.ProxyBoot.Hosts = []string{sshpkg.LocalHost}
+
+	if err := os.WriteFile(filepath.Join(env.stateDir, "fail_pull"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := state.NewStore(filepath.Join(env.root, ".qifa", "state.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	deployer, err := New(cfg, store, &stdout, &stderr)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = deployer.Deploy(ctx)
+	if err == nil {
+		t.Fatal("expected the deploy to fail")
+	}
+	for _, want := range []string{"cannot resolve the registry hostname", "what to check:", "host diagnostics (local)"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("local failure is missing %q:\n%s", want, err.Error())
+		}
+	}
+}
+
 type integrationEnv struct {
 	root       string
 	home       string
@@ -700,7 +857,16 @@ echo "$1 $*" >> "$state/docker_calls.log"
 cmd="$1"
 shift
 case "$cmd" in
-  build|push|info|pull|login|buildx)
+  pull)
+    # Tests create $state/fail_pull to simulate a host that cannot reach the
+    # registry; the message is verbatim Docker output for a DNS failure.
+    if [ -f "$state/fail_pull" ]; then
+      echo 'Error response from daemon: Get "https://registry.example.com/v2/": dial tcp: lookup registry.example.com on 10.0.0.2:53: no such host' >&2
+      exit 1
+    fi
+    exit 0
+    ;;
+  build|push|info|login|buildx)
     exit 0
     ;;
   network)

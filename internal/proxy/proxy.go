@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/gokamal/gocart/internal/config"
+	"github.com/gokamal/gocart/internal/dockererr"
 	"github.com/gokamal/gocart/internal/ssh"
 )
 
@@ -46,11 +47,31 @@ func New(client *ssh.Client, app config.Proxy, boot config.ProxyBoot) *KamalProx
 func (k *KamalProxy) Boot(ctx context.Context) error {
 	for _, host := range k.boot.Hosts {
 		if _, err := k.client.Run(ctx, host, k.bootCommand()); err != nil {
-			return fmt.Errorf("boot proxy on %s: %w", host, err)
+			// `docker run` pulls kamal-proxy when it is missing, so booting
+			// fails for the same registry/network reasons a deploy pull does —
+			// and with far less visible output, since this runs buffered.
+			return dockererr.Wrap(ctx, k.client, "boot proxy", host, k.Image(), 1, err)
 		}
 	}
 	return nil
 }
+
+// Image returns the fully qualified kamal-proxy image reference this proxy
+// boots, so callers can pull it explicitly (with retries and diagnostics)
+// before the boot itself.
+func (k *KamalProxy) Image() string {
+	imageRef := k.boot.Image
+	if imageRef == "" {
+		imageRef = "basecamp/kamal-proxy"
+	}
+	if k.boot.Version != "" {
+		imageRef = imageRef + ":" + k.boot.Version
+	}
+	return imageRef
+}
+
+// Hosts returns the hosts the proxy is booted on.
+func (k *KamalProxy) Hosts() []string { return k.boot.Hosts }
 
 // EnsureRunning checks whether the proxy container is up on host. Returns a
 // clear error if not, pointing the user at `qifa proxy boot`.
@@ -100,7 +121,7 @@ func (k *KamalProxy) Upgrade(ctx context.Context) error {
 			return fmt.Errorf("upgrade (rm) on %s: %w", host, err)
 		}
 		if _, err := k.client.Run(ctx, host, k.bootCommand()); err != nil {
-			return fmt.Errorf("upgrade (boot) on %s: %w", host, err)
+			return dockererr.Wrap(ctx, k.client, "upgrade proxy", host, k.Image(), 1, err)
 		}
 	}
 	return nil
@@ -169,13 +190,7 @@ func (k *KamalProxy) bootCommand() string {
 	if httpsPort == 0 {
 		httpsPort = 443
 	}
-	imageRef := k.boot.Image
-	if imageRef == "" {
-		imageRef = "basecamp/kamal-proxy"
-	}
-	if k.boot.Version != "" {
-		imageRef = imageRef + ":" + k.boot.Version
-	}
+	imageRef := k.Image()
 	network := k.boot.Network
 	if network == "" {
 		network = "kamal"
@@ -190,10 +205,18 @@ func (k *KamalProxy) bootCommand() string {
 	}
 	publishFlags := publishArgs(httpPort, httpsPort, k.boot.BindIPs)
 	command := strings.Join([]string{
+		"echo '==> creating docker network " + network + "'",
 		"docker network create " + shellQuote(network) + " >/dev/null 2>&1 || true",
 		"mkdir -p " + shellQuote(appsConfigDir),
+		"echo '==> starting " + proxyContainerName + " from " + imageRef + "'",
 		"docker ps --filter " + shellQuote("name=^"+proxyContainerName) + " --format '{{.Names}}' | grep -qx " + shellQuote(proxyContainerName) + " || (docker rm -f " + shellQuote(proxyContainerName) + " >/dev/null 2>&1 || true; docker run -d --restart unless-stopped --name " + shellQuote(proxyContainerName) + " --network " + shellQuote(network) + " --volume " + shellQuote(stateVolume+":/home/kamal-proxy/.config/kamal-proxy") + " --volume " + shellQuote(appsConfigDir+":/home/kamal-proxy/.apps-config") + " " + publishFlags + " --log-opt max-size=10m " + shellQuote(imageRef) + " kamal-proxy run)",
-		"for i in 1 2 3 4 5; do docker ps --filter " + shellQuote("name=^"+proxyContainerName) + " --format '{{.Names}}' | grep -qx " + shellQuote(proxyContainerName) + " && exit 0; sleep 1; done; exit 1",
+		// Wait for the container to actually be up. If it exited immediately
+		// (bad port bind, bad image), print its logs before failing — otherwise
+		// the operator sees only "exit status 1" with no reason at all.
+		"for i in 1 2 3 4 5; do docker ps --filter " + shellQuote("name=^"+proxyContainerName) + " --format '{{.Names}}' | grep -qx " + shellQuote(proxyContainerName) + " && exit 0; sleep 1; done; " +
+			"echo '==> " + proxyContainerName + " did not stay running; last container state and logs:' >&2; " +
+			"docker inspect -f '{{.State.Status}} exit={{.State.ExitCode}} error={{.State.Error}}' " + shellQuote(proxyContainerName) + " >&2 2>/dev/null; " +
+			"docker logs --tail 30 " + shellQuote(proxyContainerName) + " >&2 2>&1; exit 1",
 	}, " && ")
 	return command
 }

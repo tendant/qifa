@@ -10,10 +10,13 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gokamal/gocart/internal/config"
+	"github.com/gokamal/gocart/internal/dockererr"
 	"github.com/gokamal/gocart/internal/registry"
 	"github.com/gokamal/gocart/internal/ssh"
 )
@@ -56,7 +59,7 @@ func (l *Local) BuildSpec(ctx context.Context, spec BuildSpec, imageRef string) 
 	if spec.Platform == "" {
 		extraEnv["DOCKER_BUILDKIT"] = "0"
 	}
-	return runLocalEnv(ctx, extraEnv, "docker", args...)
+	return runLocalDocker(ctx, extraEnv, "build image", imageRef, args...)
 }
 
 // BuildxPush builds a multi-platform image with `docker buildx build --push`,
@@ -81,7 +84,7 @@ func (l *Local) BuildxPush(ctx context.Context, cfg *config.Config, imageRef str
 		"-t", imageRef,
 		spec.ContextDir,
 	}
-	return runLocalEnv(ctx, registryEnv, "docker", args...)
+	return runLocalDocker(ctx, registryEnv, "build and push image", imageRef, args...)
 }
 
 func (l *Local) Push(ctx context.Context, registryCfg config.Registry, imageRef string) error {
@@ -90,33 +93,209 @@ func (l *Local) Push(ctx context.Context, registryCfg config.Registry, imageRef 
 		return err
 	}
 	defer cleanup()
-	return runLocalEnv(ctx, registryEnv, "docker", "push", imageRef)
+	return runLocalDocker(ctx, registryEnv, "push image", imageRef, "push", imageRef)
 }
 
 type Remote struct {
 	client *ssh.Client
 	out    io.Writer
+
+	// retries is the number of EXTRA attempts for network-transient
+	// operations (pull/push). Zero means a single attempt.
+	retries   int
+	retryWait time.Duration
+	// stallWarn is how long a pull may print nothing before qifa says so. A
+	// silent hang is the least debuggable failure mode there is: the operator
+	// cannot tell a slow layer from a black-holed connection.
+	stallWarn time.Duration
 }
+
+const (
+	defaultPullRetries   = 2
+	defaultPullRetryWait = 5 * time.Second
+	defaultStallWarn     = 45 * time.Second
+)
 
 func NewRemote(client *ssh.Client, out io.Writer) *Remote {
 	if out == nil {
 		out = os.Stdout
 	}
-	return &Remote{client: client, out: out}
+	return &Remote{
+		client:    client,
+		out:       out,
+		retries:   envInt("QIFA_PULL_RETRIES", defaultPullRetries),
+		retryWait: envDuration("QIFA_PULL_RETRY_WAIT", defaultPullRetryWait),
+		stallWarn: envDuration("QIFA_PULL_STALL_WARN", defaultStallWarn),
+	}
+}
+
+// envInt/envDuration expose the retry policy as environment variables rather
+// than config: how flaky the path to a registry is belongs to the network the
+// deploy runs from, not to the app being deployed. An unparseable value falls
+// back to the default rather than failing a deploy over a tuning knob.
+func envInt(name string, fallback int) int {
+	value, ok := os.LookupEnv(name)
+	if !ok {
+		return fallback
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(value))
+	if err != nil || n < 0 {
+		return fallback
+	}
+	return n
+}
+
+func envDuration(name string, fallback time.Duration) time.Duration {
+	value, ok := os.LookupEnv(name)
+	if !ok {
+		return fallback
+	}
+	d, err := time.ParseDuration(strings.TrimSpace(value))
+	if err != nil || d < 0 {
+		return fallback
+	}
+	return d
+}
+
+// WithRetries overrides the retry policy for transient pull/push failures.
+func (r *Remote) WithRetries(retries int, wait time.Duration) *Remote {
+	if retries >= 0 {
+		r.retries = retries
+	}
+	if wait > 0 {
+		r.retryWait = wait
+	}
+	return r
 }
 
 func (r *Remote) EnsureDocker(ctx context.Context, host string) error {
-	_, err := r.client.Run(ctx, host, "docker info >/dev/null")
-	return err
+	if _, err := r.client.Run(ctx, host, "docker info >/dev/null"); err != nil {
+		return dockererr.Wrap(ctx, r.client, "docker check", host, "", 1, err)
+	}
+	return nil
 }
 
+// Pull fetches an image on the remote host, retrying transient network faults
+// and, when it finally gives up, explaining the failure: what docker said,
+// what that means, and what the host itself reports about reaching the
+// registry (DNS, TCP, TLS, proxy, disk, clock).
 func (r *Remote) Pull(ctx context.Context, host, dockerConfigDir, imageRef string) error {
-	return r.client.Stream(ctx, host, withDockerConfig(dockerConfigDir, "docker pull "+shellQuote(imageRef)), r.out)
+	command := withDockerConfig(dockerConfigDir, "docker pull "+shellQuote(imageRef))
+	attempts := r.retries + 1
+	var lastErr error
+	used := 0
+	for attempt := 1; attempt <= attempts; attempt++ {
+		used = attempt
+		if attempt > 1 {
+			fmt.Fprintf(r.out, "==> retrying pull of %s on %s (attempt %d/%d)\n", imageRef, host, attempt, attempts)
+		} else {
+			fmt.Fprintf(r.out, "==> pulling %s on %s (registry %s)\n", imageRef, host, dockererr.RegistryHost(imageRef))
+		}
+		err := r.streamWatched(ctx, host, command, fmt.Sprintf("pull of %s", imageRef))
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+		if ctx.Err() != nil {
+			return err
+		}
+		if !dockererr.Retryable(err) || attempt == attempts {
+			break
+		}
+		cause, _ := dockererr.ClassifyErr(err)
+		fmt.Fprintf(r.out, "==> pull failed (%s); retrying in %s\n", cause.Summary, r.retryWait)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(r.retryWait):
+		}
+	}
+	return dockererr.Wrap(ctx, r.client, "pull image", host, imageRef, used, lastErr)
 }
 
 func (r *Remote) Push(ctx context.Context, host, dockerConfigDir, imageRef string) error {
-	return r.client.Stream(ctx, host, withDockerConfig(dockerConfigDir, "docker push "+shellQuote(imageRef)), r.out)
+	command := withDockerConfig(dockerConfigDir, "docker push "+shellQuote(imageRef))
+	attempts := r.retries + 1
+	var lastErr error
+	used := 0
+	for attempt := 1; attempt <= attempts; attempt++ {
+		used = attempt
+		if attempt > 1 {
+			fmt.Fprintf(r.out, "==> retrying push of %s from %s (attempt %d/%d)\n", imageRef, host, attempt, attempts)
+		}
+		err := r.streamWatched(ctx, host, command, fmt.Sprintf("push of %s", imageRef))
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+		if ctx.Err() != nil {
+			return err
+		}
+		if !dockererr.Retryable(err) || attempt == attempts {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(r.retryWait):
+		}
+	}
+	return dockererr.Wrap(ctx, r.client, "push image", host, imageRef, used, lastErr)
 }
+
+// streamWatched runs command on host, streaming its output, and prints a
+// notice whenever the command goes quiet for longer than stallWarn so a stuck
+// transfer is visible while it is happening rather than at the timeout.
+func (r *Remote) streamWatched(ctx context.Context, host, command, what string) error {
+	if r.stallWarn <= 0 {
+		return r.client.Stream(ctx, host, command, r.out)
+	}
+	watcher := newStallWatcher(r.out, r.stallWarn, host, what)
+	defer watcher.stop()
+	return r.client.Stream(ctx, host, command, watcher)
+}
+
+// stallWatcher forwards writes and, in the background, reports how long it has
+// been since the last one.
+type stallWatcher struct {
+	out      io.Writer
+	mu       sync.Mutex
+	lastData time.Time
+	done     chan struct{}
+	stopOnce sync.Once
+}
+
+func newStallWatcher(out io.Writer, after time.Duration, host, what string) *stallWatcher {
+	w := &stallWatcher{out: out, lastData: time.Now(), done: make(chan struct{})}
+	go func() {
+		ticker := time.NewTicker(after)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-w.done:
+				return
+			case <-ticker.C:
+				w.mu.Lock()
+				idle := time.Since(w.lastData)
+				w.mu.Unlock()
+				if idle >= after {
+					fmt.Fprintf(out, "==> %s on %s has produced no output for %s — still waiting (slow link, or traffic to the registry is being dropped)\n",
+						what, host, idle.Round(time.Second))
+				}
+			}
+		}
+	}()
+	return w
+}
+
+func (w *stallWatcher) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	w.lastData = time.Now()
+	w.mu.Unlock()
+	return w.out.Write(p)
+}
+
+func (w *stallWatcher) stop() { w.stopOnce.Do(func() { close(w.done) }) }
 
 // BuildxPush runs `docker buildx build --push` on the remote host: a single
 // invocation that builds for every platform listed in cfg.Builder.Platform and
@@ -137,7 +316,8 @@ func (r *Remote) BuildxPush(ctx context.Context, host string, cfg *config.Config
 				Platform:   cfg.Builder.Platform,
 			}, imageRef)),
 		}, " && ")
-		return r.client.Stream(ctx, host, command, r.out)
+		return dockererr.WrapKnownNetwork(ctx, r.client, "build and push image", host, imageRef, 1,
+			r.streamWatched(ctx, host, command, "buildx of "+imageRef))
 	}
 	archive, err := buildContextArchive(cfg.Builder.Context)
 	if err != nil {
@@ -160,7 +340,8 @@ func (r *Remote) BuildxPush(ctx context.Context, host string, cfg *config.Config
 		}, imageRef)),
 		"rm -f " + shellQuote(remoteArchive),
 	}, " && ")
-	return r.client.Stream(ctx, host, command, r.out)
+	return dockererr.WrapKnownNetwork(ctx, r.client, "build and push image", host, imageRef, 1,
+		r.streamWatched(ctx, host, command, "buildx of "+imageRef))
 }
 
 func (r *Remote) Build(ctx context.Context, host string, cfg *config.Config, imageRef string) error {
@@ -181,7 +362,10 @@ func (r *Remote) Build(ctx context.Context, host string, cfg *config.Config, ima
 				Platform:   cfg.Builder.Platform,
 			}, imageRef),
 		}, " && ")
-		return r.client.Stream(ctx, host, command, r.out)
+		// A build pulls its base images, so build failures share the registry
+		// and network causes that pulls have.
+		return dockererr.WrapKnownNetwork(ctx, r.client, "build image", host, imageRef, 1,
+			r.streamWatched(ctx, host, command, "build of "+imageRef))
 	}
 	fmt.Fprintf(r.out, "==> compressing build context %s\n", cfg.Builder.Context)
 	archive, err := buildContextArchive(cfg.Builder.Context)
@@ -208,7 +392,8 @@ func (r *Remote) Build(ctx context.Context, host string, cfg *config.Config, ima
 		}, imageRef),
 		"rm -f " + shellQuote(remoteArchive),
 	}, " && ")
-	return r.client.Stream(ctx, host, command, r.out)
+	return dockererr.WrapKnownNetwork(ctx, r.client, "build image", host, imageRef, 1,
+		r.streamWatched(ctx, host, command, "build of "+imageRef))
 }
 
 func (r *Remote) RunContainer(ctx context.Context, host, name, imageRef, envFile, command, network string, labels map[string]string, volumes []string, hostPort, containerPort int, privileged bool, extraPublish []string) error {
@@ -244,8 +429,12 @@ func (r *Remote) RunContainer(ctx context.Context, host, name, imageRef, envFile
 	} else {
 		args = append(args, shellQuote(imageRef))
 	}
-	_, err := r.client.Run(ctx, host, strings.Join(args, " "))
-	return err
+	if _, err := r.client.Run(ctx, host, strings.Join(args, " ")); err != nil {
+		// `docker run` pulls implicitly when the image is missing, so this can
+		// fail for exactly the same registry/network reasons a pull does.
+		return dockererr.WrapKnownNetwork(ctx, r.client, "start container "+name+" from", host, imageRef, 1, err)
+	}
+	return nil
 }
 
 // ensureVolumeHostDirs runs mkdir -p on the host side of each bind-mount
@@ -442,20 +631,63 @@ func (r *Remote) Exec(ctx context.Context, host, name, command string) (string, 
 	return r.client.Run(ctx, host, "docker exec "+shellQuote(name)+" sh -lc "+shellQuote(command))
 }
 
+// ExecStream runs a command in the container and pipes BOTH its streams to
+// out. Capturing stdout alone loses everything a program reports on stderr —
+// `nginx -v`, most CLIs' errors, every usage message — which makes an
+// interactive exec look like it silently did nothing.
+func (r *Remote) ExecStream(ctx context.Context, host, name, command string, out io.Writer) error {
+	return r.client.Stream(ctx, host, "docker exec "+shellQuote(name)+" sh -lc "+shellQuote(command), out)
+}
+
 func runLocal(ctx context.Context, binary string, args ...string) error {
 	return runLocalEnv(ctx, nil, binary, args...)
 }
 
 func runLocalEnv(ctx context.Context, extraEnv map[string]string, binary string, args ...string) error {
+	_, err := runLocalCapture(ctx, extraEnv, binary, args...)
+	return err
+}
+
+// runLocalCapture runs a command, streaming its output to the terminal while
+// keeping a bounded tail so failures can be classified. Returns that tail.
+func runLocalCapture(ctx context.Context, extraEnv map[string]string, binary string, args ...string) (string, error) {
+	var tail bytes.Buffer
 	cmd := exec.CommandContext(ctx, binary, args...)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	cmd.Stdout = io.MultiWriter(os.Stdout, &tail)
+	cmd.Stderr = io.MultiWriter(os.Stderr, &tail)
 	cmd.Env = os.Environ()
 	for key, value := range extraEnv {
 		cmd.Env = append(cmd.Env, key+"="+value)
 	}
-	return cmd.Run()
+	err := cmd.Run()
+	output := tail.String()
+	if len(output) > 8<<10 {
+		output = output[len(output)-(8<<10):]
+	}
+	return output, err
 }
+
+// runLocalDocker runs a local docker command and explains a failure the same
+// way remote ones are explained. There is no host to probe — the connectivity
+// in question is this machine's — so only the cause and hint are added.
+func runLocalDocker(ctx context.Context, extraEnv map[string]string, action, imageRef string, args ...string) error {
+	output, err := runLocalCapture(ctx, extraEnv, "docker", args...)
+	if err == nil {
+		return nil
+	}
+	return dockererr.Wrap(ctx, nil, action, "", imageRef, 1, &localError{output: output, err: err})
+}
+
+// localError carries a local command's output to the classifier, mirroring
+// ssh.RemoteError for remote ones.
+type localError struct {
+	output string
+	err    error
+}
+
+func (e *localError) Error() string        { return e.err.Error() }
+func (e *localError) Unwrap() error        { return e.err }
+func (e *localError) RemoteOutput() string { return e.output }
 
 func shellQuote(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"

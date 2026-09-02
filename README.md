@@ -126,6 +126,42 @@ servers:
     proxy: false
 ```
 
+### 4. Deploy to the machine you are already on
+
+Use the reserved host name `local` to run every step through `/bin/sh` on this
+machine instead of dialling SSH. No sshd, no key, no `known_hosts` entry — for
+single-box self-hosting, a laptop, or trying qifa out.
+
+```yaml
+service: myapp
+image: nginx:1.27-alpine
+
+servers:
+  web:
+    hosts: [local]     # reserved: this machine, no SSH
+    port: 8080
+    app_port: 80
+    proxy: false       # publish the port directly
+
+proxy_boot:
+  hosts: [local]
+```
+
+`local` is opt-in by exact name. `localhost` and `127.0.0.1` still mean SSH,
+because targeting a local SSH daemon (a VM, a container, the e2e harness on
+`127.0.0.1:2222`) is a different and legitimate thing. Hosts can be mixed:
+`hosts: [local, 10.0.0.12]` deploys to this machine and a remote one in the
+same roll-out.
+
+Two caveats:
+
+- The commands still run through `/bin/sh`, so the host needs `docker` and
+  `curl` on `PATH` — the same requirements a remote target has.
+- On macOS, Docker Desktop runs containers in a Linux VM, so the host cannot
+  reach container bridge IPs. The kamal-proxy path healthchecks the container
+  by IP and will not work there; use `proxy: false` with a published `port:`,
+  which is checked over `127.0.0.1`. On Linux the full proxy path works.
+
 ## Verb Cheatsheet
 
 ```text
@@ -146,6 +182,8 @@ qifa lock <status|release>       # show or forcibly clear deploy lock
 qifa proxy <boot|start|stop|restart|upgrade|remove [--purge]|logs|details>
                                  # manage the shared kamal-proxy container
 qifa status                      # deployment history + active containers
+qifa doctor                      # preflight every host: ssh, docker, registry,
+                                 # DNS/TCP/TLS, credentials, disk, clock, proxy
 
 qifa logs [--follow] [--lines N] # docker logs from the active container
 qifa app exec <command>          # docker exec in the active container
@@ -155,6 +193,50 @@ qifa app live                    # leave maintenance mode
 
 qifa accessory <boot|stop|start|restart|remove|logs|exec> <name> [args]
 ```
+
+## When A Deploy Fails
+
+Most deploy failures are really "this host could not reach the registry",
+and the reason is one line buried in docker's pull output on a machine you
+are not watching. qifa handles that specifically:
+
+- **Transient network faults are retried.** DNS failures, TLS handshake
+  timeouts, resets and rate limits get 3 attempts by default. Tune with
+  `QIFA_PULL_RETRIES` (default 2 extra attempts) and `QIFA_PULL_RETRY_WAIT`
+  (default 5s).
+- **Silent hangs announce themselves.** If a pull or build prints nothing for
+  45s, qifa says so rather than looking frozen (`QIFA_PULL_STALL_WARN`).
+- **Failures are explained, not just reported.** The error names the likely
+  cause (DNS, proxy, credentials, missing tag, disk, clock skew, architecture
+  mismatch), lists what to check, and includes what the host itself says about
+  reaching the registry:
+
+```text
+pull image ghcr.io/acme/app:v1 on 10.0.0.11 failed after 3 attempts:
+the host cannot resolve the registry hostname (DNS failure)
+
+  docker said:
+    Error response from daemon: Get "https://ghcr.io/v2/": dial tcp:
+    lookup ghcr.io on 10.0.0.2:53: no such host
+
+  what to check:
+    - check the host's resolvers: cat /etc/resolv.conf ; getent hosts ghcr.io
+    - private registries often need an internal DNS server or /etc/hosts entry
+
+  host diagnostics (10.0.0.11):
+    docker-daemon      ok    server 27.1.1
+    dns ghcr.io        FAIL  no address (check /etc/resolv.conf ...)
+    tcp ghcr.io:443    FAIL  cannot open a TCP connection (firewall?)
+    daemon-proxy       info  none configured for the docker daemon
+    disk               ok    /var/lib/docker: 40G free of 80G
+    clock              ok    2026-09-01T15:57:34Z (skew vs local: 1s)
+```
+
+Run those same checks before deploying — on every app, proxy, accessory and
+builder host — with `qifa doctor`. It only reads; it changes nothing.
+
+See [docs/troubleshooting.md](docs/troubleshooting.md) for the specific
+failures and their fixes.
 
 ## Lifecycle Model In One Paragraph
 
