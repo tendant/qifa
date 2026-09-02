@@ -967,7 +967,8 @@ case "$cmd" in
     name="$1"
     case "$fmt" in
       *RepoDigests*)
-        digest="$(printf '%%s' "$name" | sha256sum | cut -c1-64)"
+        # shasum is the portable spelling; macOS has no sha256sum by default.
+        digest="$(printf '%%s' "$name" | { sha256sum 2>/dev/null || shasum -a 256; } | cut -c1-64)"
         printf '%%s@sha256:%%s\n' "$name" "$digest"
         ;;
       *)
@@ -1000,7 +1001,10 @@ case "$cmd" in
     name="$1"
     file="$state/containers/$name"
     if [ -f "$file" ]; then
-      sed -i 's/^state=.*/state=exited/' "$file"
+      # Not sed -i: BSD sed (macOS) reads the next argument as a backup
+      # suffix, so the edit silently fails and the container stays "running"
+      # — which the next deploy sweep then removes as an orphan.
+      sed 's/^state=.*/state=exited/' "$file" > "$file.tmp" && mv "$file.tmp" "$file"
     fi
     ;;
   rm)
@@ -1040,6 +1044,14 @@ cmd="$1"
 shift
 case "$cmd" in
   clone)
+    # Skip any flags qifa passes (e.g. --progress); the positional args are
+    # the source and destination.
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        -*) shift ;;
+        *) break ;;
+      esac
+    done
     src="$1"
     dst="$2"
     mkdir -p "$dst"
