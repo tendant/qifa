@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -557,7 +558,30 @@ func sortedKeys(m map[string]string) []string {
 }
 
 func (r *Remote) ContainerIP(ctx context.Context, host, name string) (string, error) {
-	return r.client.Run(ctx, host, "docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "+shellQuote(name))
+	out, err := r.client.Run(ctx, host, "docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "+shellQuote(name))
+	if err != nil {
+		return "", err
+	}
+	return parseContainerIP(out, name, host)
+}
+
+// parseContainerIP validates what the inspect template produced. A container
+// with no address is the normal case for one that is restarting, and docker
+// says so in a way that reads like an address: docker 28 renders the unset
+// netip.Addr as the literal "invalid IP", older daemons print nothing. Left
+// unchecked it reached the healthcheck as http://invalid IP:8090/readyz,
+// whose "Could not resolve host: invalid" buried the real problem — that the
+// container never stayed up.
+func parseContainerIP(out, name, host string) (string, error) {
+	ip := strings.TrimSpace(out)
+	if ip != "" && net.ParseIP(ip) != nil {
+		return ip, nil
+	}
+	detail := "docker reported no address"
+	if ip != "" {
+		detail = fmt.Sprintf("docker reported %q", ip)
+	}
+	return "", fmt.Errorf("container %s on %s has no IP address (%s) — it is not running; see its state and logs below", name, host, detail)
 }
 
 // ImageDigest returns the registry digest (sha256:...) of an image as recorded
@@ -608,8 +632,12 @@ func (r *Remote) PruneDanglingImages(ctx context.Context, host, service string) 
 	return err
 }
 
+// Logs returns the container's stdout AND stderr. docker logs sends each to
+// the matching stream, and a crashing program says why on stderr — so without
+// 2>&1 the deploy diagnostics showed a container's ordinary startup chatter
+// and silently dropped the error that killed it.
 func (r *Remote) Logs(ctx context.Context, host, name string) (string, error) {
-	return r.client.Run(ctx, host, "docker logs --tail 200 "+shellQuote(name))
+	return r.client.Run(ctx, host, "docker logs --tail 200 "+shellQuote(name)+" 2>&1")
 }
 
 // LogsStream pipes `docker logs --tail <lines> [--follow] <name>` to out in

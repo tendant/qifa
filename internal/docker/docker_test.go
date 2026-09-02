@@ -1,6 +1,9 @@
 package docker
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestDockerfileIn(t *testing.T) {
 	cases := []struct {
@@ -89,5 +92,27 @@ func TestRemoteDockerfileIn(t *testing.T) {
 				t.Fatalf("got %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestParseContainerIP(t *testing.T) {
+	ip, err := parseContainerIP("172.18.0.5\n", "app-web-1", "10.0.0.11")
+	if err != nil || ip != "172.18.0.5" {
+		t.Fatalf("got (%q, %v), want the address", ip, err)
+	}
+
+	// docker 28 renders an unset netip.Addr like this. Passed through, it
+	// became http://invalid IP:8090/readyz and the healthcheck failed with
+	// "Could not resolve host: invalid" instead of "the container is down".
+	for _, out := range []string{"invalid IP", "", "  ", "<no value>"} {
+		if _, err := parseContainerIP(out, "app-web-1", "10.0.0.11"); err == nil {
+			t.Errorf("parseContainerIP(%q) should refuse to produce an address", out)
+		} else {
+			for _, want := range []string{"app-web-1", "10.0.0.11", "not running"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error for %q is missing %q: %v", out, want, err)
+				}
+			}
+		}
 	}
 }

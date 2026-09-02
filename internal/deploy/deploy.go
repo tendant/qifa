@@ -327,7 +327,9 @@ func (d *Deployer) deployHost(ctx context.Context, deployment state.Deployment, 
 	if useProxy {
 		containerIP, err := d.remoteDocker.ContainerIP(ctx, host, containerName)
 		if err != nil {
-			return err
+			// A missing address means the container is not up; its state and
+			// logs say why, and they are the whole answer here.
+			return d.withContainerDiagnostics(ctx, host, containerName, err)
 		}
 		healthcheckHost = containerIP
 	} else {
