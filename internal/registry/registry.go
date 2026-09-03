@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/user"
 	"path/filepath"
+	"strings"
 
 	"github.com/gokamal/gocart/internal/config"
 	"github.com/gokamal/gocart/internal/ssh"
@@ -28,7 +30,7 @@ func Login(ctx context.Context, client *ssh.Client, cfg config.Registry, host st
 	if err != nil {
 		return "", err
 	}
-	configDir := "/tmp/.qifa-docker-config"
+	configDir := remoteConfigDir()
 	configPath := filepath.Join(configDir, "config.json")
 	if err := client.Upload(ctx, host, configPath, contents, 0o600); err != nil {
 		return "", err
@@ -55,6 +57,38 @@ func LocalEnv(cfg config.Registry) (map[string]string, func(), error) {
 	return map[string]string{"DOCKER_CONFIG": configDir}, func() {
 		_ = os.RemoveAll(configDir)
 	}, nil
+}
+
+// remoteConfigDir names the staging directory for the docker credentials on
+// the target host. It carries the deployer's username because /tmp is sticky:
+// a single shared path would be created mode 0600 by whoever deployed first,
+// and every later deploy by a different SSH account would fail to overwrite
+// it. Teams that all SSH as one deploy user land on the same directory, which
+// is fine — it is theirs.
+func remoteConfigDir() string {
+	name := "unknown"
+	if u, err := user.Current(); err == nil && u != nil && u.Username != "" {
+		name = sanitizeUser(u.Username)
+	}
+	return "/tmp/.qifa-docker-config-" + name
+}
+
+// sanitizeUser keeps the path a single, predictable segment: Windows and
+// directory-service usernames can carry backslashes, spaces, or @.
+func sanitizeUser(name string) string {
+	var b strings.Builder
+	for _, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_', r == '.':
+			b.WriteRune(r)
+		default:
+			b.WriteRune('-')
+		}
+	}
+	if b.Len() == 0 {
+		return "unknown"
+	}
+	return b.String()
 }
 
 func configJSON(cfg config.Registry) ([]byte, error) {

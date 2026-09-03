@@ -50,6 +50,8 @@ qifa version            # print build version, commit, build date
 qifa config             # print loaded+defaulted config as YAML
 qifa deploy [--dry-run] # build (if needed) + ship + healthcheck + switch
                         # --dry-run prints what would happen without executing
+     [--version <v>]    # pin the version instead of deriving it from git
+     [--allow-dirty]    # allow a dirty checkout; tags the version -dirty
 qifa rollback [version] # roll back to the previous version (or a specific one)
 qifa stop               # stop the running container per role/host
 qifa start              # start the most recent labeled container
@@ -57,6 +59,7 @@ qifa restart            # stop then start
 qifa remove             # tear down all labeled containers + deregister proxy
 qifa prune              # keep last N stopped containers; prune dangling images
 qifa sweep              # stop+remove orphan running labeled containers (also runs at the start of every deploy)
+qifa env diff           # compare the config's env against what the running containers were started with
 qifa lock status        # show the deploy-lock holder per host
 qifa lock release       # forcibly clear a stale deploy lock (recovery)
 
@@ -389,6 +392,9 @@ key collision:
 1. `env.clear`: cleartext key/value map in the config.
 2. `env.secret`: list of env var names, read from the deployer's local env
    at deploy time. Use when secrets are injected by CI / direnv / shell.
+   Deployer-dependent by construction: what ships is whatever that person's
+   shell held, which is why anything shared between people belongs in
+   `secret_command` instead.
 3. `env.secret_command`: arbitrary shell command run on the deployer.
    Stdout is parsed as `KEY=VALUE` lines (dotenv format, supports quoted
    values, `#` comments, blank lines). Use to integrate SOPS, Vault,
@@ -513,6 +519,34 @@ host, service, version, and acquisition timestamp. The lock is released via
 If the lock is held when another deploy tries to start, the new deploy errors
 out with the existing holder's metadata. Stale locks (from a deploy that
 crashed without unwinding `defer`) can be cleared with `qifa lock release`.
+Release is best-effort but not silent: `/tmp` is sticky, so a lock created by
+a different SSH account cannot be removed by this one, and that failure is
+reported rather than leaving the next deploy to discover it.
+
+## Running From Anywhere
+
+The deployer holds no authoritative state — containers' `qifa.*` labels answer
+every question about what is deployed, and the lock lives on the targets — so
+a deploy is the same operation from a laptop, a jump host, or CI. Three things
+make that true rather than merely likely:
+
+- **Config-relative paths.** qifa chdirs into the config file's directory
+  before doing anything. `builder.context`, `files[].src`, `hooks.*`,
+  `env.secret_command`, `.qifa/state.jsonl` and `backups/` resolve there, not
+  against the operator's shell. Paths given as CLI arguments are made absolute
+  first, since those *are* relative to the shell.
+- **Explicit versions.** The version names the image, the container and the
+  rollback target, so it must not depend on the deploying machine. `--version`
+  / `QIFA_VERSION` win; otherwise it is the short SHA of the config's
+  checkout, and a dirty checkout is refused (`--allow-dirty` appends
+  `-dirty`).
+- **Per-user host paths.** Registry credentials stage under
+  `/tmp/.qifa-docker-config-<user>` so separate SSH accounts do not collide on
+  a 0600 file the first deployer created.
+
+`qifa env diff` closes the remaining gap: it reads the env file each running
+container was started with and compares it to what the config renders now,
+reporting key names and "value differs" without printing any value.
 
 ## Maintenance Mode
 

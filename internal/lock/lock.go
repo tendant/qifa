@@ -46,7 +46,7 @@ func (l *Lock) Acquire(ctx context.Context, version string) error {
 	for _, host := range l.hosts {
 		if _, err := l.client.Run(ctx, host, "mkdir "+shellQuote(dir)); err != nil {
 			existing, _ := l.client.Run(ctx, host, "cat "+shellQuote(dir)+"/holder.json 2>/dev/null")
-			l.Release(context.Background())
+			_ = l.Release(context.Background())
 			if h := strings.TrimSpace(existing); h != "" {
 				return fmt.Errorf("lock for %s held on %s: %s", l.service, host, h)
 			}
@@ -54,7 +54,7 @@ func (l *Lock) Acquire(ctx context.Context, version string) error {
 		}
 		if err := l.client.Upload(ctx, host, dir+"/holder.json", holderJSON, 0o644); err != nil {
 			l.held = append(l.held, host) // so Release cleans this one too
-			l.Release(context.Background())
+			_ = l.Release(context.Background())
 			return fmt.Errorf("write lock metadata on %s: %w", host, err)
 		}
 		l.held = append(l.held, host)
@@ -62,14 +62,24 @@ func (l *Lock) Acquire(ctx context.Context, version string) error {
 	return nil
 }
 
-// Release removes the lock directory on every host where Acquire succeeded.
-// Best-effort: errors per host are ignored (lock files are advisory).
-func (l *Lock) Release(ctx context.Context) {
+// Release removes the lock directory on every host where Acquire succeeded,
+// and reports the hosts it could not clear. A failure here is worth saying out
+// loud: /tmp is sticky, so a lock another user's deploy created is one this
+// process cannot remove, and a lock left behind blocks the next deploy until
+// somebody runs `qifa lock release`.
+func (l *Lock) Release(ctx context.Context) error {
 	dir := lockPath(l.service)
+	var errs []string
 	for _, host := range l.held {
-		_, _ = l.client.Run(ctx, host, "rm -rf "+shellQuote(dir))
+		if _, err := l.client.Run(ctx, host, "rm -rf "+shellQuote(dir)); err != nil {
+			errs = append(errs, fmt.Sprintf("%s: %v", host, err))
+		}
 	}
 	l.held = nil
+	if len(errs) > 0 {
+		return fmt.Errorf("lock for %s left behind on %s (clear it with `qifa lock release`)", l.service, strings.Join(errs, "; "))
+	}
+	return nil
 }
 
 // ForceRelease removes the lock directory on every configured host, regardless

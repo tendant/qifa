@@ -44,3 +44,19 @@ func TestLocalEnvWritesDockerConfig(t *testing.T) {
 		t.Fatalf("unexpected auth: %s", got)
 	}
 }
+
+// The staging path must not be one fixed directory: /tmp is sticky, so a
+// shared path created mode 0600 by the first deployer locks out every other
+// SSH account on the host.
+func TestRemoteConfigDirIsPerUser(t *testing.T) {
+	dir := remoteConfigDir()
+	if dir == "/tmp/.qifa-docker-config" {
+		t.Fatal("remote docker config dir is not namespaced per user")
+	}
+	if got := sanitizeUser(`CORP\jane doe@x`); got != "CORP-jane-doe-x" {
+		t.Fatalf("sanitizeUser: got %q", got)
+	}
+	if got := sanitizeUser(""); got != "unknown" {
+		t.Fatalf("sanitizeUser(\"\"): got %q", got)
+	}
+}

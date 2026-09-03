@@ -170,6 +170,7 @@ qifa version                     # build version + commit
 qifa config                      # print loaded+defaulted config
 
 qifa deploy [--dry-run]          # build, ship, switch, prune
+  [--version <v>] [--allow-dirty] # pin the version instead of deriving it from git
 qifa rollback [version]          # auto = previous; or explicit version
 qifa stop                        # docker stop the running container per role/host
 qifa start                       # docker start the most recent labeled container
@@ -178,6 +179,7 @@ qifa remove                      # full teardown + deregister proxy
 
 qifa prune                       # keep last N stopped (config: prune.retain_containers)
 qifa sweep                       # remove orphan running containers (also runs at deploy start)
+qifa env diff                    # compare config env vs. what the running containers got
 qifa lock <status|release>       # show or forcibly clear deploy lock
 qifa proxy <boot|start|stop|restart|upgrade|remove [--purge]|logs|details>
                                  # manage the shared kamal-proxy container
@@ -278,6 +280,65 @@ wins on collision):
 3. `env.secret_command`: arbitrary shell command whose stdout is parsed as
    `KEY=VALUE` lines. Works with SOPS (`sops --decrypt`), Vault, 1Password
    (`op inject`), AWS Secrets Manager, anything that prints dotenv format.
+
+## Deploying From More Than One Machine
+
+qifa keeps no authoritative state on the deployer — the running containers'
+`qifa.*` labels are the source of truth, and the deploy lock lives on the
+target hosts — so any checkout on any machine can deploy. Four rules keep that
+honest:
+
+**Relative paths resolve against the config file, not your shell.** qifa moves
+into the config's directory before doing anything, so `builder.context`,
+`files[].src`, `hooks.*`, `env.secret_command`, `.qifa/state.jsonl` and
+`backups/` mean the same thing whether you run `qifa deploy` from the repo root
+or `qifa -c /srv/deploy/qifa.yaml deploy` from your home directory. Paths you
+pass on the command line (`qifa restore ./dump.tar`) stay relative to your
+shell.
+
+**The version is explicit or it comes from a clean commit.** With a `builder:`
+block, the image tag is the short git SHA of the config's checkout. A checkout
+with uncommitted changes is refused — that tag would name bytes nobody else can
+reproduce. Override with `--version v1.2.3` or `QIFA_VERSION`, or accept a
+`-dirty` suffix with `--allow-dirty`. CI should always pass `--version`.
+
+Local builds also inherit the builder's architecture, so a Mac and a Linux box
+produce different images from the same commit. Set `builder.platform`
+explicitly, or build in CI and deploy an external image.
+
+**Everyone SSHes as one deploy user.** Individual host accounts buy nothing —
+the lock records the real human in `holder.json` regardless — and they mean
+per-person docker group membership and per-person credential files. Put each
+person's key in the shared user's `authorized_keys` and set `ssh.user`. If you
+do use separate accounts, qifa stages registry credentials under a per-user
+`/tmp` path so they don't collide, and a lock it cannot clear is reported
+rather than silently left behind.
+
+**Check the env before you trust it.** A deploy takes its environment from
+whoever ran it, so the live env can be one person's stale secrets file.
+
+```bash
+qifa env diff
+```
+
+compares what the config renders now against the env file each running
+container actually started with, per role and host. Key names only — a value
+that differs is reported as differing, never printed.
+
+```text
+web 10.0.0.11 myapp-web-a1b2c3:
+  + STRIPE_KEY  (in config, missing on host)
+  ~ DATABASE_URL  (value differs)
+```
+
+Prefer `env.secret_command` over `env.secret` for anything shared. `env.secret`
+reads the deployer's shell, so what ships is whatever that person's environment
+happened to hold — unreviewable, and different per machine. A `secret_command`
+against SOPS, Vault or 1Password decrypts identically for everyone, including
+CI. Keep `env.secret` for CI runners that inject values themselves.
+
+Config per environment goes in the repo, addressed with `-c`:
+`deploy/qifa.production.yaml`, `deploy/qifa.staging.yaml`.
 
 ## Hooks
 

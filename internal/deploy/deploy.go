@@ -37,6 +37,18 @@ type Deployer struct {
 	ssh          *ssh.Client
 	proxy        *proxy.KamalProxy
 	stdout       io.Writer
+
+	// version, when set, overrides the version derived from git. allowDirty
+	// permits deploying a checkout with uncommitted changes.
+	version    string
+	allowDirty bool
+}
+
+// PinVersion fixes the version this deploy ships instead of deriving one from
+// the checkout. An empty version leaves the derivation in place.
+func (d *Deployer) PinVersion(version string, allowDirty bool) {
+	d.version = strings.TrimSpace(version)
+	d.allowDirty = allowDirty
 }
 
 func New(cfg *config.Config, store *state.Store, stdout, stderr io.Writer) (*Deployer, error) {
@@ -65,7 +77,11 @@ func (d *Deployer) Deploy(ctx context.Context) error {
 	if err := locker.Acquire(ctx, version); err != nil {
 		return err
 	}
-	defer locker.Release(context.Background())
+	defer func() {
+		if err := locker.Release(context.Background()); err != nil {
+			d.log.Printf("warning: %v", err)
+		}
+	}()
 	deployment := state.Deployment{
 		ID:        deploymentID(version),
 		Service:   d.cfg.Service,
@@ -416,7 +432,11 @@ func (d *Deployer) Rollback(ctx context.Context, version string) error {
 	if err := locker.Acquire(ctx, version); err != nil {
 		return err
 	}
-	defer locker.Release(context.Background())
+	defer func() {
+		if err := locker.Release(context.Background()); err != nil {
+			d.log.Printf("warning: %v", err)
+		}
+	}()
 	if err := hooks.Run(ctx, d.cfg.Hooks.PreRollback, nil); err != nil {
 		return err
 	}
@@ -679,7 +699,10 @@ func (d *Deployer) prepareImage(ctx context.Context, deployment state.Deployment
 
 func (d *Deployer) resolveImage(ctx context.Context) (imageRef, version string, err error) {
 	if d.cfg.Builder != nil {
-		v := resolveVersion()
+		v, err := resolveVersion(d.version, d.allowDirty)
+		if err != nil {
+			return "", "", err
+		}
 		return fmt.Sprintf("%s:%s", d.cfg.Image, v), v, nil
 	}
 	if _, err := config.ParseImageVersion(d.cfg.Image); err != nil {
@@ -954,6 +977,110 @@ func (d *Deployer) SyncFiles(ctx context.Context) error {
 	return nil
 }
 
+// EnvDiff compares the env this deployer would render right now against the
+// env file each running container was actually started with. A deploy takes
+// the environment from whoever ran it, so the live env can be one person's
+// stale secrets file; this makes that visible before the next deploy bakes it
+// in, and after one confirms what shipped.
+//
+// Only key names are printed. A value that differs is reported as differing
+// and never shown — the whole point of the file is that its contents are
+// secret.
+func (d *Deployer) EnvDiff(ctx context.Context, out io.Writer) error {
+	rendered, err := secrets.Render(d.cfg.Env.Clear, d.cfg.Env.Secret, d.cfg.Env.SecretCommand)
+	if err != nil {
+		return err
+	}
+	desired := parseEnvFile(rendered)
+
+	drift := false
+	for _, role := range orderedRoles(d.cfg.Servers) {
+		for _, host := range d.cfg.Servers[role].Hosts {
+			container, err := d.findRunningContainer(ctx, host, role)
+			if err != nil {
+				return err
+			}
+			if container == "" {
+				fmt.Fprintf(out, "%s %s: no running container\n", role, host)
+				continue
+			}
+			remotePath := fmt.Sprintf("/tmp/%s.env", container)
+			contents, err := d.ssh.Run(ctx, host, "cat "+shellQuoteB(remotePath))
+			if err != nil {
+				fmt.Fprintf(out, "%s %s %s: cannot read %s: %v\n", role, host, container, remotePath, err)
+				drift = true
+				continue
+			}
+			live := parseEnvFile([]byte(contents))
+			lines := diffEnv(desired, live)
+			fmt.Fprintf(out, "%s %s %s:\n", role, host, container)
+			if len(lines) == 0 {
+				fmt.Fprintf(out, "  in sync (%d keys)\n", len(desired))
+				continue
+			}
+			drift = true
+			for _, line := range lines {
+				fmt.Fprintf(out, "  %s\n", line)
+			}
+		}
+	}
+	if drift {
+		// Only a fresh `docker run` picks up a new env file: --env-file is read
+		// once, at create time, so `qifa restart` keeps the old environment.
+		fmt.Fprintln(out, "\nrun `qifa deploy` to apply the config's env (a restart keeps the container's existing env)")
+	}
+	return nil
+}
+
+// diffEnv describes how live differs from desired, one line per key, sorted.
+func diffEnv(desired, live map[string]string) []string {
+	keys := map[string]bool{}
+	for k := range desired {
+		keys[k] = true
+	}
+	for k := range live {
+		keys[k] = true
+	}
+	sorted := make([]string, 0, len(keys))
+	for k := range keys {
+		sorted = append(sorted, k)
+	}
+	sort.Strings(sorted)
+
+	var lines []string
+	for _, key := range sorted {
+		want, inConfig := desired[key]
+		got, onHost := live[key]
+		switch {
+		case inConfig && !onHost:
+			lines = append(lines, "+ "+key+"  (in config, missing on host)")
+		case onHost && !inConfig:
+			lines = append(lines, "- "+key+"  (on host, not in config)")
+		case want != got:
+			lines = append(lines, "~ "+key+"  (value differs)")
+		}
+	}
+	return lines
+}
+
+// parseEnvFile reads the KEY=VALUE form secrets.Render writes and docker's
+// --env-file consumes.
+func parseEnvFile(data []byte) map[string]string {
+	values := map[string]string{}
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		eq := strings.Index(line, "=")
+		if eq <= 0 {
+			continue
+		}
+		values[line[:eq]] = line[eq+1:]
+	}
+	return values
+}
+
 // Restore is the symmetric inverse of Backup. It uploads localPath to the
 // target host (or into the running container, depending on cfg.Restore.Mode),
 // then runs cfg.Restore.Command with ${ARTIFACT} pointing at the staged
@@ -1207,7 +1334,11 @@ func (d *Deployer) Plan(ctx context.Context, out io.Writer) error {
 
 	var version string
 	if d.cfg.Builder != nil {
-		version = resolveVersion()
+		var err error
+		version, err = resolveVersion(d.version, d.allowDirty)
+		if err != nil {
+			return err
+		}
 		fmt.Fprintf(out, "  Image:    %s:%s (built)\n", d.cfg.Image, version)
 	} else {
 		tag, err := config.ParseImageVersion(d.cfg.Image)
@@ -1706,12 +1837,35 @@ func orderedRoles(servers map[string]config.Server) []string {
 	return roles
 }
 
-func resolveVersion() string {
-	out, err := exec.Command("git", "rev-parse", "--short", "HEAD").Output()
-	if err == nil {
-		return strings.TrimSpace(string(out))
+// resolveVersion decides what to tag this build. The version is the deploy's
+// identity — it names the image, the container, and the rollback target — so
+// it must not quietly depend on which machine ran the deploy.
+//
+// In order: an explicit version (--version / QIFA_VERSION), then the git
+// commit of the config's checkout, then a timestamp when there is no git at
+// all. A dirty checkout is refused rather than shipped under its commit's
+// name, because that tag would describe bytes nobody else can reproduce.
+func resolveVersion(explicit string, allowDirty bool) (string, error) {
+	if explicit != "" {
+		return explicit, nil
 	}
-	return time.Now().UTC().Format("20060102-150405")
+	if env := strings.TrimSpace(os.Getenv("QIFA_VERSION")); env != "" {
+		return env, nil
+	}
+	out, err := exec.Command("git", "rev-parse", "--short", "HEAD").Output()
+	if err != nil {
+		// No git here — a tarball deploy, or a config outside any repo.
+		return time.Now().UTC().Format("20060102-150405"), nil
+	}
+	version := strings.TrimSpace(string(out))
+	dirty, err := exec.Command("git", "status", "--porcelain").Output()
+	if err != nil || len(strings.TrimSpace(string(dirty))) == 0 {
+		return version, nil
+	}
+	if allowDirty {
+		return version + "-dirty", nil
+	}
+	return "", fmt.Errorf("the checkout has uncommitted changes, so version %s would not describe what is deployed: commit them, or pass --version <v> or --allow-dirty", version)
 }
 
 func deploymentID(version string) string {

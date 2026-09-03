@@ -359,6 +359,10 @@ func runCertRemove(ctx context.Context, args []string, stdout, stderr io.Writer,
 // newCertManager loads the config file to derive the proxy host
 // and SSH config, then constructs a cert.Manager.
 func newCertManager(out io.Writer, configFile, legoImage string) (*cert.Manager, error) {
+	configFile, err := useConfigDir(configFile)
+	if err != nil {
+		return nil, err
+	}
 	cfg, err := config.Load(configFile)
 	if err != nil {
 		return nil, fmt.Errorf("qifa cert needs a config file (tried %s): %w", configFile, err)

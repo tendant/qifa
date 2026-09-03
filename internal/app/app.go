@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"runtime/debug"
 	"strconv"
 	"strings"
@@ -112,12 +113,27 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		return config.WriteSample(path)
 	case "deploy":
 		dryRun := false
-		for _, a := range args[1:] {
-			if a == "--dry-run" || a == "-n" {
+		allowDirty := false
+		version := ""
+		rest := args[1:]
+		for i := 0; i < len(rest); i++ {
+			switch rest[i] {
+			case "--dry-run", "-n":
 				dryRun = true
+			case "--allow-dirty":
+				allowDirty = true
+			case "--version":
+				if i+1 >= len(rest) {
+					return errors.New("--version requires a value")
+				}
+				version = rest[i+1]
+				i++
+			default:
+				return fmt.Errorf("unknown flag %q", rest[i])
 			}
 		}
 		return withRuntime(ctx, stdout, stderr, configFile, func(rt *runtime) error {
+			rt.deployer.PinVersion(version, allowDirty)
 			if dryRun {
 				return rt.deployer.Plan(ctx, stdout)
 			}
@@ -165,12 +181,25 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		if localPath == "" {
 			return errors.New("usage: qifa restore <local-file>  (or set RESTORE_FROM=<path>)")
 		}
+		// Resolved against the shell's directory, not the config's: withRuntime
+		// is about to move us to the config directory.
+		localPath, err := filepath.Abs(localPath)
+		if err != nil {
+			return err
+		}
 		return withRuntime(ctx, stdout, stderr, configFile, func(rt *runtime) error {
 			return rt.deployer.Restore(ctx, localPath)
 		})
 	case "sweep":
 		return withRuntime(ctx, stdout, stderr, configFile, func(rt *runtime) error {
 			return rt.deployer.SweepStaleContainers(ctx)
+		})
+	case "env":
+		if len(args) < 2 || args[1] != "diff" {
+			return errors.New("usage: qifa env diff")
+		}
+		return withRuntime(ctx, stdout, stderr, configFile, func(rt *runtime) error {
+			return rt.deployer.EnvDiff(ctx, stdout)
 		})
 	case "sync":
 		return withRuntime(ctx, stdout, stderr, configFile, func(rt *runtime) error {
@@ -371,7 +400,32 @@ type runtime struct {
 	deployer *deploy.Deployer
 }
 
+// useConfigDir makes configFile absolute and moves the process into the
+// directory holding it. Every relative path qifa touches afterwards —
+// files[].src, builder.context, hooks, env.secret_command, the git checkout
+// the version is read from, .qifa/state.jsonl, backups/ — then resolves
+// against the config instead of against wherever the operator happened to be
+// standing. That is what makes `qifa -c /srv/deploy/qifa.yaml deploy` mean the
+// same thing from a laptop, a jump host, or CI.
+//
+// Paths the operator passes on the command line are resolved by the caller
+// before this runs, since those are relative to the shell, not the config.
+func useConfigDir(configFile string) (string, error) {
+	abs, err := filepath.Abs(configFile)
+	if err != nil {
+		return "", err
+	}
+	if err := os.Chdir(filepath.Dir(abs)); err != nil {
+		return "", fmt.Errorf("chdir to config directory: %w", err)
+	}
+	return abs, nil
+}
+
 func withRuntime(ctx context.Context, stdout, stderr io.Writer, configFile string, fn func(*runtime) error) error {
+	configFile, err := useConfigDir(configFile)
+	if err != nil {
+		return err
+	}
 	cfg, err := config.Load(configFile)
 	if err != nil {
 		return err
@@ -394,7 +448,7 @@ func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "  init [path]")
 	fmt.Fprintln(w, "  version")
 	fmt.Fprintln(w, "  config")
-	fmt.Fprintln(w, "  deploy [--dry-run]")
+	fmt.Fprintln(w, "  deploy [--dry-run] [--version <v>] [--allow-dirty]")
 	fmt.Fprintln(w, "  rollback [version]")
 	fmt.Fprintln(w, "  stop")
 	fmt.Fprintln(w, "  start")
@@ -405,6 +459,7 @@ func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "  restore <local-file>")
 	fmt.Fprintln(w, "  sweep")
 	fmt.Fprintln(w, "  sync")
+	fmt.Fprintln(w, "  env diff")
 	fmt.Fprintln(w, "  lock <status|release>")
 	fmt.Fprintln(w, "  proxy <boot|start|stop|restart|upgrade|remove [--purge]|logs [--follow] [--lines N]|details>")
 	fmt.Fprintln(w, "  doctor")
