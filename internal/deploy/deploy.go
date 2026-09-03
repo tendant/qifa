@@ -1507,12 +1507,28 @@ func (d *Deployer) healthCheck(ctx context.Context, host, targetHost string, tar
 	if timeout <= 0 {
 		timeout = 5
 	}
-	command := fmt.Sprintf("for i in 1 2 3 4 5; do curl -fsS --connect-timeout %d --max-time %d http://%s:%d%s && exit 0; sleep %d; done; exit 1", timeout, timeout, targetHost, targetPort, path, int(d.cfg.Proxy.Healthcheck.Interval.Seconds()))
+	command := healthcheckCommand(targetHost, targetPort, path, timeout, int(d.cfg.Proxy.Healthcheck.Interval.Seconds()))
 	_, err := d.ssh.Run(ctx, host, command)
 	if err != nil {
 		return d.withContainerDiagnostics(ctx, host, containerName, err)
 	}
 	return nil
+}
+
+// healthcheckCommand builds the probe that runs where the container does.
+//
+// curl is not a given: a minimal image (docker:cli, alpine) has none, and the
+// failure then reads "curl: not found" five times over — which says nothing
+// about the app it was meant to be checking. busybox wget is present almost
+// everywhere curl is not, so try both and say so plainly when neither exists.
+func healthcheckCommand(host string, port int, path string, timeout, interval int) string {
+	url := fmt.Sprintf("http://%s:%d%s", host, port, path)
+	probe := fmt.Sprintf(
+		"if command -v curl >/dev/null 2>&1; then curl -fsS --connect-timeout %d --max-time %d %q; "+
+			"elif command -v wget >/dev/null 2>&1; then wget -q -T %d -O /dev/null %q; "+
+			"else echo 'healthcheck needs curl or wget, and this host has neither' >&2; exit 127; fi",
+		timeout, timeout, url, timeout, url)
+	return fmt.Sprintf("for i in 1 2 3 4 5; do %s && exit 0; sleep %d; done; exit 1", probe, interval)
 }
 
 func (d *Deployer) failDeployment(deployment state.Deployment, cause error) error {
