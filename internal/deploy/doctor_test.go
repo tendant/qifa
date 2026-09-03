@@ -98,3 +98,29 @@ func TestFormatAccessoryState(t *testing.T) {
 		})
 	}
 }
+
+// Printing https:// for an app served over plain HTTP points people at a port
+// with no certificate behind it — the confusion this exists to avoid.
+func TestProxyURL(t *testing.T) {
+	cases := []struct {
+		name                string
+		host                string
+		ssl                 bool
+		httpPort, httpsPort int
+		want                string
+	}{
+		{name: "plain http on 80", host: "app.example.com", httpPort: 80, httpsPort: 443, want: "http://app.example.com/"},
+		{name: "tls on 443", host: "app.example.com", ssl: true, httpPort: 80, httpsPort: 443, want: "https://app.example.com/"},
+		{name: "http on a non-default port", host: "app.example.com", httpPort: 8080, httpsPort: 443, want: "http://app.example.com:8080/"},
+		{name: "tls on a non-default port", host: "app.example.com", ssl: true, httpPort: 80, httpsPort: 8443, want: "https://app.example.com:8443/"},
+		{name: "unset ports fall back to the standard ones", host: "app.example.com", want: "http://app.example.com/"},
+		{name: "host already carrying a port keeps it", host: "10.0.0.11:64600", httpPort: 6000, httpsPort: 443, want: "http://10.0.0.11:64600/"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := proxyURL(tc.host, tc.ssl, tc.httpPort, tc.httpsPort); got != tc.want {
+				t.Fatalf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}

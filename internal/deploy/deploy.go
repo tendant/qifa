@@ -122,7 +122,45 @@ func (d *Deployer) Deploy(ctx context.Context) error {
 		d.log.Printf("prune warning: %v", err)
 	}
 	d.log.Printf("deployment %s succeeded", deployment.ID)
+	for _, url := range d.appURLs() {
+		d.log.Printf("live at %s", url)
+	}
 	return nil
+}
+
+// appURLs returns the addresses this deploy is reachable at. The scheme comes
+// from proxy.ssl rather than being assumed: printing an https:// address for
+// an app served over plain HTTP sends people to a port with no certificate
+// behind it.
+func (d *Deployer) appURLs() []string {
+	var urls []string
+	hosts := make([]string, 0, len(d.cfg.Proxy.Hosts)+1)
+	if d.cfg.Proxy.Host != "" {
+		hosts = append(hosts, d.cfg.Proxy.Host)
+	}
+	hosts = append(hosts, d.cfg.Proxy.Hosts...)
+	for _, host := range hosts {
+		urls = append(urls, proxyURL(host, d.cfg.Proxy.SSL, d.cfg.ProxyBoot.HTTPPort, d.cfg.ProxyBoot.HTTPSPort))
+	}
+	return urls
+}
+
+// proxyURL builds the address a browser would use: the scheme follows ssl, and
+// a non-default port is spelled out, since that is exactly the case where
+// guessing the URL goes wrong.
+func proxyURL(host string, ssl bool, httpPort, httpsPort int) string {
+	scheme, port, standard := "http", httpPort, 80
+	if ssl {
+		scheme, port, standard = "https", httpsPort, 443
+	}
+	if port == 0 {
+		port = standard
+	}
+	// A host that already carries a port (an IP:port target) keeps it.
+	if port == standard || strings.Contains(host, ":") {
+		return fmt.Sprintf("%s://%s/", scheme, host)
+	}
+	return fmt.Sprintf("%s://%s:%d/", scheme, host, port)
 }
 
 func (d *Deployer) Prune(ctx context.Context) error {
