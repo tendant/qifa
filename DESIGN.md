@@ -548,6 +548,10 @@ make that true rather than merely likely:
 container was started with and compares it to what the config renders now,
 reporting key names and "value differs" without printing any value.
 
+The operational side of this — shared deploy user, secrets, CI, concurrent
+deploys — is a runbook rather than a design decision: see
+[docs/deploying.md](docs/deploying.md).
+
 ## Maintenance Mode
 
 `qifa app maintenance [--message <msg>] [--drain-timeout <duration>]` invokes

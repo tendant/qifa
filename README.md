@@ -283,6 +283,9 @@ wins on collision):
 
 ## Deploying From More Than One Machine
 
+Full runbook — host setup, secrets, CI, two people at once, onboarding a new
+deployer: [docs/deploying.md](docs/deploying.md). The short version:
+
 qifa keeps no authoritative state on the deployer — the running containers'
 `qifa.*` labels are the source of truth, and the deploy lock lives on the
 target hosts — so any checkout on any machine can deploy. Four rules keep that
@@ -355,6 +358,7 @@ in their environment.
 ## Troubleshooting
 
 Common issues and fixes: [docs/troubleshooting.md](docs/troubleshooting.md).
+Team and multi-machine setup: [docs/deploying.md](docs/deploying.md).
 
 ## Status
 
