@@ -1,6 +1,7 @@
 package deploy
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -49,5 +50,51 @@ func TestDoctorTargetsSkipsBlankHosts(t *testing.T) {
 	targets := d.doctorTargets()
 	if len(targets) != 1 {
 		t.Fatalf("want 1 host, got %+v", targets)
+	}
+}
+
+// A container that dies at startup is usually looking for an accessory that is
+// not running — and since accessories are booted separately from app deploys,
+// nothing else in the failure output mentions them.
+func TestFormatAccessoryState(t *testing.T) {
+	cases := []struct {
+		name      string
+		state     string
+		err       error
+		wantParts []string
+	}{
+		{
+			name:      "missing container",
+			err:       errors.New("Error: No such object"),
+			wantParts: []string{"no container xiaoxiang-liver-accessory-postgres", "qifa accessory boot postgres"},
+		},
+		{
+			name:      "never booted, empty state",
+			state:     "",
+			wantParts: []string{"no container", "accessory boot postgres"},
+		},
+		{
+			name:      "stopped",
+			state:     "exited exit=1 error=",
+			wantParts: []string{"exited exit=1", "accessory boot postgres"},
+		},
+		{
+			name:      "healthy",
+			state:     "running exit=0 error=",
+			wantParts: []string{"running"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := formatAccessoryState("postgres", "xiaoxiang-liver-accessory-postgres", tc.state, tc.err)
+			for _, want := range tc.wantParts {
+				if !strings.Contains(got, want) {
+					t.Errorf("line %q is missing %q", got, want)
+				}
+			}
+			if tc.name == "healthy" && strings.Contains(got, "accessory boot") {
+				t.Errorf("a running accessory needs no fix suggestion: %q", got)
+			}
+		})
 	}
 }

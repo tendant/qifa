@@ -1491,7 +1491,48 @@ func (d *Deployer) withContainerDiagnostics(ctx context.Context, host, container
 		lines = append(lines, "container_logs:")
 		lines = append(lines, strings.TrimSpace(logs))
 	}
+	// A container that dies at startup is very often looking for an accessory
+	// that is not there: accessories are booted separately from app deploys,
+	// so nothing in a deploy would otherwise mention them. The app sees only
+	// a name that will not resolve.
+	if accessories := d.accessoryDiagnostics(ctx); len(accessories) > 0 {
+		lines = append(lines, "accessories:")
+		lines = append(lines, accessories...)
+	}
 	return fmt.Errorf("%s", strings.Join(lines, "\n"))
+}
+
+// accessoryDiagnostics reports whether each declared accessory is actually
+// running, as one line per accessory.
+func (d *Deployer) accessoryDiagnostics(ctx context.Context) []string {
+	names := make([]string, 0, len(d.cfg.Accessories))
+	for name := range d.cfg.Accessories {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	lines := make([]string, 0, len(names))
+	for _, name := range names {
+		accessory := d.cfg.Accessories[name]
+		container := accessoryContainer(d.cfg.Service, name)
+		state, err := d.remoteDocker.ContainerState(ctx, accessory.Host, container)
+		lines = append(lines, "  "+formatAccessoryState(name, container, state, err))
+	}
+	return lines
+}
+
+// formatAccessoryState turns a docker inspect result into the line an operator
+// needs, including the command that fixes the common case.
+func formatAccessoryState(name, container, state string, err error) string {
+	state = strings.TrimSpace(state)
+	switch {
+	case err != nil || state == "":
+		return fmt.Sprintf("%s: no container %s — run `qifa accessory boot %s`", name, container, name)
+	case strings.HasPrefix(state, "running"):
+		return fmt.Sprintf("%s (%s): running", name, container)
+	default:
+		return fmt.Sprintf("%s (%s): %s — run `qifa accessory boot %s`", name, container, state, name)
+	}
 }
 
 func (d *Deployer) updateStatus(deployment state.Deployment, next state.Status) error {
