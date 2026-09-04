@@ -217,14 +217,25 @@ func (d *Deployer) Prune(ctx context.Context) error {
 func (d *Deployer) uniqueHosts() []string {
 	seen := map[string]struct{}{}
 	var hosts []string
+	add := func(host string) {
+		if host == "" {
+			return
+		}
+		if _, ok := seen[host]; ok {
+			return
+		}
+		seen[host] = struct{}{}
+		hosts = append(hosts, host)
+	}
 	for _, role := range orderedRoles(d.cfg.Servers) {
 		for _, host := range d.cfg.Servers[role].Hosts {
-			if _, ok := seen[host]; ok {
-				continue
-			}
-			seen[host] = struct{}{}
-			hosts = append(hosts, host)
+			add(host)
 		}
+	}
+	// An accessory can sit on a host no role runs on, and it may mount a
+	// file from files: — which would otherwise never be delivered there.
+	for _, name := range sortedAccessoryNames(d.cfg.Accessories) {
+		add(d.cfg.Accessories[name].Host)
 	}
 	return hosts
 }
@@ -1508,6 +1519,14 @@ func (d *Deployer) AccessoryBoot(ctx context.Context, name string) error {
 	if err != nil {
 		return err
 	}
+	// Push files: first. An accessory often mounts one of them, and docker
+	// creates a missing bind-mount source as a *directory* — so booting before
+	// the file exists silently yields a directory where a config should be,
+	// and the container crash-loops on "Is a directory". Deploy already syncs
+	// for the app's sake; an accessory booted on its own needs the same.
+	if err := d.SyncFiles(ctx); err != nil {
+		return err
+	}
 	containerName := accessoryContainer(d.cfg.Service, name)
 	if accessory.IsLocalSource() {
 		// Image is produced out-of-band and must already exist on the host;
@@ -1697,11 +1716,7 @@ func (d *Deployer) withContainerDiagnostics(ctx context.Context, host, container
 // accessoryDiagnostics reports whether each declared accessory is actually
 // running, as one line per accessory.
 func (d *Deployer) accessoryDiagnostics(ctx context.Context) []string {
-	names := make([]string, 0, len(d.cfg.Accessories))
-	for name := range d.cfg.Accessories {
-		names = append(names, name)
-	}
-	sort.Strings(names)
+	names := sortedAccessoryNames(d.cfg.Accessories)
 
 	lines := make([]string, 0, len(names))
 	for _, name := range names {
@@ -1711,6 +1726,15 @@ func (d *Deployer) accessoryDiagnostics(ctx context.Context) []string {
 		lines = append(lines, "  "+formatAccessoryState(name, container, state, err))
 	}
 	return lines
+}
+
+func sortedAccessoryNames(accessories map[string]config.Accessory) []string {
+	names := make([]string, 0, len(accessories))
+	for name := range accessories {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 // formatAccessoryState turns a docker inspect result into the line an operator

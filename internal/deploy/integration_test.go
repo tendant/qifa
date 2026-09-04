@@ -509,6 +509,47 @@ func TestAccessoryBootPassesCmdToDockerRun(t *testing.T) {
 	}
 }
 
+// An accessory that mounts a file from files: must find a file there. Docker
+// creates a missing bind-mount source as a directory, so booting before the
+// sync leaves a directory where a config belongs and the container crash-loops
+// on "Is a directory" — which says nothing about the missing sync.
+func TestAccessoryBootSyncsFilesFirst(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	env := newIntegrationEnv(t)
+	cfg := env.config(t, config.BuilderHostPerTarget, "local", "testapp", config.Registry{})
+
+	src := filepath.Join(env.root, "accessory.conf")
+	if err := os.WriteFile(src, []byte("listen = 1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dest := filepath.Join(env.root, "delivered", "accessory.conf")
+	cfg.Files = []config.FileMapping{{Src: src, Dest: dest}}
+
+	store, err := state.NewStore(filepath.Join(env.root, ".qifa", "state.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	deployer, err := New(cfg, store, &stdout, &stderr)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := deployer.AccessoryBoot(ctx, "redis"); err != nil {
+		t.Fatalf("accessory boot: %v", err)
+	}
+
+	got, err := os.ReadFile(dest)
+	if err != nil {
+		t.Fatalf("files: entry was not delivered before the accessory booted: %v", err)
+	}
+	if string(got) != "listen = 1\n" {
+		t.Fatalf("delivered content is %q", got)
+	}
+}
+
 func TestDeployerRollbackToExplicitVersion(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
