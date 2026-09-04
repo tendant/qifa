@@ -32,6 +32,7 @@ const (
 	CategoryNotFound       Category = "image-not-found"
 	CategoryRateLimit      Category = "registry-rate-limit"
 	CategoryDisk           Category = "disk-full"
+	CategoryPortInUse      Category = "host-port-in-use"
 	CategoryPlatform       Category = "platform-mismatch"
 	CategoryDaemonDown     Category = "docker-daemon-down"
 	CategoryDaemonPerms    Category = "docker-socket-permissions"
@@ -231,6 +232,18 @@ var rules = []rule{
 			Hint: `- check the image name and tag; a private repo with no credentials reports
   the same error as a missing one
 - list what exists: curl -u user:pass https://<registry>/v2/<repo>/tags/list`,
+		},
+	},
+	{
+		patterns: []string{"port is already allocated", "address already in use", "bind for", "failed to bind host port"},
+		cause: Cause{
+			Category: CategoryPortInUse,
+			Summary:  "the host port the container publishes is already taken",
+			Hint: `- something else holds it: docker ps --format '{{.Names}} {{.Ports}}' | grep <port>
+    ss -tlnp 'sport = :<port>'
+- a previous container of this same app counts: a role that publishes a host
+  port cannot run two versions at once, so the old one must go first
+- or publish a different port (servers.<role>.port / extra_ports)`,
 		},
 	},
 	{

@@ -169,3 +169,20 @@ func TestDockerHubProbesAllThreeEndpoints(t *testing.T) {
 		t.Errorf("want exactly one /v2/ probe (the registry host), found %d", got)
 	}
 }
+
+// A published host port can only belong to one container, so a redeploy of a
+// role that publishes one collides with its own previous version. That is not
+// a network fault and should not send anyone to `qifa doctor`.
+func TestClassifyPortAlreadyAllocated(t *testing.T) {
+	out := `docker: Error response from daemon: failed to set up container networking: driver failed programming external connectivity on endpoint app-web-1: Bind for :::6001 failed: port is already allocated`
+	cause, ok := Classify(out)
+	if !ok || cause.Category != CategoryPortInUse {
+		t.Fatalf("got (%q, %v), want host-port-in-use", cause.Category, ok)
+	}
+	if cause.Network {
+		t.Error("a port conflict is local; probing the registry adds nothing")
+	}
+	if cause.Retryable {
+		t.Error("retrying cannot free the port")
+	}
+}

@@ -347,12 +347,19 @@ func (d *Deployer) deployHost(ctx context.Context, deployment state.Deployment, 
 	if !useProxy {
 		publishedPort = server.Port
 		containerPort = appPort
-		if previousContainer != "" {
-			if err := d.remoteDocker.StopContainer(ctx, host, previousContainer); err != nil {
-				return err
-			}
-			previousContainer = ""
+	}
+	// A host port can only be held by one container. Without the proxy that is
+	// the app's own port; with it, extra_ports are still published directly.
+	// Either way the previous version has to go before the new one starts, or
+	// docker refuses it with "port is already allocated" — which only bites
+	// when the version actually changes, since an unchanged one reuses the
+	// container name and is replaced.
+	if previousContainer != "" && (!useProxy || len(server.ExtraPorts) > 0) {
+		d.log.Printf("stopping %s first: it holds a published host port", previousContainer)
+		if err := d.remoteDocker.StopContainer(ctx, host, previousContainer); err != nil {
+			return err
 		}
+		previousContainer = ""
 	}
 	containerNetwork := ""
 	if useProxy {
