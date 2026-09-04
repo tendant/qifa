@@ -425,6 +425,7 @@ accessories:
   redis:
     image: redis:7
     host: 10.0.0.13
+    cmd: redis-server --save 60 1        # replaces the image's default command
 ```
 
 Accessories support a parallel set of lifecycle verbs to the main app:

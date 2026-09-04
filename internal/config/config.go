@@ -357,6 +357,14 @@ type Accessory struct {
 	Env     map[string]string `yaml:"env"`
 	Port    int               `yaml:"port"`     // host port to publish
 	AppPort int               `yaml:"app_port"` // container port to publish
+
+	// Cmd replaces the image's default command, exactly as servers.<role>.cmd
+	// does for the app. Accessories are the only way to run a second image
+	// beside the app, and plenty of them are configured by flags rather than
+	// environment — a log store needs its retention and data path, a
+	// collector needs its config file — so without this they are stuck with
+	// whatever the image defaults to.
+	Cmd string `yaml:"cmd"`
 }
 
 // ImageSource returns the effective origin of the accessory image. Defaults

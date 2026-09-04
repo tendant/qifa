@@ -477,6 +477,38 @@ func TestDeployerDefaultPolicyStillResolvesTags(t *testing.T) {
 	}
 }
 
+// An accessory is the only way to run a second image beside the app, and many
+// images are configured by flags rather than environment — a log store's
+// retention, a collector's config path. Without cmd reaching docker run they
+// are stuck with the image default.
+func TestAccessoryBootPassesCmdToDockerRun(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	env := newIntegrationEnv(t)
+	cfg := env.config(t, config.BuilderHostPerTarget, "local", "testapp", config.Registry{})
+
+	store, err := state.NewStore(filepath.Join(env.root, ".qifa", "state.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	deployer, err := New(cfg, store, &stdout, &stderr)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := deployer.AccessoryBoot(ctx, "redis"); err != nil {
+		t.Fatalf("accessory boot: %v", err)
+	}
+
+	calls := readIfExists(filepath.Join(env.stateDir, "docker_calls.log"))
+	want := "redis:7 redis-server --save 60 1"
+	if !strings.Contains(calls, want) {
+		t.Errorf("docker run should carry the accessory cmd after the image; wanted %q in:\n%s", want, calls)
+	}
+}
+
 func TestDeployerRollbackToExplicitVersion(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -943,6 +975,7 @@ func (e *integrationEnv) config(t *testing.T, host, source, image string, regist
 			"redis": {
 				Image: "redis:7",
 				Host:  fmt.Sprintf("127.0.0.1:%d", e.port),
+				Cmd:   "redis-server --save 60 1",
 			},
 		},
 	}
