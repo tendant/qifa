@@ -52,6 +52,8 @@ qifa deploy [--dry-run] # build (if needed) + ship + healthcheck + switch
                         # --dry-run prints what would happen without executing
      [--version <v>]    # pin the version instead of deriving it from git
      [--allow-dirty]    # allow a dirty checkout; tags the version -dirty
+qifa reconcile          # deploy only if the host differs from the config
+     [--dry-run]        # report the differences, change nothing
 qifa rollback [version] # roll back to the previous version (or a specific one)
 qifa stop               # stop the running container per role/host
 qifa start              # start the most recent labeled container
@@ -321,6 +323,33 @@ active set. Removing or losing the file does not break any other command.
 7. Run `post_deploy` hook
 8. Auto-prune: keep last `prune.retain_containers` stopped containers per role,
    prune dangling service images
+
+### Reconcile Flow
+
+`deploy` always replaces the container: same digest, same name, stop and run
+again. That is right for shipping a version and wrong for a schedule, so there
+was no safe way to ask "is this host still what the config says". `reconcile`
+asks first and acts only on the answer, which is what makes it usable from a
+timer — a GitOps loop that converges a host to a checkout of its config.
+
+1. Resolve image and version as `deploy` does, with one difference: a tag is
+   resolved against the image the host already has, and pulled only when the
+   host does not have it. A five-minute loop must not spend a registry round
+   trip per app per tick, must not fail when the registry is unreachable while
+   the right image sits on the host, and — most importantly — must not chase a
+   moving tag. Converging to whatever `:latest` points at right now would
+   upgrade an app nobody committed a change to.
+2. For each role and host, compare against the desired container name:
+   - the container is missing, or an older one is running in its place
+   - the container exists but is not running
+   - the role is proxied and kamal-proxy has no route for the service, or
+     points at a different container
+3. No differences: print one line and stop. Otherwise print each difference and
+   converge through the ordinary `Deploy` path (or, with `--dry-run`, stop).
+
+The differences are named individually rather than summarised, because from
+outside the host they are indistinguishable: the site is down, or it is serving
+something old.
 
 ### Rollback Flow
 
