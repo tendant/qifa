@@ -273,6 +273,16 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		default:
 			return errors.New("usage: qifa lock <status|release>")
 		}
+	case "reconcile":
+		dryRun := false
+		for _, a := range args[1:] {
+			if a == "--dry-run" || a == "-n" {
+				dryRun = true
+			}
+		}
+		return withRuntime(ctx, stdout, stderr, configFile, func(rt *runtime) error {
+			return rt.deployer.Reconcile(ctx, stdout, dryRun)
+		})
 	case "doctor":
 		return withRuntime(ctx, stdout, stderr, configFile, func(rt *runtime) error {
 			return rt.deployer.Doctor(ctx, stdout)
@@ -462,6 +472,7 @@ func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "  env diff")
 	fmt.Fprintln(w, "  lock <status|release>")
 	fmt.Fprintln(w, "  proxy <boot|start|stop|restart|upgrade|remove [--purge]|logs [--follow] [--lines N]|details>")
+	fmt.Fprintln(w, "  reconcile [--dry-run]")
 	fmt.Fprintln(w, "  doctor")
 	fmt.Fprintln(w, "  status")
 	fmt.Fprintln(w, "  logs [--follow] [--lines N]")

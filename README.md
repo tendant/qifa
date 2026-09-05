@@ -184,6 +184,9 @@ qifa lock <status|release>       # show or forcibly clear deploy lock
 qifa proxy <boot|start|stop|restart|upgrade|remove [--purge]|logs|details>
                                  # manage the shared kamal-proxy container
 qifa status                      # deployment history + active containers
+qifa reconcile [--dry-run]       # converge only if the host differs from the config;
+                                 # a no-op when it already matches, so it is safe
+                                 # to run unattended on a schedule
 qifa doctor                      # preflight every host: ssh, docker, registry,
                                  # DNS/TCP/TLS, credentials, disk, clock, proxy
 
