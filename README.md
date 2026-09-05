@@ -323,3 +323,7 @@ Team and multi-machine setup: [docs/deploying.md](docs/deploying.md).
 
 Active development. The CLI is reasonably stable; the schema may still
 change before a 1.0 tag.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
