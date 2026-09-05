@@ -30,6 +30,11 @@ type Drift struct {
 // predecessor all look identical from the outside (the site is down, or serving
 // something old) and need naming individually.
 func (d *Deployer) Reconcile(ctx context.Context, out io.Writer, dryRun bool) error {
+	// Resolve against what the host already has, not against the registry:
+	// the loop converges on what this checkout declares, and a tag that has
+	// moved upstream since is not drift from it. See pullImage.
+	d.preferLocalImages = true
+
 	imageRef, version, err := d.resolveImage(ctx)
 	if err != nil {
 		return err

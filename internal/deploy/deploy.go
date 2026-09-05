@@ -42,6 +42,10 @@ type Deployer struct {
 	// permits deploying a checkout with uncommitted changes.
 	version    string
 	allowDirty bool
+
+	// preferLocalImages resolves a tag against the image the host already has
+	// instead of asking the registry. Set by Reconcile; see pullImage.
+	preferLocalImages bool
 }
 
 // PinVersion fixes the version this deploy ships instead of deriving one from
@@ -789,8 +793,16 @@ func (d *Deployer) resolveImage(ctx context.Context) (imageRef, version string, 
 //
 // pull_policy: missing extends the same skip to tags, at the cost of never
 // noticing that a moving tag now points somewhere else.
+//
+// Reconcile sets preferLocalImages to get that same behaviour regardless of
+// policy, for two reasons. A loop that runs every few minutes would otherwise
+// spend a registry round trip per app per tick, and fail whenever the link to
+// the registry is down — while the correct image sits on the host. And it must
+// not chase a moving tag: reconciling to whatever :latest points at right now
+// would silently upgrade an app that nobody committed a change to, which is
+// the opposite of converging on what the repository says.
 func (d *Deployer) pullImage(ctx context.Context, host, dockerConfigDir, imageRef string) error {
-	if d.cfg.SkipPullIfPresent(imageRef) {
+	if d.preferLocalImages || d.cfg.SkipPullIfPresent(imageRef) {
 		exists, err := d.remoteDocker.ImageExists(ctx, host, imageRef)
 		if err != nil {
 			return err
