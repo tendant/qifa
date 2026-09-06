@@ -8,9 +8,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gokamal/gocart/internal/config"
-	"github.com/gokamal/gocart/internal/dockererr"
-	"github.com/gokamal/gocart/internal/ssh"
+	"github.com/tendant/qifa/internal/config"
+	"github.com/tendant/qifa/internal/dockererr"
+	"github.com/tendant/qifa/internal/ssh"
 )
 
 // Proxy is the runtime interface used by the deployer when registering and

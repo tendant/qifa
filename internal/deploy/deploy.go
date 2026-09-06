@@ -14,16 +14,16 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/gokamal/gocart/internal/config"
-	"github.com/gokamal/gocart/internal/docker"
-	"github.com/gokamal/gocart/internal/hooks"
-	"github.com/gokamal/gocart/internal/lock"
-	"github.com/gokamal/gocart/internal/logs"
-	"github.com/gokamal/gocart/internal/proxy"
-	"github.com/gokamal/gocart/internal/registry"
-	"github.com/gokamal/gocart/internal/secrets"
-	"github.com/gokamal/gocart/internal/ssh"
-	"github.com/gokamal/gocart/internal/state"
+	"github.com/tendant/qifa/internal/config"
+	"github.com/tendant/qifa/internal/docker"
+	"github.com/tendant/qifa/internal/hooks"
+	"github.com/tendant/qifa/internal/lock"
+	"github.com/tendant/qifa/internal/logs"
+	"github.com/tendant/qifa/internal/proxy"
+	"github.com/tendant/qifa/internal/registry"
+	"github.com/tendant/qifa/internal/secrets"
+	"github.com/tendant/qifa/internal/ssh"
+	"github.com/tendant/qifa/internal/state"
 )
 
 type Deployer struct {

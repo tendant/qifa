@@ -10,9 +10,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gokamal/gocart/internal/cert"
-	"github.com/gokamal/gocart/internal/config"
-	"github.com/gokamal/gocart/internal/ssh"
+	"github.com/tendant/qifa/internal/cert"
+	"github.com/tendant/qifa/internal/config"
+	"github.com/tendant/qifa/internal/ssh"
 )
 
 // certEnvPrefixes lists env-var prefixes auto-forwarded to lego when

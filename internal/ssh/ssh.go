@@ -14,7 +14,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/gokamal/gocart/internal/config"
+	"github.com/tendant/qifa/internal/config"
 	ksshconfig "github.com/kevinburke/ssh_config"
 	gossh "golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/agent"

@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gokamal/gocart/internal/config"
+	"github.com/tendant/qifa/internal/config"
 )
 
 func TestDoctorTargetsCoverEveryHostAndSayWhy(t *testing.T) {

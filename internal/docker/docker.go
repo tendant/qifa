@@ -16,10 +16,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/gokamal/gocart/internal/config"
-	"github.com/gokamal/gocart/internal/dockererr"
-	"github.com/gokamal/gocart/internal/registry"
-	"github.com/gokamal/gocart/internal/ssh"
+	"github.com/tendant/qifa/internal/config"
+	"github.com/tendant/qifa/internal/dockererr"
+	"github.com/tendant/qifa/internal/registry"
+	"github.com/tendant/qifa/internal/ssh"
 )
 
 type Local struct{}

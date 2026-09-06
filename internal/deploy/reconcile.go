@@ -6,7 +6,7 @@ import (
 	"io"
 	"strings"
 
-	"github.com/gokamal/gocart/internal/docker"
+	"github.com/tendant/qifa/internal/docker"
 )
 
 // Drift is one reason the host does not match what the config declares.

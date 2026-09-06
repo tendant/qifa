@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/gokamal/gocart/internal/config"
+	"github.com/tendant/qifa/internal/config"
 )
 
 func TestLocalEnvWritesDockerConfig(t *testing.T) {

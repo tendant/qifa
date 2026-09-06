@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gokamal/gocart/internal/config"
+	"github.com/tendant/qifa/internal/config"
 	gossh "golang.org/x/crypto/ssh"
 )
 

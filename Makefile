@@ -20,7 +20,7 @@ build:
 # stamped via -ldflags so `qifa version` reflects the working tree.
 #
 # To install a published release without cloning:
-#   go install github.com/gokamal/gocart/cmd/qifa@latest
+#   go install github.com/tendant/qifa/cmd/qifa@latest
 install:
 	go install -ldflags "$(LDFLAGS)" ./cmd/qifa
 	@echo "installed -> $(GOBIN)/qifa"

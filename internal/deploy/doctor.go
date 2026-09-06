@@ -9,9 +9,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gokamal/gocart/internal/dockererr"
-	"github.com/gokamal/gocart/internal/registry"
-	sshpkg "github.com/gokamal/gocart/internal/ssh"
+	"github.com/tendant/qifa/internal/dockererr"
+	"github.com/tendant/qifa/internal/registry"
+	sshpkg "github.com/tendant/qifa/internal/ssh"
 )
 
 // Doctor runs the checks that a deploy silently depends on — SSH, the Docker

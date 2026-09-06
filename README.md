@@ -19,7 +19,7 @@ For the full design, see [DESIGN.md](DESIGN.md).
 ## Install
 
 ```bash
-git clone https://github.com/gokamal/qifa.git
+git clone https://github.com/tendant/qifa.git
 cd qifa
 make build
 ./qifa version

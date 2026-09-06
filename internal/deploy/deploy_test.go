@@ -3,7 +3,7 @@ package deploy
 import (
 	"testing"
 
-	"github.com/gokamal/gocart/internal/config"
+	"github.com/tendant/qifa/internal/config"
 )
 
 func TestOrderedRolesWebFirst(t *testing.T) {

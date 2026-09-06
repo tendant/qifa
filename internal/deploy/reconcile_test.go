@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gokamal/gocart/internal/docker"
+	"github.com/tendant/qifa/internal/docker"
 )
 
 // Reconcile has to name what it found, because every one of these looks the

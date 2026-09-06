@@ -27,8 +27,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gokamal/gocart/internal/dockererr"
-	"github.com/gokamal/gocart/internal/ssh"
+	"github.com/tendant/qifa/internal/dockererr"
+	"github.com/tendant/qifa/internal/ssh"
 )
 
 const (

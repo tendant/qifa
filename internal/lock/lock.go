@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gokamal/gocart/internal/ssh"
+	"github.com/tendant/qifa/internal/ssh"
 )
 
 type Holder struct {

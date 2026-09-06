@@ -10,8 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/gokamal/gocart/internal/config"
-	"github.com/gokamal/gocart/internal/ssh"
+	"github.com/tendant/qifa/internal/config"
+	"github.com/tendant/qifa/internal/ssh"
 )
 
 type dockerConfig struct {

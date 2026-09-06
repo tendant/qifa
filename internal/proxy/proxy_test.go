@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gokamal/gocart/internal/config"
+	"github.com/tendant/qifa/internal/config"
 )
 
 func TestDeployCommandIncludesConfiguredFlags(t *testing.T) {

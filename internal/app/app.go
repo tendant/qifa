@@ -12,9 +12,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gokamal/gocart/internal/config"
-	"github.com/gokamal/gocart/internal/deploy"
-	"github.com/gokamal/gocart/internal/state"
+	"github.com/tendant/qifa/internal/config"
+	"github.com/tendant/qifa/internal/deploy"
+	"github.com/tendant/qifa/internal/state"
 )
 
 var buildVersion, buildCommit, buildDate string

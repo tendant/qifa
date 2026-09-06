@@ -8,7 +8,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/gokamal/gocart/internal/app"
+	"github.com/tendant/qifa/internal/app"
 )
 
 // These can be overridden at build time via `-ldflags "-X main.version=..."`.

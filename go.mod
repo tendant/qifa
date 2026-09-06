@@ -1,4 +1,4 @@
-module github.com/gokamal/gocart
+module github.com/tendant/qifa
 
 go 1.25.1
 

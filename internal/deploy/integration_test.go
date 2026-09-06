@@ -15,9 +15,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gokamal/gocart/internal/config"
-	sshpkg "github.com/gokamal/gocart/internal/ssh"
-	"github.com/gokamal/gocart/internal/state"
+	"github.com/tendant/qifa/internal/config"
+	sshpkg "github.com/tendant/qifa/internal/ssh"
+	"github.com/tendant/qifa/internal/state"
 )
 
 func TestDeployerEndToEndWithLocalSSH(t *testing.T) {
