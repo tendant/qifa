@@ -363,14 +363,29 @@ func (d *Deployer) deployHost(ctx context.Context, deployment state.Deployment, 
 		publishedPort = server.Port
 		containerPort = appPort
 	}
-	// A host port can only be held by one container. Without the proxy that is
-	// the app's own port; with it, extra_ports are still published directly.
-	// Either way the previous version has to go before the new one starts, or
-	// docker refuses it with "port is already allocated" — which only bites
-	// when the version actually changes, since an unchanged one reuses the
-	// container name and is replaced.
+	// Two versions of a non-proxied role cannot run side by side, so the
+	// previous one goes before the new one starts. There are two distinct
+	// reasons and a role can have either:
+	//
+	//   a published host port, which only one container can hold — docker
+	//   refuses the second with "port is already allocated";
+	//
+	//   the "<service>-<role>" network alias below, which docker will happily
+	//   let both claim and then round-robin between, so a deploy would send
+	//   half of every caller's traffic to the version being replaced.
+	//
+	// Only proxied roles overlap, and that is the point of them: kamal-proxy
+	// health-checks the new container before switching, and neither a port nor
+	// an alias is contested while it does. Its extra_ports still are.
+	//
+	// None of this bites when the version is unchanged: the container name is
+	// the same, so it is replaced rather than duplicated.
 	if previousContainer != "" && (!useProxy || len(server.ExtraPorts) > 0) {
-		d.log.Printf("stopping %s first: it holds a published host port", previousContainer)
+		reason := "it holds the service alias and would otherwise share it"
+		if !useProxy && server.Port > 0 || len(server.ExtraPorts) > 0 {
+			reason = "it holds a published host port"
+		}
+		d.log.Printf("stopping %s first: %s", previousContainer, reason)
 		if err := d.remoteDocker.StopContainer(ctx, host, previousContainer); err != nil {
 			return err
 		}

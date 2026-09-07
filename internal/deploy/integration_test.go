@@ -848,6 +848,17 @@ func TestDeployerNonProxyRoleJoinsNetworkWithServiceAlias(t *testing.T) {
 	if calls := readIfExists(filepath.Join(env.stateDir, "proxy_calls.log")); strings.Contains(calls, "deploy") {
 		t.Fatalf("non-proxied role registered a proxy route: %q", calls)
 	}
+
+	// A second deploy has to stop the previous container before starting the
+	// new one, or both would answer to the alias and docker would round-robin
+	// between two versions. With no published port, saying so in terms of a
+	// port would name a reason that does not exist here.
+	if err := deployer.Deploy(ctx); err != nil {
+		t.Fatalf("second deploy failed: %v\nstderr:\n%s", err, stderr.String())
+	}
+	if out := stdout.String(); !strings.Contains(out, "it holds the service alias") {
+		t.Fatalf("expected the alias to be given as the reason for stopping first, got:\n%s", out)
+	}
 }
 
 // Deploying to the machine qifa runs on should not require sshd, a key, or a
