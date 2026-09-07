@@ -397,7 +397,7 @@ func (r *Remote) Build(ctx context.Context, host string, cfg *config.Config, ima
 		r.streamWatched(ctx, host, command, "build of "+imageRef))
 }
 
-func (r *Remote) RunContainer(ctx context.Context, host, name, imageRef, envFile, command, network string, labels map[string]string, volumes []string, hostPort, containerPort int, privileged bool, extraPublish []string) error {
+func (r *Remote) RunContainer(ctx context.Context, host, name, imageRef, envFile, command, network string, labels map[string]string, volumes []string, hostPort, containerPort int, privileged bool, extraPublish, networkAliases []string) error {
 	if err := r.ensureVolumeHostDirs(ctx, host, volumes); err != nil {
 		return err
 	}
@@ -406,6 +406,12 @@ func (r *Remote) RunContainer(ctx context.Context, host, name, imageRef, envFile
 	args = append(args, "--name "+shellQuote(name))
 	if network != "" {
 		args = append(args, "--network "+shellQuote(network))
+		// Aliases are only meaningful on a user-defined network — docker's
+		// embedded DNS does not serve the default bridge — so they follow the
+		// network rather than standing on their own.
+		for _, alias := range networkAliases {
+			args = append(args, "--network-alias "+shellQuote(alias))
+		}
 	}
 	if privileged {
 		args = append(args, "--privileged")

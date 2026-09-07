@@ -803,6 +803,53 @@ func TestDeployerNonProxyRedeployReplacesActiveContainer(t *testing.T) {
 	}
 }
 
+// A role that opts out of the proxy is still on the estate's docker network,
+// and still answers to a name that survives a version bump. Without both, an
+// internal-only service — no hostname, no published port — could neither reach
+// its accessories nor be reached by its peers.
+func TestDeployerNonProxyRoleJoinsNetworkWithServiceAlias(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	env := newIntegrationEnv(t)
+	cfg := env.config(t, config.BuilderHostPerTarget, "local", "testapp", config.Registry{})
+	server := cfg.Servers["web"]
+	proxyEnabled := false
+	server.Proxy = &proxyEnabled
+	server.AppPort = 80
+	// No Port: nothing published on the host, which is the whole point.
+	server.Port = 0
+	cfg.Servers["web"] = server
+
+	store, err := state.NewStore(filepath.Join(env.root, ".qifa", "state.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	deployer, err := New(cfg, store, &stdout, &stderr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := deployer.Deploy(ctx); err != nil {
+		t.Fatalf("deploy failed: %v\nstdout:\n%s\nstderr:\n%s", err, stdout.String(), stderr.String())
+	}
+
+	dockerCalls := readIfExists(filepath.Join(env.stateDir, "docker_calls.log"))
+	for _, want := range []string{
+		"--network kamal",
+		"--network-alias testapp-web",
+	} {
+		if !strings.Contains(dockerCalls, want) {
+			t.Fatalf("expected %q in docker calls, got %q", want, dockerCalls)
+		}
+	}
+	// The proxy is never told about it: no hostname, no route.
+	if calls := readIfExists(filepath.Join(env.stateDir, "proxy_calls.log")); strings.Contains(calls, "deploy") {
+		t.Fatalf("non-proxied role registered a proxy route: %q", calls)
+	}
+}
+
 // Deploying to the machine qifa runs on should not require sshd, a key, or a
 // known_hosts entry. The ssh.key here points at a file that does not exist, so
 // the deploy can only pass if nothing ever opens an SSH connection.
@@ -1142,7 +1189,7 @@ case "$cmd" in
     seq=$((count + 1))
     while [ "$#" -gt 0 ]; do
       case "$1" in
-        --restart|--name|--env-file|-p|--network|--volume|--log-opt)
+        --restart|--name|--env-file|-p|--network|--network-alias|--volume|--log-opt)
           key="$1"; val="$2"
           if [ "$key" = "--name" ]; then name="$val"; fi
           if [ "$key" = "--env-file" ]; then envfile="$val"; fi

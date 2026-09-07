@@ -376,9 +376,29 @@ func (d *Deployer) deployHost(ctx context.Context, deployment state.Deployment, 
 		}
 		previousContainer = ""
 	}
-	containerNetwork := ""
-	if useProxy {
-		containerNetwork = d.cfg.ProxyBoot.Network
+	// Every app container joins the same docker network as the proxy and the
+	// accessories (proxy_boot.network, default "kamal"), whether or not it is
+	// proxied. A role that opts out of the proxy is still part of the estate:
+	// it has to reach its own accessories by name, and its peers have to reach
+	// it. On the default bridge it could do neither — docker's embedded DNS
+	// does not serve that network — so an internal-only service, one
+	// deliberately without a public hostname, could not be expressed at all.
+	containerNetwork := d.cfg.ProxyBoot.Network
+	// A non-proxied role also answers to "<service>-<role>", because nothing
+	// else names it: the container name carries the version and changes on
+	// every deploy, and there is no proxy hostname to address instead. Peers
+	// use http://<service>-<role>:<app_port> and keep working across a version
+	// bump — the same shape as an accessory's "<service>-accessory-<name>".
+	// Per role rather than per service so two non-proxied roles cannot both
+	// claim one name and have docker round-robin between them.
+	//
+	// Deliberately not done for a proxied role. There, the old container is
+	// still running while the new one health-checks, so a shared alias would
+	// resolve to either version for the length of a rollout; kamal-proxy
+	// addresses those by container name and needs no alias.
+	var networkAliases []string
+	if !useProxy {
+		networkAliases = []string{d.cfg.Service + "-" + role}
 	}
 	labels := map[string]string{
 		docker.LabelService: d.cfg.Service,
@@ -388,19 +408,25 @@ func (d *Deployer) deployHost(ctx context.Context, deployment state.Deployment, 
 	if err := d.remoteDocker.StopAndRemove(ctx, host, containerName); err != nil {
 		return err
 	}
-	if err := d.remoteDocker.RunContainer(ctx, host, containerName, imageRef, remoteEnv, server.Cmd, containerNetwork, labels, server.Volumes, publishedPort, containerPort, server.Privileged, server.ExtraPorts); err != nil {
+	if err := d.remoteDocker.RunContainer(ctx, host, containerName, imageRef, remoteEnv, server.Cmd, containerNetwork, labels, server.Volumes, publishedPort, containerPort, server.Privileged, server.ExtraPorts, networkAliases); err != nil {
 		_ = d.remoteDocker.StopAndRemove(ctx, host, containerName)
 		return err
 	}
 	if err := d.updateStatus(deployment, state.StatusHealthChecking); err != nil {
 		return err
 	}
-	// Healthcheck runs over SSH on the proxy host and reaches the container
-	// across the docker bridge by literal IP — the host's DNS can't resolve
-	// container names from outside the kamal network.
+	// The healthcheck runs over SSH on the host the container is on. A
+	// published host port is probed over that host's loopback; anything else
+	// is reached across the docker bridge by literal IP, because the host's
+	// DNS cannot resolve container names from outside the network.
+	//
+	// An internal-only role has no published port at all, so it takes the IP
+	// path too — otherwise it would fall through to healthCheck's port-0
+	// branch, which only asks whether the process is up and says nothing about
+	// whether it serves.
 	healthcheckHost := "127.0.0.1"
 	healthPort := appPort
-	if useProxy {
+	if useProxy || (server.Port == 0 && appPort > 0) {
 		containerIP, err := d.remoteDocker.ContainerIP(ctx, host, containerName)
 		if err != nil {
 			// A missing address means the container is not up; its state and
@@ -1572,7 +1598,7 @@ func (d *Deployer) AccessoryBoot(ctx context.Context, name string) error {
 	// can resolve each other by container DNS. The network is created by
 	// `qifa proxy boot`; without it, the accessory would land on the
 	// default bridge and not be reachable from app containers.
-	return d.remoteDocker.RunContainer(ctx, accessory.Host, containerName, accessory.Image, remoteEnv, accessory.Cmd, d.cfg.ProxyBoot.Network, nil, accessory.Volumes, accessory.Port, accessory.AppPort, false, nil)
+	return d.remoteDocker.RunContainer(ctx, accessory.Host, containerName, accessory.Image, remoteEnv, accessory.Cmd, d.cfg.ProxyBoot.Network, nil, accessory.Volumes, accessory.Port, accessory.AppPort, false, nil, nil)
 }
 
 func (d *Deployer) AccessoryLogs(ctx context.Context, name string, out io.Writer) error {

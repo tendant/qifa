@@ -162,6 +162,49 @@ Two caveats:
   by IP and will not work there; use `proxy: false` with a published `port:`,
   which is checked over `127.0.0.1`. On Linux the full proxy path works.
 
+### 5. An internal-only service
+
+A service other services use and nobody else can reach: no hostname, no
+certificate, no published host port. Give the role a name other than `web` (or
+set `proxy: false`) and leave `port:` out — `app_port` alone means the port is
+open on the docker network and nowhere else.
+
+```yaml
+service: dolico
+image: reg.example.com/dolico-api:f21aa24
+
+servers:
+  api:
+    hosts: [10.0.0.11]
+    app_port: 8080      # no port: -> nothing published on the host
+
+proxy:
+  healthcheck:
+    path: /healthz      # read even with no proxy route registered
+
+accessories:
+  ocr:
+    image: reg.example.com/dolico-ocr:f21aa24
+    host: 10.0.0.11
+```
+
+Every app container joins `proxy_boot.network` (default `kamal`) whether or not
+it is proxied, so this one can reach `dolico-accessory-ocr:8181` and its peers
+can reach it. Peers address it as **`<service>-<role>`** — `dolico-api:8080`
+here — which is a docker network alias, not the container name: the container
+name carries the deployed version and changes under them on every deploy, and
+the alias does not. Only non-proxied roles get one, because a proxied role runs
+its old and new containers side by side during a rollout and a shared alias
+would resolve to either.
+
+A role with no published port is healthchecked across the bridge by container
+IP, exactly as the proxied path is — so the macOS caveat above applies to it
+too.
+
+Nothing here registers a route with kamal-proxy, which is the point: a route
+would make the service answer to anyone who sends that `Host:` header to the
+proxy's public port.
+
 ## Verb Cheatsheet
 
 ```text
