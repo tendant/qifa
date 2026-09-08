@@ -323,6 +323,11 @@ func (k *KamalProxy) deployCommand(target Target) string {
 		"--drain-timeout", shellQuote(k.app.DrainTimeout.String()),
 		"--target-timeout", shellQuote(k.app.TargetTimeout.String()),
 	)
+	// Left off unless set: kamal-proxy defaults the health check to the target
+	// port, which is what every service but one wants.
+	if k.app.Healthcheck.Port > 0 {
+		args = append(args, "--health-check-port", strconv.Itoa(k.app.Healthcheck.Port))
+	}
 	if k.app.SSL {
 		args = append(args, "--tls")
 		if k.app.TLSRedirect != nil {

@@ -227,6 +227,17 @@ type Healthcheck struct {
 	Path     string        `yaml:"path"`
 	Interval time.Duration `yaml:"interval"`
 	Timeout  time.Duration `yaml:"timeout"`
+
+	// Port to probe, when it is not the port traffic goes to. Zero means the
+	// target port, which is right for almost everything.
+	//
+	// It exists for a service that authenticates every path it serves. Such a
+	// service answers a probe with 401, kamal-proxy treats anything outside
+	// 2xx as unhealthy, and the deploy fails on a container that is working
+	// exactly as intended. The alternatives are to put the credential into a
+	// healthcheck command or to drop the authentication; a second port that
+	// exposes liveness and nothing else is better than either.
+	Port int `yaml:"port"`
 }
 
 type Registry struct {

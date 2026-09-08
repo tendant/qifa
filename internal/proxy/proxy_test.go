@@ -289,3 +289,38 @@ func TestBootCommandExpandsTildeAppsConfigDir(t *testing.T) {
 		t.Fatalf("missing %q in:\n%s", want, command)
 	}
 }
+
+// A service that authenticates every path it serves answers a probe with 401,
+// and kamal-proxy treats anything outside 2xx as unhealthy — so the deploy
+// fails on a container working exactly as intended. health_check.port sends
+// the probe somewhere else while traffic still goes to the target port.
+func TestHealthCheckPortIsPassedOnlyWhenSet(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		port int
+		want bool
+	}{
+		{"unset leaves kamal-proxy's default of the target port", 0, false},
+		{"set sends the probe to that port instead", 9090, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := &KamalProxy{
+				app: config.Proxy{
+					Host: "app.example.com",
+					Healthcheck: config.Healthcheck{
+						Path: "/metrics", Interval: time.Second, Timeout: 2 * time.Second,
+						Port: tc.port,
+					},
+				},
+			}
+			cmd := p.deployCommand(Target{Service: "svc", Host: "svc-web-1", Port: 8081})
+			if got := strings.Contains(cmd, "--health-check-port 9090"); got != tc.want {
+				t.Fatalf("--health-check-port present = %v, want %v\n%s", got, tc.want, cmd)
+			}
+			// Traffic is unaffected either way: only the probe moves.
+			if !strings.Contains(cmd, "--target 'svc-web-1:8081'") {
+				t.Errorf("target port changed:\n%s", cmd)
+			}
+		})
+	}
+}
