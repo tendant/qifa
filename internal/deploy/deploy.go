@@ -441,6 +441,14 @@ func (d *Deployer) deployHost(ctx context.Context, deployment state.Deployment, 
 	// whether it serves.
 	healthcheckHost := "127.0.0.1"
 	healthPort := appPort
+	// A probe port of its own, when the app port cannot answer one — a service
+	// that authenticates every path it serves refuses the probe, and a refused
+	// probe fails a deploy of a container that is working. Honoured here as
+	// well as in the proxy registration, so the setting means the same thing
+	// wherever the check happens.
+	if p := d.cfg.Proxy.Healthcheck.Port; p > 0 {
+		healthPort = p
+	}
 	if useProxy || (server.Port == 0 && appPort > 0) {
 		containerIP, err := d.remoteDocker.ContainerIP(ctx, host, containerName)
 		if err != nil {
@@ -449,7 +457,7 @@ func (d *Deployer) deployHost(ctx context.Context, deployment state.Deployment, 
 			return d.withContainerDiagnostics(ctx, host, containerName, err)
 		}
 		healthcheckHost = containerIP
-	} else {
+	} else if d.cfg.Proxy.Healthcheck.Port == 0 {
 		healthPort = server.Port
 	}
 	if err := d.healthCheck(ctx, host, healthcheckHost, healthPort, containerName, useProxy); err != nil {
