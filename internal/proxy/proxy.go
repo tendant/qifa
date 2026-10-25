@@ -254,15 +254,57 @@ func formatBindIP(ip string) string {
 	return ip
 }
 
+// Deploy registers the route and, only once kamal-proxy accepted it,
+// records the exact command under RoutesDir so cert renewal can replay it.
 func (k *KamalProxy) Deploy(ctx context.Context, host string, target Target) error {
-	command := "docker exec " + shellQuote(proxyContainerName) + " " + k.deployCommand(target)
+	deploy := "docker exec " + shellQuote(proxyContainerName) + " " + k.deployCommand(target)
+	command := deploy +
+		` && mkdir -p "$HOME"/` + shellQuote(RoutesDir) +
+		` && printf '%s\n' ` + shellQuote(deploy) + " > " + routeFile(target.Service)
 	_, err := k.client.Run(ctx, host, command)
 	return err
 }
 
 func (k *KamalProxy) Remove(ctx context.Context, host, service string) error {
-	_, err := k.client.Run(ctx, host, "docker exec "+shellQuote(proxyContainerName)+" kamal-proxy remove "+shellQuote(service))
+	_, err := k.client.Run(ctx, host, "docker exec "+shellQuote(proxyContainerName)+" kamal-proxy remove "+shellQuote(service)+" && rm -f "+routeFile(service))
 	return err
+}
+
+// RoutesDir is where Deploy records each service's last accepted
+// kamal-proxy deploy command on the proxy host, relative to the SSH
+// user's $HOME. kamal-proxy reads a cert file only when a route is
+// deployed and never re-reads it, so cert renewal replays these to serve
+// a renewed cert: re-deploying a route swaps it in place without dropping
+// a request, and a cert that fails to load leaves the old route serving.
+const RoutesDir = ".qifa/proxy-routes"
+
+func routeFile(service string) string {
+	return `"$HOME"/` + shellQuote(RoutesDir+"/"+service+".sh")
+}
+
+// ReregisterCert replays the recorded deploy command of every route on
+// host that serves certHost's qifa-managed cert. It returns the services
+// re-registered — none means no recorded route uses the cert — and an
+// error naming every replay that failed.
+func ReregisterCert(ctx context.Context, client *ssh.Client, host, certHost string) ([]string, error) {
+	certPath, _ := QifaCertPaths(certHost)
+	out, err := client.Run(ctx, host, "grep -l -F -- "+shellQuote(certPath)+` "$HOME"/`+shellQuote(RoutesDir)+"/*.sh 2>/dev/null || true")
+	if err != nil {
+		return nil, fmt.Errorf("find routes using %s on %s: %w", certHost, host, err)
+	}
+	var services, failed []string
+	for _, file := range strings.Fields(out) {
+		service := strings.TrimSuffix(file[strings.LastIndex(file, "/")+1:], ".sh")
+		if _, err := client.Run(ctx, host, "sh "+shellQuote(file)); err != nil {
+			failed = append(failed, fmt.Sprintf("%s (%v)", service, err))
+			continue
+		}
+		services = append(services, service)
+	}
+	if len(failed) > 0 {
+		return services, fmt.Errorf("re-register for %s failed: %s", certHost, strings.Join(failed, "; "))
+	}
+	return services, nil
 }
 
 // Stop puts the service into maintenance mode: kamal-proxy returns the

@@ -254,12 +254,22 @@ prints `host <TAB> days-left <TAB> SANs`.
 
 kamal-proxy reads the certificate files when a route is deployed and
 does **not** watch them afterwards, so a renewed cert on disk changes
-nothing on the wire. Restart the proxy (`docker restart kamal-proxy`,
-or `qifa proxy restart`) or redeploy the affected app.
+nothing on the wire.
 
-This is worth automating together: renewing without restarting looks
-entirely successful — clean lego output, fresh files, zero errors —
-while clients keep getting the expired cert.
+`qifa cert renew` handles this: every `qifa deploy` records the exact
+`kamal-proxy deploy` command under `~/.qifa/proxy-routes/` on the proxy
+host, and a renewal replays the ones that use the renewed cert.
+Re-registering a route swaps it in place without dropping a request.
+
+If renewal reports `no recorded route serves <host>`, the app was last
+deployed by a qifa that didn't record routes: run `qifa deploy` for it
+once. To serve a renewed cert by hand right now, redeploy the app, or
+`docker restart kamal-proxy` on the proxy host (sub-second outage for
+every app on it, and open connections are cut).
+
+Renewing without serving looks entirely successful — clean lego
+output, fresh files, zero errors — while clients keep getting the
+expired cert.
 
 ## Cert issuance failure: `Could not validate ARI 'replaces' field`
 

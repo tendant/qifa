@@ -280,3 +280,17 @@ func TestParseCertListEmpty(t *testing.T) {
 		t.Fatalf("parseCertList(blank) = %v, want nil", got)
 	}
 }
+
+func TestCertChanged(t *testing.T) {
+	expiry := time.Date(2026, 12, 1, 0, 0, 0, 0, time.UTC)
+	prev := &CertInfo{Host: "app.example.com", NotAfter: expiry}
+	if certChanged(prev, CertInfo{NotAfter: expiry}) {
+		t.Fatal("same expiry reported as changed; nothing was due, the proxy would restart for nothing")
+	}
+	if !certChanged(prev, CertInfo{NotAfter: expiry.AddDate(0, 0, 90)}) {
+		t.Fatal("new expiry not reported as changed; the renewed cert would never be served")
+	}
+	if !certChanged(nil, CertInfo{NotAfter: expiry}) {
+		t.Fatal("cert with no readable predecessor not reported as changed")
+	}
+}

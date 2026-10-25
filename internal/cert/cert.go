@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"github.com/tendant/qifa/internal/dockererr"
+	"github.com/tendant/qifa/internal/proxy"
 	"github.com/tendant/qifa/internal/ssh"
 )
 
@@ -166,32 +167,59 @@ func (m *Manager) Issue(ctx context.Context, opts IssueOptions) error {
 	return m.runLego(ctx, opts, nil)
 }
 
-// Renew refreshes a cert if it's within `days` of expiring. Returns
-// without error if the cert isn't due for renewal yet.
+// Renew refreshes a cert if it's within `days` of expiring, and reports
+// whether the cert on disk changed. Returns (false, nil) if the cert
+// isn't due for renewal yet.
 //
 // lego v5 has no `renew` subcommand — `run` is get-or-renew, and decides
 // from --renew-days whether the cert on disk is due. An already-expired
 // cert has negative time remaining, so it always renews.
-func (m *Manager) Renew(ctx context.Context, opts IssueOptions, days int) error {
+func (m *Manager) Renew(ctx context.Context, opts IssueOptions, days int) (bool, error) {
+	before, err := m.CertInfo(ctx, opts.Host)
+	var prev *CertInfo
+	if err == nil {
+		prev = &before
+	}
+	return m.renew(ctx, opts, days, prev)
+}
+
+// renew runs lego for one cert and compares the cert on disk against
+// prev (nil when there was no readable cert before).
+func (m *Manager) renew(ctx context.Context, opts IssueOptions, days int, prev *CertInfo) (bool, error) {
 	extra := []string{}
 	if days > 0 {
 		extra = append(extra, "--renew-days", fmt.Sprintf("%d", days))
 	}
-	return m.runLego(ctx, opts, extra)
+	if err := m.runLego(ctx, opts, extra); err != nil {
+		return false, err
+	}
+	after, err := m.CertInfo(ctx, opts.Host)
+	if err != nil {
+		return false, fmt.Errorf("lego succeeded but the cert can't be read back: %w", err)
+	}
+	return certChanged(prev, after), nil
+}
+
+// certChanged reports whether a renewal replaced the cert. lego leaves
+// the files untouched when nothing is due, so an unchanged expiry means
+// an unchanged cert.
+func certChanged(prev *CertInfo, after CertInfo) bool {
+	return prev == nil || !prev.NotAfter.Equal(after.NotAfter)
 }
 
 // RenewAll iterates every cert currently in the proxy volume and runs
 // Renew on each, preserving each cert's existing SAN list. Continues
 // past failures so one bad cert can't block the others, and returns an
-// error naming every host that failed.
-func (m *Manager) RenewAll(ctx context.Context, opts IssueOptions, days int) error {
+// error naming every host that failed. renewed lists the hosts whose
+// cert changed, including when other hosts failed.
+func (m *Manager) RenewAll(ctx context.Context, opts IssueOptions, days int) (renewed []string, err error) {
 	hosts, err := m.List(ctx)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if len(hosts) == 0 {
 		fmt.Fprintln(m.out, "no certs to renew")
-		return nil
+		return nil, nil
 	}
 	var failed []string
 	for _, h := range hosts {
@@ -200,7 +228,7 @@ func (m *Manager) RenewAll(ctx context.Context, opts IssueOptions, days int) err
 		// looks single-name here. Recover the SANs from the cert on
 		// disk — reissuing without them silently shrinks the cert and
 		// breaks TLS on every host but the first.
-		names, err := m.CertNames(ctx, h)
+		before, err := m.CertInfo(ctx, h)
 		if err != nil {
 			failed = append(failed, h)
 			fmt.Fprintf(m.out, "  (skipped %s: can't read its current SANs: %v)\n", h, err)
@@ -208,20 +236,43 @@ func (m *Manager) RenewAll(ctx context.Context, opts IssueOptions, days int) err
 		}
 		hostOpts := opts
 		hostOpts.Host = h
-		hostOpts.ExtraHosts = sanExtras(h, names)
-		if err := m.Renew(ctx, hostOpts, days); err != nil {
+		hostOpts.ExtraHosts = sanExtras(h, before.DNSNames)
+		changed, err := m.renew(ctx, hostOpts, days, &before)
+		if err != nil {
 			failed = append(failed, h)
 			fmt.Fprintf(m.out, "  (renew failed for %s: %v — continuing)\n", h, err)
+			continue
+		}
+		if changed {
+			renewed = append(renewed, h)
 		}
 	}
-	fmt.Fprintf(m.out, "\n%d/%d certs ok", len(hosts)-len(failed), len(hosts))
+	fmt.Fprintf(m.out, "\n%d/%d certs ok, %d renewed", len(hosts)-len(failed), len(hosts), len(renewed))
 	if len(failed) > 0 {
 		// Name every failure on the last line: for an unattended run
 		// this is what a human reads out of the log.
 		fmt.Fprintf(m.out, ", %d failed: %s\n", len(failed), strings.Join(failed, " "))
-		return fmt.Errorf("%d of %d certs failed: %s", len(failed), len(hosts), strings.Join(failed, " "))
+		return renewed, fmt.Errorf("%d of %d certs failed: %s", len(failed), len(hosts), strings.Join(failed, " "))
 	}
 	fmt.Fprintln(m.out)
+	return renewed, nil
+}
+
+// ServeRenewed makes kamal-proxy serve the renewed cert for host by
+// re-registering every route that uses it (see proxy.RoutesDir). Without
+// this a renewal changes nothing on the wire: kamal-proxy reads a cert
+// only when a route is deployed.
+func (m *Manager) ServeRenewed(ctx context.Context, host string) error {
+	services, err := proxy.ReregisterCert(ctx, m.ssh, m.proxyHost, host)
+	for _, s := range services {
+		fmt.Fprintf(m.out, "  re-registered %s to serve the renewed %s cert\n", s, host)
+	}
+	if err != nil {
+		return err
+	}
+	if len(services) == 0 {
+		return fmt.Errorf("no recorded route serves %s — run 'qifa deploy' for its app once (this qifa records routes on deploy) so renewals can re-register it", host)
+	}
 	return nil
 }
 
@@ -242,15 +293,6 @@ type CertInfo struct {
 // an already-dead cert as if it still had the day left.
 func (c CertInfo) DaysLeft(now time.Time) int {
 	return int(math.Floor(c.NotAfter.Sub(now).Hours() / 24))
-}
-
-// CertNames returns the DNS SANs of the cert currently stored for host.
-func (m *Manager) CertNames(ctx context.Context, host string) ([]string, error) {
-	info, err := m.CertInfo(ctx, host)
-	if err != nil {
-		return nil, err
-	}
-	return info.DNSNames, nil
 }
 
 // CertInfo reads the cert stored for host and reports its expiry and

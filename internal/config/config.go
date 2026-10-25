@@ -178,8 +178,8 @@ type Proxy struct {
 //	        for public hosts.
 //	qifa:   qifa-issued via lego. DNS-01 by default (works for
 //	        tailscale-private hosts and wildcards). Renewed by
-//	        `qifa cert renew`; affected apps must be redeployed for
-//	        kamal-proxy to pick up the new cert.
+//	        `qifa cert renew`, which re-registers the routes using a
+//	        renewed cert so kamal-proxy picks it up without downtime.
 //	static: BYO. User owns acquisition and renewal entirely; qifa
 //	        just plumbs paths to kamal-proxy.
 type TLS struct {

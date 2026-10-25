@@ -90,7 +90,15 @@ scheduled renewal can select due hosts without parsing certs in shell.
 
 "cert renew --all" recovers each cert's existing SANs from the cert on
 disk, so multi-domain certs keep every name. A host whose current cert
-can't be read is skipped rather than reissued single-name.`)
+can't be read is skipped rather than reissued single-name.
+
+"cert renew" re-registers every route that uses a renewed cert, because
+kamal-proxy reads certs only when a route is deployed and never re-reads
+the files. Re-registering swaps the route in place without dropping a
+request; a cert that fails to load leaves the old route serving. Routes
+are recorded on each "qifa deploy", so an app last deployed by an older
+qifa needs one deploy before its renewals can be served. Nothing changed
+means nothing is touched, so it is safe to run daily.`)
 }
 
 type certFlags struct {
@@ -260,13 +268,15 @@ func runCertRenew(ctx context.Context, args []string, stdout, stderr io.Writer, 
 		if f.email == "" {
 			return errors.New("--email is required with --all")
 		}
-		return mgr.RenewAll(ctx, cert.IssueOptions{
+		renewed, renewErr := mgr.RenewAll(ctx, cert.IssueOptions{
 			Email:     f.email,
 			Provider:  f.provider,
 			Staging:   f.staging,
 			EnvVars:   envVars,
 			Resolvers: f.resolvers,
 		}, days)
+		// Serve whatever did renew even when other certs failed.
+		return errors.Join(renewErr, serveRenewed(ctx, mgr, renewed))
 	}
 	if f.host() == "" {
 		return errors.New("usage: qifa cert renew <host> [extra-host ...] [--renew-days N] [--dns-resolvers host:port[,host:port...]]   (or: qifa cert renew --all ...)")
@@ -277,7 +287,7 @@ func runCertRenew(ctx context.Context, args []string, stdout, stderr io.Writer, 
 	if f.email == "" {
 		return errors.New("--email is required")
 	}
-	return mgr.Renew(ctx, cert.IssueOptions{
+	changed, err := mgr.Renew(ctx, cert.IssueOptions{
 		Host:       f.host(),
 		ExtraHosts: f.extraHosts(),
 		Email:      f.email,
@@ -286,6 +296,20 @@ func runCertRenew(ctx context.Context, args []string, stdout, stderr io.Writer, 
 		EnvVars:    envVars,
 		Resolvers:  f.resolvers,
 	}, days)
+	if err != nil || !changed {
+		return err
+	}
+	return serveRenewed(ctx, mgr, []string{f.host()})
+}
+
+// serveRenewed re-registers the routes of every renewed cert so
+// kamal-proxy serves it, and names every cert left unserved.
+func serveRenewed(ctx context.Context, mgr *cert.Manager, hosts []string) error {
+	var errs []error
+	for _, h := range hosts {
+		errs = append(errs, mgr.ServeRenewed(ctx, h))
+	}
+	return errors.Join(errs...)
 }
 
 func runCertList(ctx context.Context, args []string, stdout, stderr io.Writer, configFile string) error {
