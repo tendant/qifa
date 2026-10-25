@@ -7,11 +7,13 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/tendant/qifa/internal/cert"
 	"github.com/tendant/qifa/internal/config"
+	"github.com/tendant/qifa/internal/proxy"
 	"github.com/tendant/qifa/internal/ssh"
 )
 
@@ -59,8 +61,9 @@ func runCert(ctx context.Context, args []string, stdout, stderr io.Writer, confi
 func certUsageError() error {
 	return errors.New(`usage:
   qifa cert issue  <host> [extra-host ...] --provider <name> --email <addr> [--staging] [--env-file <path>] [--dns-resolvers host:port[,host:port...]] [--lego-image <ref>]
-  qifa cert renew  <host> [extra-host ...] [--renew-days N]
-  qifa cert renew  --all  --provider <name> --email <addr> [--renew-days N] [--env-file <path>] [--dns-resolvers host:port[,host:port...]] [--lego-image <ref>]
+  qifa cert renew  --email <addr> [--provider <name>] [--renew-days N]
+  qifa cert renew  <host> [extra-host ...] --email <addr> [--provider <name>] [--renew-days N]
+  qifa cert renew  --all  --email <addr> [--provider <name>] [--renew-days N] [--env-file <path>] [--dns-resolvers host:port[,host:port...]] [--lego-image <ref>]
   qifa cert list   [--expiry]
   qifa cert remove <host>
 
@@ -92,13 +95,18 @@ scheduled renewal can select due hosts without parsing certs in shell.
 disk, so multi-domain certs keep every name. A host whose current cert
 can't be read is skipped rather than reissued single-name.
 
-"cert renew" re-registers every route that uses a renewed cert, because
+"cert renew" with no host renews this app's own cert (proxy.host plus
+any proxy.hosts as SANs; provider from proxy.tls.provider), then, if it
+changed, re-registers this app's running containers with kamal-proxy.
 kamal-proxy reads certs only when a route is deployed and never re-reads
-the files. Re-registering swaps the route in place without dropping a
-request; a cert that fails to load leaves the old route serving. Routes
-are recorded on each "qifa deploy", so an app last deployed by an older
-qifa needs one deploy before its renewals can be served. Nothing changed
-means nothing is touched, so it is safe to run daily.`)
+the files; re-registering swaps the route in place without dropping a
+request, and a cert that fails to load leaves the old route serving.
+Nothing changed means nothing is touched, so it is safe to run daily —
+one line per app, each with its own qifa.yaml.
+
+"cert renew --all" renews every cert on the proxy host but can only
+serve this app's; other renewed certs are reported as an error until
+"qifa -c <their qifa.yaml> start" re-registers them.`)
 }
 
 type certFlags struct {
@@ -247,6 +255,32 @@ func runCertRenew(ctx context.Context, args []string, stdout, stderr io.Writer, 
 	if err != nil {
 		return err
 	}
+	// Resolve once: newCertManager and withRuntime each chdir to the
+	// config's directory, and an absolute path keeps that idempotent.
+	configFile, err = useConfigDir(configFile)
+	if err != nil {
+		return err
+	}
+	cfg, err := config.Load(configFile)
+	if err != nil {
+		return err
+	}
+	// The app's own cert: what a bare `cert renew` renews, and the only
+	// one whose route this config can re-register.
+	appCert := ""
+	if cfg.Proxy.SSL && cfg.Proxy.TLS != nil && cfg.Proxy.TLS.Source == "qifa" {
+		appCert = proxy.PrimaryHost(cfg.Proxy)
+		if f.provider == "" {
+			f.provider = cfg.Proxy.TLS.Provider
+		}
+	}
+	if f.provider == "" {
+		return errors.New("--provider is required (or set proxy.tls.provider)")
+	}
+	// Each renewal is its own ACME interaction.
+	if f.email == "" {
+		return errors.New("--email is required")
+	}
 	mgr, err := newCertManager(stdout, configFile, f.legoImage)
 	if err != nil {
 		return err
@@ -259,55 +293,76 @@ func runCertRenew(ctx context.Context, args []string, stdout, stderr io.Writer, 
 	if days == 0 {
 		days = 30
 	}
+	opts := cert.IssueOptions{
+		Email:     f.email,
+		Provider:  f.provider,
+		Staging:   f.staging,
+		EnvVars:   envVars,
+		Resolvers: f.resolvers,
+	}
+	var renewed []string
+	var renewErr error
 	if f.all {
-		// `renew --all` requires email and provider just like issue,
-		// since each renewal is its own ACME interaction.
-		if f.provider == "" {
-			return errors.New("--provider is required with --all")
+		renewed, renewErr = mgr.RenewAll(ctx, opts, days)
+	} else {
+		opts.Host, opts.ExtraHosts = f.host(), f.extraHosts()
+		if opts.Host == "" {
+			if appCert == "" {
+				return errors.New("usage: qifa cert renew [<host> [extra-host ...] | --all] — with no host, renews this app's cert, which needs proxy.ssl: true and proxy.tls.source: qifa")
+			}
+			opts.Host, opts.ExtraHosts = appCert, appSANs(appCert, cfg.Proxy)
 		}
-		if f.email == "" {
-			return errors.New("--email is required with --all")
+		changed, err := mgr.Renew(ctx, opts, days)
+		if err != nil {
+			return err
 		}
-		renewed, renewErr := mgr.RenewAll(ctx, cert.IssueOptions{
-			Email:     f.email,
-			Provider:  f.provider,
-			Staging:   f.staging,
-			EnvVars:   envVars,
-			Resolvers: f.resolvers,
-		}, days)
-		// Serve whatever did renew even when other certs failed.
-		return errors.Join(renewErr, serveRenewed(ctx, mgr, renewed))
+		if changed {
+			renewed = []string{opts.Host}
+		}
 	}
-	if f.host() == "" {
-		return errors.New("usage: qifa cert renew <host> [extra-host ...] [--renew-days N] [--dns-resolvers host:port[,host:port...]]   (or: qifa cert renew --all ...)")
-	}
-	if f.provider == "" {
-		return errors.New("--provider is required")
-	}
-	if f.email == "" {
-		return errors.New("--email is required")
-	}
-	changed, err := mgr.Renew(ctx, cert.IssueOptions{
-		Host:       f.host(),
-		ExtraHosts: f.extraHosts(),
-		Email:      f.email,
-		Provider:   f.provider,
-		Staging:    f.staging,
-		EnvVars:    envVars,
-		Resolvers:  f.resolvers,
-	}, days)
-	if err != nil || !changed {
-		return err
-	}
-	return serveRenewed(ctx, mgr, []string{f.host()})
+	// Serve whatever did renew even when other certs failed.
+	return errors.Join(renewErr, serveRenewed(ctx, stdout, stderr, configFile, appCert, renewed))
 }
 
-// serveRenewed re-registers the routes of every renewed cert so
-// kamal-proxy serves it, and names every cert left unserved.
-func serveRenewed(ctx context.Context, mgr *cert.Manager, hosts []string) error {
+// appSANs returns the app's proxy hostnames other than primary: the
+// SANs its cert must carry so every host it answers on gets valid TLS.
+func appSANs(primary string, p config.Proxy) []string {
+	var extras []string
+	for _, h := range append([]string{p.Host}, p.Hosts...) {
+		if h != "" && h != primary && !slices.Contains(extras, h) {
+			extras = append(extras, h)
+		}
+	}
+	return extras
+}
+
+// serveRenewed makes kamal-proxy serve renewed certs. It reads a cert only
+// when a route is deployed, so this re-registers the config's app — rebuilt
+// from qifa.yaml and the running containers' labels, with no state kept
+// anywhere. A renewed cert of another app can only be served from that
+// app's config, so those are named in the error rather than left silent.
+func serveRenewed(ctx context.Context, stdout, stderr io.Writer, configFile, appCert string, renewed []string) error {
+	if len(renewed) == 0 {
+		fmt.Fprintln(stdout, "no cert changed; nothing to re-register")
+		return nil
+	}
 	var errs []error
-	for _, h := range hosts {
-		errs = append(errs, mgr.ServeRenewed(ctx, h))
+	var others []string
+	for _, h := range renewed {
+		if h != appCert {
+			others = append(others, h)
+			continue
+		}
+		errs = append(errs, withRuntime(ctx, stdout, stderr, configFile, func(rt *runtime) error {
+			n, err := rt.deployer.ReregisterProxy(ctx)
+			if err == nil && n == 0 {
+				fmt.Fprintf(stdout, "renewed %s, but no running container to re-register; the next deploy or start serves it\n", h)
+			}
+			return err
+		}))
+	}
+	if len(others) > 0 {
+		errs = append(errs, fmt.Errorf("renewed but not served yet (kamal-proxy reads certs only when a route is deployed): %s — run 'qifa -c <its qifa.yaml> start' for each app, which re-registers without downtime", strings.Join(others, " ")))
 	}
 	return errors.Join(errs...)
 }

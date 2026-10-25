@@ -3,6 +3,8 @@ package app
 import (
 	"reflect"
 	"testing"
+
+	"github.com/tendant/qifa/internal/config"
 )
 
 func TestParseCertFlagsDNSResolversSingleFlagCommaSeparated(t *testing.T) {
@@ -95,5 +97,15 @@ func TestResolveLegoImageEmptyMeansPackageDefault(t *testing.T) {
 	t.Setenv("QIFA_LEGO_IMAGE", "")
 	if got := resolveLegoImage(""); got != "" {
 		t.Fatalf("resolveLegoImage = %q, want empty", got)
+	}
+}
+
+func TestAppSANs(t *testing.T) {
+	p := config.Proxy{Host: "app.example.com", Hosts: []string{"www.example.com", "app.example.com", "www.example.com"}}
+	if got := appSANs("app.example.com", p); !reflect.DeepEqual(got, []string{"www.example.com"}) {
+		t.Fatalf("appSANs = %v, want [www.example.com]", got)
+	}
+	if got := appSANs("app.example.com", config.Proxy{Host: "app.example.com"}); got != nil {
+		t.Fatalf("appSANs(single host) = %v, want nil", got)
 	}
 }

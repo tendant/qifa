@@ -1495,3 +1495,48 @@ func readIfExists(path string) string {
 	}
 	return string(data)
 }
+
+func TestReregisterProxyRedeploysRoutesWithoutStartingContainers(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	env := newIntegrationEnv(t)
+	cfg := env.config(t, config.BuilderHostPerTarget, "local", "testapp", config.Registry{})
+	store, err := state.NewStore(filepath.Join(env.root, ".qifa", "state.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	deployer, err := New(cfg, store, &stdout, &stderr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := deployer.ProxyBoot(ctx); err != nil {
+		t.Fatalf("proxy boot failed: %v", err)
+	}
+	if err := deployer.Deploy(ctx); err != nil {
+		t.Fatalf("deploy failed: %v\ndocker calls:\n%s", err, readIfExists(filepath.Join(env.stateDir, "docker_calls.log")))
+	}
+	for _, log := range []string{"docker_calls.log", "proxy_calls.log"} {
+		if err := os.Truncate(filepath.Join(env.stateDir, log), 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	n, err := deployer.ReregisterProxy(ctx)
+	if err != nil {
+		t.Fatalf("ReregisterProxy: %v\nstderr:\n%s", err, stderr.String())
+	}
+	if n != 1 {
+		t.Fatalf("re-registered %d routes, want 1 (the proxied web role only)", n)
+	}
+	if proxyCalls := readIfExists(filepath.Join(env.stateDir, "proxy_calls.log")); !strings.Contains(proxyCalls, "deploy") {
+		t.Fatalf("expected a kamal-proxy deploy, got %q", proxyCalls)
+	}
+	dockerCalls := readIfExists(filepath.Join(env.stateDir, "docker_calls.log"))
+	for _, rejected := range []string{"run ", "start ", "stop ", "restart "} {
+		if strings.Contains(dockerCalls, rejected) {
+			t.Fatalf("re-registering must not touch containers, got docker call %q in %q", rejected, dockerCalls)
+		}
+	}
+}

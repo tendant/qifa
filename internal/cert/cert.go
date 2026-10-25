@@ -28,7 +28,6 @@ import (
 	"time"
 
 	"github.com/tendant/qifa/internal/dockererr"
-	"github.com/tendant/qifa/internal/proxy"
 	"github.com/tendant/qifa/internal/ssh"
 )
 
@@ -256,24 +255,6 @@ func (m *Manager) RenewAll(ctx context.Context, opts IssueOptions, days int) (re
 	}
 	fmt.Fprintln(m.out)
 	return renewed, nil
-}
-
-// ServeRenewed makes kamal-proxy serve the renewed cert for host by
-// re-registering every route that uses it (see proxy.RoutesDir). Without
-// this a renewal changes nothing on the wire: kamal-proxy reads a cert
-// only when a route is deployed.
-func (m *Manager) ServeRenewed(ctx context.Context, host string) error {
-	services, err := proxy.ReregisterCert(ctx, m.ssh, m.proxyHost, host)
-	for _, s := range services {
-		fmt.Fprintf(m.out, "  re-registered %s to serve the renewed %s cert\n", s, host)
-	}
-	if err != nil {
-		return err
-	}
-	if len(services) == 0 {
-		return fmt.Errorf("no recorded route serves %s — run 'qifa deploy' for its app once (this qifa records routes on deploy) so renewals can re-register it", host)
-	}
-	return nil
 }
 
 // CertInfo describes one cert stored in the proxy volume.

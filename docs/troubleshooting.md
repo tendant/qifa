@@ -256,16 +256,17 @@ kamal-proxy reads the certificate files when a route is deployed and
 does **not** watch them afterwards, so a renewed cert on disk changes
 nothing on the wire.
 
-`qifa cert renew` handles this: every `qifa deploy` records the exact
-`kamal-proxy deploy` command under `~/.qifa/proxy-routes/` on the proxy
-host, and a renewal replays the ones that use the renewed cert.
-Re-registering a route swaps it in place without dropping a request.
+`qifa -c <app>/qifa.yaml cert renew` handles this: when the app's cert
+changed, it re-registers the app's running containers, rebuilt from
+that `qifa.yaml` and the containers' labels. Re-registering swaps the
+route in place without dropping a request. Schedule it once per app.
 
-If renewal reports `no recorded route serves <host>`, the app was last
-deployed by a qifa that didn't record routes: run `qifa deploy` for it
-once. To serve a renewed cert by hand right now, redeploy the app, or
-`docker restart kamal-proxy` on the proxy host (sub-second outage for
-every app on it, and open connections are cut).
+`cert renew --all` renews every cert on the host but only serves the
+app whose config it was given; it names the others. To serve any
+renewed cert by hand, run `qifa -c <its qifa.yaml> start`, which
+re-registers without downtime. Avoid `docker restart kamal-proxy`: it
+refuses connections briefly for every app on the host and cuts open
+ones.
 
 Renewing without serving looks entirely successful — clean lego
 output, fresh files, zero errors — while clients keep getting the

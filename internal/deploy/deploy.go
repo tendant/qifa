@@ -675,6 +675,39 @@ func (d *Deployer) Start(ctx context.Context) error {
 	return nil
 }
 
+// ReregisterProxy re-registers every running proxied container with
+// kamal-proxy, as Start does, without starting anything. kamal-proxy
+// reads a route's TLS cert only when the route is deployed, so this is
+// how a renewed cert gets served: the route is swapped in place without
+// dropping a request, and a cert that fails to load leaves the old route
+// serving. Returns how many routes it re-registered.
+func (d *Deployer) ReregisterProxy(ctx context.Context) (int, error) {
+	n := 0
+	for _, role := range orderedRoles(d.cfg.Servers) {
+		server := d.cfg.Servers[role]
+		if !serverUsesProxy(role, server) {
+			continue
+		}
+		appPort := d.appPort(role, server)
+		for _, host := range server.Hosts {
+			containers, err := d.remoteDocker.ListContainersByService(ctx, host, d.cfg.Service, role)
+			if err != nil {
+				return n, err
+			}
+			if len(containers) == 0 || containers[0].State != "running" {
+				d.log.Printf("no running %s/%s container on %s; not re-registered", d.cfg.Service, role, host)
+				continue
+			}
+			if err := d.proxy.Deploy(ctx, host, proxy.Target{Service: d.cfg.Service, Host: containers[0].Name, Port: appPort}); err != nil {
+				return n, err
+			}
+			d.log.Printf("re-registered %s on %s", containers[0].Name, host)
+			n++
+		}
+	}
+	return n, nil
+}
+
 func (d *Deployer) Restart(ctx context.Context) error {
 	// Push any local file edits before bouncing the container so it picks
 	// them up on the way back up. SyncFiles is a no-op when files: is empty.
