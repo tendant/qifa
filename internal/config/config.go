@@ -368,8 +368,13 @@ type Accessory struct {
 	Host    string            `yaml:"host"`
 	Volumes []string          `yaml:"volumes"`
 	Env     map[string]string `yaml:"env"`
-	Port    int               `yaml:"port"`     // host port to publish
-	AppPort int               `yaml:"app_port"` // container port to publish
+	// SecretCommand works like env.secret_command, for this accessory only:
+	// run on the deployer at boot, its KEY=VALUE output is merged over Env.
+	// Accessory env is plaintext in the config, so a database password
+	// belongs here (sops --decrypt postgres.sops.env), not in Env.
+	SecretCommand string `yaml:"secret_command"`
+	Port          int    `yaml:"port"`     // host port to publish
+	AppPort       int    `yaml:"app_port"` // container port to publish
 
 	// Cmd replaces the image's default command, exactly as servers.<role>.cmd
 	// does for the app. Accessories are the only way to run a second image

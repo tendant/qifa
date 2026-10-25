@@ -1638,7 +1638,7 @@ func (d *Deployer) AccessoryBoot(ctx context.Context, name string) error {
 	if err := d.remoteDocker.StopAndRemove(ctx, accessory.Host, containerName); err != nil {
 		return err
 	}
-	envFile, err := secrets.Render(accessory.Env, nil, "")
+	envFile, err := secrets.Render(accessory.Env, nil, accessory.SecretCommand)
 	if err != nil {
 		return err
 	}

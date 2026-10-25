@@ -327,6 +327,19 @@ wins on collision):
    `KEY=VALUE` lines. Works with SOPS (`sops --decrypt`), Vault, 1Password
    (`op inject`), AWS Secrets Manager, anything that prints dotenv format.
 
+Accessories take `env` (cleartext) and their own `secret_command`, merged the
+same way, so a database password stays out of the config:
+
+```yaml
+accessories:
+  postgres:
+    image: postgres:16
+    host: 10.0.0.11
+    env:
+      POSTGRES_USER: app
+    secret_command: sops --decrypt postgres.sops.env   # POSTGRES_PASSWORD=...
+```
+
 ## Deploying From More Than One Machine
 
 qifa keeps no authoritative state on the deployer — the containers' `qifa.*`

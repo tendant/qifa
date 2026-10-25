@@ -509,6 +509,50 @@ func TestAccessoryBootPassesCmdToDockerRun(t *testing.T) {
 	}
 }
 
+// Accessory env is plaintext in the config, so a database password has to come
+// from somewhere else. secret_command output reaches the accessory's env file,
+// merged over env.
+func TestAccessoryBootMergesSecretCommand(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	env := newIntegrationEnv(t)
+	cfg := env.config(t, config.BuilderHostPerTarget, "local", "testapp", config.Registry{})
+	redis := cfg.Accessories["redis"]
+	redis.Env = map[string]string{"MODE": "cache", "REDIS_PASSWORD": "from-env"}
+	redis.SecretCommand = "printf 'REDIS_PASSWORD=from-secret\\n'"
+	cfg.Accessories["redis"] = redis
+
+	store, err := state.NewStore(filepath.Join(env.root, ".qifa", "state.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	deployer, err := New(cfg, store, &stdout, &stderr)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := deployer.AccessoryBoot(ctx, "redis"); err != nil {
+		t.Fatalf("accessory boot: %v", err)
+	}
+
+	container := readIfExists(filepath.Join(env.stateDir, "containers", "testapp-accessory-redis"))
+	var envFile string
+	for _, line := range strings.Split(container, "\n") {
+		if v, ok := strings.CutPrefix(line, "envfile="); ok {
+			envFile = v
+		}
+	}
+	if envFile == "" {
+		t.Fatalf("docker run got no --env-file:\n%s", container)
+	}
+	got := readIfExists(envFile)
+	if got != "MODE=cache\nREDIS_PASSWORD=from-secret\n" {
+		t.Fatalf("accessory env file = %q, want env merged with secret_command output", got)
+	}
+}
+
 // An accessory that mounts a file from files: must find a file there. Docker
 // creates a missing bind-mount source as a directory, so booting before the
 // sync leaves a directory where a config belongs and the container crash-loops
