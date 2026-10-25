@@ -32,7 +32,7 @@ anywhere on `$PATH`.
 
 ```bash
 qifa init       # writes a starter qifa.yaml
-qifa config     # show the loaded config (defaults applied)
+qifa config     # validate and show the loaded config (unknown keys are errors)
 qifa deploy     # build, ship, healthcheck, switch traffic
 qifa logs -f    # tail the running container
 qifa rollback   # roll back to the previous version
@@ -210,7 +210,7 @@ proxy's public port.
 ```text
 qifa init [path]                 # write a starter qifa.yaml
 qifa version                     # build version + commit
-qifa config                      # print loaded+defaulted config
+qifa config                      # validate (unknown keys are errors), print loaded+defaulted config
 
 qifa deploy [--dry-run]          # build, ship, switch, prune
   [--version <v>] [--allow-dirty] # pin the version instead of deriving it from git

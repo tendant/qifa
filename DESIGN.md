@@ -103,11 +103,16 @@ servers:
     cmd: ./worker
     proxy: false        # workers don't go behind the proxy
 
+proxy_boot:
+  hosts:
+    - 10.0.0.11
+    - 10.0.0.12
+  http_port: 80
+  https_port: 443
+
 proxy:
   host: app.example.com
   app_port: 3000
-  http_port: 80
-  https_port: 443
   healthcheck:
     path: /up
     interval: 2s

@@ -45,6 +45,37 @@ func TestLoadConfig(t *testing.T) {
 	}
 }
 
+func TestLoadRejectsUnknownKeys(t *testing.T) {
+	cases := map[string]string{
+		"top level": "service: myapp\nimage: myapp\nservers:\n  web:\n    hosts: [10.0.0.11]\nregistery:\n  server: r.example.com\n",
+		"nested":    "service: myapp\nimage: myapp\nservers:\n  web:\n    hosts: [10.0.0.11]\n    app_prot: 3000\n",
+		"deep":      "service: myapp\nimage: myapp\nservers:\n  web:\n    hosts: [10.0.0.11]\nproxy:\n  host: app.example.com\n  healthcheck:\n    pth: /up\n",
+	}
+	for name, body := range cases {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "qifa.yaml")
+			if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			_, err := Load(path)
+			if err == nil || !strings.Contains(err.Error(), "not found in type") {
+				t.Fatalf("expected unknown-field error, got %v", err)
+			}
+		})
+	}
+}
+
+func TestLoadEmptyFileFailsValidation(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "qifa.yaml")
+	if err := os.WriteFile(path, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Load(path)
+	if err == nil || !strings.Contains(err.Error(), "config.service is required") {
+		t.Fatalf("expected validation error for empty file, got %v", err)
+	}
+}
+
 func TestRolloutBatchSizeDefaults(t *testing.T) {
 	tests := []struct {
 		name string
