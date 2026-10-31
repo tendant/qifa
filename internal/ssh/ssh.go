@@ -259,13 +259,16 @@ func (c *Client) dial(host string) (*gossh.Client, error) {
 			return nil, err
 		}
 	}
+	addr := net.JoinHostPort(resolved.hostname, resolved.port)
 	clientCfg := &gossh.ClientConfig{
 		User:            resolved.user,
 		Auth:            authMethods,
 		HostKeyCallback: hostKeyCallback,
 		Timeout:         c.timeout,
 	}
-	addr := net.JoinHostPort(resolved.hostname, resolved.port)
+	if resolved.strictHostKeyChecking {
+		clientCfg.HostKeyAlgorithms = knownHostKeyAlgorithms(hostKeyCallback, addr)
+	}
 	conn, err := gossh.Dial("tcp", addr, clientCfg)
 	if err != nil {
 		return nil, dialError(resolved, addr, err)
@@ -495,6 +498,51 @@ func defaultKeySigners() ([]gossh.Signer, error) {
 		signers = append(signers, signer)
 	}
 	return signers, nil
+}
+
+// knownHostKeyAlgorithms returns the host key algorithms to offer for addr:
+// those of the keys known_hosts already has for it, as OpenSSH does. Without
+// this, Go prefers ECDSA, and a host known only by its ed25519 key fails with
+// "key mismatch" though ssh(1) connects fine. nil (the defaults) when the
+// host is not known.
+func knownHostKeyAlgorithms(cb gossh.HostKeyCallback, addr string) []string {
+	remote, err := net.ResolveTCPAddr("tcp", addr)
+	if err != nil {
+		return nil
+	}
+	var keyErr *knownhosts.KeyError
+	if err := cb(addr, remote, probeKey{}); !errors.As(err, &keyErr) {
+		return nil
+	}
+	seen := map[string]bool{}
+	var algos []string
+	add := func(names ...string) {
+		for _, n := range names {
+			if !seen[n] {
+				seen[n] = true
+				algos = append(algos, n)
+			}
+		}
+	}
+	for _, k := range keyErr.Want {
+		switch t := k.Key.Type(); t {
+		case gossh.KeyAlgoRSA:
+			add(gossh.KeyAlgoRSASHA512, gossh.KeyAlgoRSASHA256, gossh.KeyAlgoRSA)
+		default:
+			add(t)
+		}
+	}
+	return algos
+}
+
+// probeKey matches no known_hosts line, so checking it reports the keys
+// that are known for the host.
+type probeKey struct{}
+
+func (probeKey) Type() string    { return "qifa-probe" }
+func (probeKey) Marshal() []byte { return []byte("qifa-probe") }
+func (probeKey) Verify([]byte, *gossh.Signature) error {
+	return errors.New("probe key")
 }
 
 func knownHostsCallback(paths []string) (gossh.HostKeyCallback, error) {

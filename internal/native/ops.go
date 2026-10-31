@@ -27,11 +27,14 @@ type release struct {
 // inventory is what a host says about this service. It is the native
 // equivalent of listing labelled containers.
 type inventory struct {
-	Current  string // release ID, "" if none
-	Releases []release
-	Tmp      []string
-	Units    map[string]string // unit -> systemctl is-active
-	Health   string            // up / down / "" when not checked
+	Current string // release ID, "" if none
+	// Installed is the version last deployed of a program installed on the
+	// server (no releases).
+	Installed string
+	Releases  []release
+	Tmp       []string
+	Units     map[string]string // unit -> systemctl is-active
+	Health    string            // up / down / "" when not checked
 }
 
 func (inv inventory) find(id string) (release, bool) {
@@ -61,6 +64,8 @@ func parseInventory(out string) inventory {
 			st, _ := strconv.ParseInt(f[1], 10, 64)
 			ok, _ := strconv.ParseInt(f[2], 10, 64)
 			inv.Releases = append(inv.Releases, release{ID: f[0], Staged: st, Healthy: ok})
+		case "installed":
+			inv.Installed = v
 		case "tmp":
 			inv.Tmp = append(inv.Tmp, v)
 		case "unit":
@@ -123,6 +128,9 @@ func rollbackTarget(inv inventory) string {
 }
 
 func (d *Deployer) prune(ctx context.Context, host string) error {
+	if d.cfg.Native.Installed() {
+		return nil
+	}
 	inv, err := d.inventory(ctx, host, false)
 	if err != nil {
 		return err
@@ -141,6 +149,10 @@ func (d *Deployer) prune(ctx context.Context, host string) error {
 // env file as it is (today's config), as a Docker rollback does. A release
 // that fails its health check is reverted, like a failed deploy.
 func (d *Deployer) Rollback(ctx context.Context, version string) error {
+	if d.cfg.Native.Installed() {
+		return fmt.Errorf("nothing to roll back to: %s runs %s, installed on the server, and qifa keeps no releases of it (reinstall the earlier program, then `qifa restart`)",
+			d.cfg.Service, strings.Join(d.installedExecs(), ", "))
+	}
 	hosts := d.hosts()
 	locker := lock.New(d.ssh, d.cfg.Service, hosts)
 	if err := locker.Acquire(ctx, firstNonEmpty(version, "rollback")); err != nil {
@@ -247,11 +259,20 @@ func (d *Deployer) hostStatus(ctx context.Context, host string) fleet.HostStatus
 		h.Err = err
 		return h
 	}
+	installed := d.cfg.Native.Installed()
 	for _, role := range d.rolesOn(host) {
 		unit := d.cfg.NativeUnitName(role)
-		h.Roles = append(h.Roles, fleet.RoleStatus{Role: role, Version: inv.Current, State: inv.Units[unit], Name: unit})
+		v := inv.Current
+		if installed {
+			v = firstNonEmpty(inv.Installed, "-")
+		}
+		h.Roles = append(h.Roles, fleet.RoleStatus{Role: role, Version: v, State: inv.Units[unit], Name: unit})
 	}
 	h.Health = inv.Health
+	if installed {
+		h.Notes = append(h.Notes, fmt.Sprintf("runs %s, installed on the server (no releases to roll back to)", strings.Join(d.installedExecs(), ", ")))
+		return d.withRoute(ctx, host, h)
+	}
 	for _, r := range inv.Releases {
 		h.Versions = append(h.Versions, fleet.Version{Version: r.ID, Healthy: r.Healthy > 0})
 	}
@@ -264,6 +285,11 @@ func (d *Deployer) hostStatus(ctx context.Context, host string) fleet.HostStatus
 	if len(inv.Tmp) > 0 {
 		h.Notes = append(h.Notes, fmt.Sprintf("half-staged %s, removed by the next deploy", strings.Join(inv.Tmp, " ")))
 	}
+	return d.withRoute(ctx, host, h)
+}
+
+// withRoute adds the host's kamal-proxy route to its status, when routed.
+func (d *Deployer) withRoute(ctx context.Context, host string, h fleet.HostStatus) fleet.HostStatus {
 	if d.routedOn(host) {
 		line := ""
 		var err error
@@ -418,6 +444,10 @@ func (d *Deployer) Reconcile(ctx context.Context, out io.Writer, dryRun bool) er
 		}
 		r, ok := inv.find(inv.Current)
 		switch {
+		case d.cfg.Native.Installed():
+			if inv.Installed != v {
+				drifts = append(drifts, fmt.Sprintf("%s — deployed %s, config is %s", host, firstNonEmpty(inv.Installed, "never"), v))
+			}
 		case inv.Current != v:
 			drifts = append(drifts, fmt.Sprintf("%s — live release is %s, config is %s", host, firstNonEmpty(inv.Current, "none"), v))
 		case !ok || r.Healthy == 0:

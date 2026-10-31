@@ -20,16 +20,30 @@ type UnitParams struct {
 	Dir     string
 	Exec    []string
 	Restart string
+	// Workdir overrides the working directory (default <Dir>/current).
+	Workdir string
+	// Hardening adds the systemd sandboxing lines.
+	Hardening bool
+}
+
+// WorkingDir is where the unit runs: Workdir, or the live release.
+func (p UnitParams) WorkingDir() string {
+	if p.Workdir != "" {
+		return p.Workdir
+	}
+	return p.Dir + "/current"
 }
 
 func unitParams(cfg *config.Config, role string) UnitParams {
 	return UnitParams{
-		Service: cfg.Service,
-		Role:    role,
-		User:    cfg.Native.User,
-		Dir:     cfg.Native.Dir,
-		Exec:    cfg.NativeExec(role),
-		Restart: cfg.Native.Restart,
+		Service:   cfg.Service,
+		Role:      role,
+		User:      cfg.Native.User,
+		Dir:       cfg.Native.Dir,
+		Exec:      cfg.NativeExec(role),
+		Restart:   cfg.Native.Restart,
+		Workdir:   cfg.Native.Workdir,
+		Hardening: cfg.Native.HardeningOn(),
 	}
 }
 
@@ -50,15 +64,22 @@ func RenderUnit(p UnitParams) string {
 	fmt.Fprintf(&b, "Type=exec\n")
 	fmt.Fprintf(&b, "User=%s\n", p.User)
 	fmt.Fprintf(&b, "Group=%s\n", p.User)
-	fmt.Fprintf(&b, "WorkingDirectory=%s/current\n", p.Dir)
+	fmt.Fprintf(&b, "WorkingDirectory=%s\n", p.WorkingDir())
 	fmt.Fprintf(&b, "ExecStart=%s\n", ExecStart(p.Dir, p.Exec))
 	fmt.Fprintf(&b, "EnvironmentFile=-%s/etc/env\n", p.Dir)
 	fmt.Fprintf(&b, "Restart=%s\n", p.Restart)
 	fmt.Fprintf(&b, "RestartSec=3\n")
-	fmt.Fprintf(&b, "NoNewPrivileges=true\n")
-	fmt.Fprintf(&b, "PrivateTmp=true\n")
-	fmt.Fprintf(&b, "ProtectSystem=strict\n")
-	fmt.Fprintf(&b, "ReadWritePaths=%s/shared\n\n", p.Dir)
+	if p.Hardening {
+		fmt.Fprintf(&b, "NoNewPrivileges=true\n")
+		fmt.Fprintf(&b, "PrivateTmp=true\n")
+		fmt.Fprintf(&b, "ProtectSystem=strict\n")
+		if p.Workdir != "" {
+			fmt.Fprintf(&b, "ReadWritePaths=%s/shared %s\n", p.Dir, p.Workdir)
+		} else {
+			fmt.Fprintf(&b, "ReadWritePaths=%s/shared\n", p.Dir)
+		}
+	}
+	b.WriteString("\n")
 	fmt.Fprintf(&b, "[Install]\n")
 	fmt.Fprintf(&b, "WantedBy=multi-user.target\n")
 	return b.String()

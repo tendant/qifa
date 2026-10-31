@@ -208,12 +208,23 @@ func runSetup(ctx context.Context, args []string, stdout, stderr io.Writer, conf
 	if err != nil {
 		return err
 	}
+	printOnly := false
+	if len(args) > 0 && args[0] == "--print" {
+		printOnly, args = true, args[1:]
+	}
 	if len(args) > 0 {
-		return fmt.Errorf("unknown argument %q\nusage: qifa setup [--ssh-user <user>] [--deploy-user <user>]", args[0])
+		return fmt.Errorf("unknown argument %q\nusage: qifa setup [--ssh-user <user>] [--deploy-user <user>] [--print]", args[0])
 	}
 	return withBackend(ctx, stdout, stderr, configFile, func(b backend) error {
 		if sshUser != "" {
 			b.UseSSHUser(sshUser)
+		}
+		if printOnly {
+			n, ok := b.(*native.Deployer)
+			if !ok {
+				return fmt.Errorf("setup --print is for native configs")
+			}
+			return n.PrintSetup(ctx, deployUser, stdout)
 		}
 		return b.Setup(ctx, deployUser)
 	})

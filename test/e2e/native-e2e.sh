@@ -387,6 +387,73 @@ on_host '[ -d /opt/qifa/nativeapp ]' || fail "unconfirmed purge deleted data"
 echo nativeapp | qifa remove --ssh-user root --purge
 on_host '[ ! -e /opt/qifa/nativeapp ] && ! id nativeapp 2>/dev/null' || fail "purge left data or user"
 
+step "a program installed on the server: no artifact, its own workdir, no hardening"
+mkdir -p "$work/installed"
+write_installed() {
+  cat > "$work/installed/qifa.yaml" <<EOF
+service: installedapp
+servers:
+  web:
+    hosts: ["127.0.0.1:$port"]
+    cmd: [/usr/local/bin/qifa-test-app]
+    app_port: 8080
+healthcheck:
+  path: /up
+  deploy_timeout: 10s
+  interval: 1s
+ssh:
+  user: deploy
+  key: $work/id
+  strict_host_key_checking: false
+env:
+  clear:
+    MSG: $1
+native:
+  user: deploy
+  workdir: /srv/installed
+  hardening: false
+EOF
+}
+write_installed one
+iq() { "$work/qifa" -c "$work/installed/qifa.yaml" "$@"; }
+# As on a host with no root login: print the script, run it as root there.
+iq setup --print > "$work/setup.sh"
+docker exec -i "$name" sh < "$work/setup.sh"
+iq doctor >/dev/null 2>&1 && fail "doctor passed before the program was installed"
+expect_eq "$(on_host 'stat -c %U /srv/installed')" deploy "setup creates a missing workdir for the service user"
+if iq deploy >"$work/out" 2>&1; then fail "deploy without the program installed succeeded"; fi
+grep -q "/usr/local/bin/qifa-test-app (servers.web.cmd) is not installed" "$work/out" || { cat "$work/out"; fail "unclear missing-program error"; }
+build_app inst1
+docker cp "$work/app/dist/app" "$name:/usr/local/bin/qifa-test-app"
+on_host 'chmod 0755 /usr/local/bin/qifa-test-app && install -d -o deploy -g deploy /srv/installed/storage'
+iq deploy
+expect_eq "$(app_get /version)" inst1 "installed program runs"
+expect_eq "$(app_get /env)" one "env of the installed program"
+expect_eq "$(app_get /write)" wrote "write to the workdir"
+expect_eq "$(on_host 'cat /srv/installed/storage/probe')" inst1 "write landed in the workdir"
+expect_eq "$(on_host 'systemctl show -p ProtectSystem --value qifa-installedapp.service')" no "hardening off: ProtectSystem"
+expect_eq "$(on_host 'systemctl show -p PrivateTmp --value qifa-installedapp.service')" no "hardening off: PrivateTmp"
+expect_eq "$(iq app exec 'pwd -P')" /srv/installed "app exec runs in the workdir"
+on_host '[ ! -e /opt/qifa/installedapp/current ]' || fail "an installed program got a release"
+
+step "installed program: env change, status, no rollback, reconcile"
+write_installed two
+iq deploy --version e2
+expect_eq "$(app_get /env)" two "env after redeploy"
+iq status >"$work/out"
+grep -q "^  web      e2  active  qifa-installedapp.service$" "$work/out" || { cat "$work/out"; fail "installed status role"; }
+grep -q "runs /usr/local/bin/qifa-test-app, installed on the server" "$work/out" || { cat "$work/out"; fail "installed status note"; }
+if iq rollback >"$work/out" 2>&1; then fail "rollback of an installed program succeeded"; fi
+grep -q "nothing to roll back to" "$work/out" || { cat "$work/out"; fail "unclear rollback refusal"; }
+QIFA_VERSION=e2 iq reconcile | grep -q "in sync" || fail "installed reconcile not in sync"
+QIFA_VERSION=e3 iq reconcile -n | grep -q "deployed e2, config is e3" || fail "installed reconcile drift not reported"
+
+step "installed program: purge keeps the program, the workdir and the login user"
+echo installedapp | iq remove --ssh-user root --purge >"$work/out"
+grep -q "kept user deploy" "$work/out" || { cat "$work/out"; fail "purge did not say it kept the user"; }
+on_host 'id deploy >/dev/null && [ -x /usr/local/bin/qifa-test-app ] && [ -f /srv/installed/storage/probe ] && [ ! -e /opt/qifa/installedapp ]' || fail "purge of an installed program removed too much or too little"
+on_host 'curl -fsS http://127.0.0.1:8080/up' 2>/dev/null && fail "installed program still running after remove"
+
 step "proxy remove --purge"
 echo qifa-proxy | qifa proxy remove --ssh-user root --purge
 on_host '[ ! -e /etc/systemd/system/qifa-proxy.service ] && [ ! -e /var/lib/qifa-proxy ] && ! id qifa-proxy 2>/dev/null' || fail "proxy purge left state"

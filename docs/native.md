@@ -66,7 +66,7 @@ the earlier native-only keys (`native.exec`, `native.port`,
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `build` | none | Shell command run on your machine, in the config's directory, before upload. `QIFA_VERSION` is set. |
-| `artifact` | required | What to ship. A directory's contents become the release root; a single file lands at the root under its own name. |
+| `artifact` | required, unless `cmd` is absolute | What to ship. A directory's contents become the release root; a single file lands at the root under its own name. Leave it out to run a program already installed on the server (below). |
 | `servers.<role>.cmd` | required | The command, as a list or a string split into words; no shell either way. The first word is relative to the release unless absolute. |
 | `user` | required | Service account, created by `qifa setup`. Not root. |
 | `arch` | none | `amd64`, `arm64`, `arm`, `386` or `riscv64`. ELF binaries are checked before upload, so a Mac-built arm64 binary is caught before it reaches an amd64 server. |
@@ -75,6 +75,38 @@ the earlier native-only keys (`native.exec`, `native.port`,
 | `dir` | `/opt/qifa/<service>` | Install root on the server. |
 | `prune.retain` | 5 | Releases kept per host (at least 2). The live release and the rollback target are always kept. |
 | `restart` | `on-failure` | systemd `Restart=`. |
+| `workdir` | the live release (`<dir>/current`) | The app's working directory. Set it for a program that keeps its config and state in a fixed directory. `qifa setup` creates it if missing; an existing one is left alone. |
+| `hardening` | `true` | systemd sandboxing: `NoNewPrivileges`, `PrivateTmp`, `ProtectSystem=strict` with only `shared/` (and `workdir`) writable. `false` drops all four, for a program that writes across its user's home or starts privileged helpers (sudo, setuid sandboxes). |
+
+### A program already installed on the server
+
+Leave out `artifact` and give `cmd` an absolute path, and qifa ships
+nothing: it supervises a program you install another way (a package,
+`make install`, a script). It still owns the unit, the env file, restarts,
+the health check, logs, `app exec`, status and the proxy route.
+
+```yaml
+service: agent
+servers:
+  web:
+    hosts: [10.0.0.5]
+    cmd: [/usr/local/bin/agent-runner]
+    app_port: 9084
+healthcheck:
+  path: /health
+native:
+  user: ubuntu                   # an existing account is used as it is
+  workdir: /data/agents/agent    # its .env, state and logs live here
+  hardening: false
+```
+
+A deploy installs the env file and restarts. If the program does not come
+back healthy, the previous env is restored and it is restarted again; on a
+first deploy, it is stopped. There are no releases, so `qifa rollback`
+refuses: reinstall the earlier program and `qifa restart`. Without
+`--version` (or `QIFA_VERSION`), a deploy is recorded as `installed`.
+`qifa remove --purge` deletes `<dir>` but not the program, the workdir or
+an account `qifa setup` did not create.
 
 Container settings (`image`, `builder`, `registry`, `proxy`, `proxy_boot`,
 `accessories`, `volumes`, `port`/`app_port` on roles, ...) are rejected next to `native:`,
@@ -87,6 +119,14 @@ sudo, or as root:
 
 ```sh
 qifa setup --ssh-user root
+```
+
+When qifa cannot become root on the host (no root login, and sudo asks for
+a password), print the script and run it there yourself:
+
+```sh
+qifa setup --print > setup.sh       # connects as the deploy user only
+scp setup.sh host: && ssh -t host sudo sh setup.sh
 ```
 
 On every host it creates the service account, `/opt/qifa/<service>`, the
@@ -102,7 +142,8 @@ environment it passes; that is what `qifa app exec` uses. It grants nothing
 new: the deploy user can already make that account run anything by deploying
 a release. Re-run setup after upgrading qifa to get this second line.
 
-Re-run setup whenever `exec`, `user`, `restart` or the roles change. Deploy
+Re-run setup whenever `cmd`, `user`, `restart`, `workdir`, `hardening` or
+the roles change. Deploy
 compares the unit on each host with the config and refuses, naming the unit,
 until you do.
 
@@ -255,6 +296,9 @@ Docker-only commands (`cert`, `accessory`, `prune`,
 qifa remove --ssh-user root            # stop and delete units and sudoers; keep data
 qifa remove --ssh-user root --purge    # also delete releases, shared/ and the account
 ```
+
+The account is deleted only if `qifa setup` created it (its home is the
+install directory); an existing login user named in `native.user` is kept.
 
 `--purge` asks you to type the service name (`--yes` skips the prompt, for
 scripts). Removing needs root, as setup does, so pass `--ssh-user root`

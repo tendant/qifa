@@ -101,6 +101,54 @@ func TestNativeConfigRejects(t *testing.T) {
 	}
 }
 
+const installedBase = `service: agent
+servers:
+  web:
+    hosts: [10.0.0.1]
+    cmd: [/usr/local/bin/agent-runner]
+    app_port: 9084
+ssh:
+  user: ubuntu
+healthcheck:
+  path: /health
+native:
+  user: ubuntu
+  workdir: /data/agents/a/
+  hardening: false
+`
+
+// No artifact: an absolute cmd runs a program installed on the server.
+func TestNativeInstalledProgram(t *testing.T) {
+	cfg, err := loadString(t, installedBase)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := cfg.Native
+	if !n.Installed() || n.HardeningOn() || n.Workdir != "/data/agents/a" {
+		t.Fatalf("installed=%v hardening=%v workdir=%q", n.Installed(), n.HardeningOn(), n.Workdir)
+	}
+	cfg, err = loadString(t, nativeBase)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Native.Installed() || !cfg.Native.HardeningOn() {
+		t.Fatal("an artifact config ships releases, hardened by default")
+	}
+	for name, c := range map[string]struct{ old, new, want string }{
+		"relative cmd":   {"/usr/local/bin/agent-runner", "bin/agent-runner", "native.artifact is required"},
+		"build alone":    {"  hardening: false\n", "  hardening: false\n  build: make\n", "nothing would be shipped"},
+		"bad workdir":    {"/data/agents/a/", "data/agents", "native.workdir"},
+		"dotdot workdir": {"/data/agents/a/", "/data/../etc", "native.workdir"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := loadString(t, strings.Replace(installedBase, c.old, c.new, 1))
+			if err == nil || !strings.Contains(err.Error(), c.want) {
+				t.Fatalf("got %v, want error containing %q", err, c.want)
+			}
+		})
+	}
+}
+
 // cmd means the same in both modes: a string, or a list. A list given to a
 // container is quoted for the shell docker run hands it to.
 func TestCmdListInDockerMode(t *testing.T) {

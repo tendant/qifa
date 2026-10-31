@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"regexp"
 	"strings"
 )
@@ -15,15 +16,46 @@ var deployUserRe = regexp.MustCompile(`^[a-z_][a-z0-9_-]*$`)
 // needs root, and the only one that writes units or sudoers: deploys run as
 // the deploy user with nothing more than start/stop/restart of their own
 // units. Idempotent; prints what it changed.
-func (d *Deployer) Setup(ctx context.Context, deployUser string) error {
+func (d *Deployer) setupDeployUser(deployUser string) (string, error) {
 	if deployUser == "" {
 		deployUser = d.cfg.SSH.User
 	}
 	if deployUser == "" {
-		return fmt.Errorf("setup needs the deploy user: set ssh.user in the config, or pass --deploy-user")
+		return "", fmt.Errorf("setup needs the deploy user: set ssh.user in the config, or pass --deploy-user")
 	}
 	if !deployUserRe.MatchString(deployUser) || deployUser == "root" {
-		return fmt.Errorf("deploy user %q: must be a normal account name, not root", deployUser)
+		return "", fmt.Errorf("deploy user %q: must be a normal account name, not root", deployUser)
+	}
+	return deployUser, nil
+}
+
+// PrintSetup writes the script `qifa setup` would run as root on the single
+// host, for a host where qifa cannot become root itself (no root login, sudo
+// with a password): copy it over and run it with sudo. Connecting as the
+// deploy user only finds systemctl, which the sudoers rule names by path.
+func (d *Deployer) PrintSetup(ctx context.Context, deployUser string, out io.Writer) error {
+	deployUser, err := d.setupDeployUser(deployUser)
+	if err != nil {
+		return err
+	}
+	hosts := d.hosts()
+	if len(hosts) != 1 {
+		return fmt.Errorf("setup --print writes one host's script; this config has %d hosts (%s)", len(hosts), strings.Join(hosts, ", "))
+	}
+	systemctl, err := d.ssh.Run(ctx, hosts[0], "command -v systemctl")
+	systemctl = strings.TrimSpace(systemctl)
+	if err != nil || !strings.HasPrefix(systemctl, "/") {
+		return fmt.Errorf("setup on %s: systemd (systemctl) not found: %v", hosts[0], err)
+	}
+	fmt.Fprintf(out, "#!/bin/sh\n# qifa setup for %s on %s; run as root (sudo sh <this file>).\n", d.cfg.Service, hosts[0])
+	_, err = io.WriteString(out, d.setupScript(hosts[0], deployUser, systemctl))
+	return err
+}
+
+func (d *Deployer) Setup(ctx context.Context, deployUser string) error {
+	deployUser, err := d.setupDeployUser(deployUser)
+	if err != nil {
+		return err
 	}
 	for _, host := range d.hosts() {
 		d.log.Printf("setup %s: service user %s, deploy user %s, dir %s", host, d.cfg.Native.User, deployUser, d.cfg.Native.Dir)
@@ -64,6 +96,10 @@ install -d -m 0700 -o "$deploy" -g "$deploy" "$dir/etc"
 install -d -m 0750 -o "$user" -g "$user" "$dir/shared"
 [ -e "$dir/etc/env" ] || install -m 0600 -o "$deploy" -g "$deploy" /dev/null "$dir/etc/env"
 `)
+	if n.Workdir != "" {
+		// An existing workdir is left as it is: it is the app's, not qifa's.
+		fmt.Fprintf(&b, "if [ ! -d %[1]s ]; then install -d -m 0750 -o \"$user\" -g \"$user\" %[1]s; echo \"created %[2]s\"; fi\n", q(n.Workdir), n.Workdir)
+	}
 	for _, sd := range n.SharedDirs {
 		fmt.Fprintf(&b, "install -d -m 0750 -o \"$user\" -g \"$user\" \"$dir/shared/\"%s\n", q(sd))
 	}

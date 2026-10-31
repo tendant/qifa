@@ -82,7 +82,7 @@ func TestRenderSudoersIsExactAndWildcardFree(t *testing.T) {
 }
 
 func TestUnitUsesCurrentAndHardening(t *testing.T) {
-	unit := RenderUnit(UnitParams{Service: "app", Role: "web", User: "app", Dir: "/opt/qifa/app", Exec: []string{"app"}, Restart: "on-failure"})
+	unit := RenderUnit(UnitParams{Service: "app", Role: "web", User: "app", Dir: "/opt/qifa/app", Exec: []string{"app"}, Restart: "on-failure", Hardening: true})
 	for _, want := range []string{
 		"User=app\n",
 		"WorkingDirectory=/opt/qifa/app/current\n",
@@ -94,6 +94,27 @@ func TestUnitUsesCurrentAndHardening(t *testing.T) {
 		if !strings.Contains(unit, want) {
 			t.Fatalf("unit lacks %q:\n%s", want, unit)
 		}
+	}
+}
+
+// An installed program in its own directory, unhardened: it runs where its
+// config lives, and none of the sandboxing lines are there.
+func TestUnitWorkdirWithoutHardening(t *testing.T) {
+	p := UnitParams{Service: "agent", Role: "web", User: "ubuntu", Dir: "/opt/qifa/agent", Exec: []string{"/usr/local/bin/agent-runner"}, Restart: "on-failure", Workdir: "/data/agents/a"}
+	unit := RenderUnit(p)
+	for _, want := range []string{"WorkingDirectory=/data/agents/a\n", "ExecStart=/usr/local/bin/agent-runner\n", "EnvironmentFile=-/opt/qifa/agent/etc/env\n"} {
+		if !strings.Contains(unit, want) {
+			t.Fatalf("unit lacks %q:\n%s", want, unit)
+		}
+	}
+	for _, bad := range []string{"NoNewPrivileges", "PrivateTmp", "ProtectSystem", "ReadWritePaths"} {
+		if strings.Contains(unit, bad) {
+			t.Fatalf("unhardened unit has %s:\n%s", bad, unit)
+		}
+	}
+	p.Hardening = true
+	if unit := RenderUnit(p); !strings.Contains(unit, "ReadWritePaths=/opt/qifa/agent/shared /data/agents/a\n") {
+		t.Fatalf("a hardened unit must be able to write its workdir:\n%s", unit)
 	}
 }
 
@@ -180,6 +201,9 @@ func TestScriptsParse(t *testing.T) {
 		"health":      healthScript("qifa-app.service", "", 30, 2, 5),
 		"preflight":   preflightScript("/opt/qifa/app", []string{"qifa-app.service"}, true, proxy.NativeCLI()),
 		"diagnostics": diagnosticsScript("qifa-app.service"),
+		"installed":   installedCheckScript([]string{"/usr/local/bin/app"}, "/srv/app"),
+		"install-env": installEnvScript("/opt/qifa/app", "installed"),
+		"revert-env":  revertEnvScript("/opt/qifa/app"),
 	}
 	cfg := testConfig()
 	d := &Deployer{cfg: cfg}
@@ -369,7 +393,7 @@ func TestPackWritesATempFileMatchingItsChecksum(t *testing.T) {
 // app exec loads the env file in the deploy user's shell and hands it on
 // through sudo -E: the values never reach a command line.
 func TestExecScript(t *testing.T) {
-	s := execScript("/opt/qifa/app", "app", `echo "$MSG" | tr a b`)
+	s := execScript("/opt/qifa/app", "/opt/qifa/app/current", "app", `echo "$MSG" | tr a b`)
 	for _, want := range []string{
 		". '/opt/qifa/app/etc/env'",
 		"sudo -n -E -u 'app' -- /bin/sh -c",

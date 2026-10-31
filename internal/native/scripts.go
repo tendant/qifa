@@ -186,6 +186,7 @@ func inventoryScript(dir string, units []string, url string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "cd %s 2>/dev/null || exit 0\n", q(dir))
 	b.WriteString(`echo "current=$(readlink current 2>/dev/null || true)"
+echo "installed=$(cat etc/version 2>/dev/null || true)"
 for d in releases/*/; do
   d=${d%/}; id=${d#releases/}
   case "$id" in *.tmp) echo "tmp=$id"; continue;; esac
@@ -240,16 +241,49 @@ func teardownScript(dir, user, sudoersFile string, units []string, purge bool) s
 	fmt.Fprintf(&b, "if [ -e %[1]s ]; then rm -f %[1]s; echo \"removed %[2]s\"; fi\n", q(sudoersFile), sudoersFile)
 	if purge {
 		fmt.Fprintf(&b, "if [ -e %[1]s ]; then rm -rf -- %[1]s; echo \"deleted %[2]s\"; fi\n", q(dir), dir)
-		fmt.Fprintf(&b, "if id %[1]s >/dev/null 2>&1; then userdel %[1]s; echo \"deleted user %[2]s\"; fi\n", q(user), user)
+		// Only the account setup created (home = the install dir): a service
+		// that runs as an existing login user must not delete that user.
+		fmt.Fprintf(&b, "if [ \"$(getent passwd %[1]s | cut -d: -f6)\" = %[3]s ]; then userdel %[1]s; echo \"deleted user %[2]s\"; elif id %[1]s >/dev/null 2>&1; then echo \"kept user %[2]s (not created by qifa setup)\"; fi\n", q(user), user, q(dir))
 	} else {
 		fmt.Fprintf(&b, "echo \"kept %s (releases and shared data); --purge deletes it\"\n", dir)
 	}
 	return b.String()
 }
 
-// execScript runs command as user in the live release with the app's env.
-func execScript(dir, user, command string) string {
-	inner := "cd " + q(dir+"/current") + " && " + command
+// execScript runs command as user in the app's working directory with the
+// app's env.
+func execScript(dir, workdir, user, command string) string {
+	inner := "cd " + q(workdir) + " && " + command
 	return fmt.Sprintf(`if [ -f %[1]s ]; then set -a; . %[1]s; set +a; fi
 exec sudo -n -E -u %[2]s -- /bin/sh -c %[3]s`, q(dir+"/etc/env"), q(user), q(inner))
+}
+
+// installedCheckScript extends the preflight for programs installed on the
+// server: each must be executable, and the working directory must exist.
+func installedCheckScript(execs []string, workdir string) string {
+	var b strings.Builder
+	for _, e := range execs {
+		fmt.Fprintf(&b, "if [ -x %s ] && [ ! -d %[1]s ]; then echo exec:%s=ok; fi\n", q(e), e)
+	}
+	if workdir != "" {
+		fmt.Fprintf(&b, "if [ -d %s ]; then echo workdir=ok; fi\n", q(workdir))
+	}
+	return b.String()
+}
+
+// installEnvScript installs the staged env file for an installed program,
+// keeping the old one as env.prev, and records the version deployed. It
+// prints "prev" when there was an env to go back to.
+func installEnvScript(dir, id string) string {
+	return fmt.Sprintf(`set -eu
+cd %s
+if [ -f etc/env ]; then cp -p etc/env etc/env.prev; echo prev; else rm -f etc/env.prev; fi
+mv -f etc/env.next etc/env
+printf '%%s\n' %s > etc/version
+`, q(dir), q(id))
+}
+
+// revertEnvScript restores the env an installed program ran with before.
+func revertEnvScript(dir string) string {
+	return fmt.Sprintf("set -eu\ncd %s\nmv -f etc/env.prev etc/env\n", q(dir))
 }

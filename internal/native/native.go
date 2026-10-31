@@ -14,6 +14,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path"
 	"regexp"
 	"strings"
 	"sync"
@@ -72,6 +73,10 @@ func (d *Deployer) PinVersion(v string, allowDirty bool) {
 var releaseIDRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 
 func (d *Deployer) resolveVersion() (string, error) {
+	if d.cfg.Native.Installed() && d.version == "" && strings.TrimSpace(os.Getenv("QIFA_VERSION")) == "" {
+		// Nothing is built or shipped, so the source tree names nothing.
+		return installedVersion, nil
+	}
 	v, err := version.Resolve(d.version, d.allowDirty)
 	if err != nil {
 		return "", err
@@ -133,16 +138,21 @@ func (d *Deployer) Deploy(ctx context.Context) error {
 			return fmt.Errorf("native.build failed: %w", err)
 		}
 	}
-	pkg, err := Pack(n.Artifact)
-	if err != nil {
-		return err
+	var pkg *Package
+	artifactArch, image := "", "native:installed "+strings.Join(d.installedExecs(), " ")
+	if n.Installed() {
+		d.log.Printf("%s: running %s, installed on the server (no artifact to ship)", v, strings.Join(d.installedExecs(), ", "))
+	} else {
+		if pkg, err = Pack(n.Artifact); err != nil {
+			return err
+		}
+		defer pkg.Remove()
+		if artifactArch, err = d.artifactArch(pkg); err != nil {
+			return err
+		}
+		image = "native:" + n.Artifact + "@sha256:" + pkg.SHA256[:12]
+		d.log.Printf("release %s: %s (%d KiB, sha256 %s)", v, n.Artifact, pkg.Size/1024, pkg.SHA256[:12])
 	}
-	defer pkg.Remove()
-	artifactArch, err := d.artifactArch(pkg)
-	if err != nil {
-		return err
-	}
-	d.log.Printf("release %s: %s (%d KiB, sha256 %s)", v, n.Artifact, pkg.Size/1024, pkg.SHA256[:12])
 
 	values, err := secrets.Collect(d.cfg.Env.Clear, d.cfg.Env.Secret, d.cfg.Env.SecretCommand)
 	if err != nil {
@@ -169,7 +179,7 @@ func (d *Deployer) Deploy(ctx context.Context) error {
 		ID:        fmt.Sprintf("%d-%s", time.Now().UTC().Unix(), v),
 		Service:   d.cfg.Service,
 		Version:   v,
-		Image:     "native:" + n.Artifact + "@sha256:" + pkg.SHA256[:12],
+		Image:     image,
 		Status:    state.StatusPending,
 		StartedAt: time.Now().UTC(),
 	}
@@ -253,7 +263,14 @@ func (d *Deployer) preflight(ctx context.Context, hosts []string, artifactArch s
 // earlier deploy) that the deploy itself will repair.
 func (d *Deployer) checkHost(ctx context.Context, host, artifactArch string) (problems, warnings []string, err error) {
 	routed := d.routedOn(host)
-	out, err := d.ssh.Run(ctx, host, preflightScript(d.cfg.Native.Dir, d.unitsOn(host), routed, d.proxyCLI()))
+	var installed []string
+	for _, role := range d.rolesOn(host) {
+		if bin := d.cfg.NativeExec(role)[0]; path.IsAbs(bin) {
+			installed = append(installed, bin)
+		}
+	}
+	out, err := d.ssh.Run(ctx, host, preflightScript(d.cfg.Native.Dir, d.unitsOn(host), routed, d.proxyCLI())+
+		installedCheckScript(installed, d.cfg.Native.Workdir))
 	if err != nil {
 		return nil, nil, err
 	}
@@ -266,6 +283,14 @@ func (d *Deployer) checkHost(ctx context.Context, host, artifactArch string) (pr
 	}
 	if kv["dir"] != "ok" {
 		problems = append(problems, fmt.Sprintf("%s is missing or not writable by %s — run `qifa setup --ssh-user root`", d.cfg.Native.Dir, d.sshUser()))
+	}
+	for _, role := range d.rolesOn(host) {
+		if bin := d.cfg.NativeExec(role)[0]; path.IsAbs(bin) && kv["exec:"+bin] != "ok" {
+			problems = append(problems, fmt.Sprintf("%s (servers.%s.cmd) is not installed or not executable", bin, role))
+		}
+	}
+	if w := d.cfg.Native.Workdir; w != "" && kv["workdir"] != "ok" {
+		problems = append(problems, fmt.Sprintf("native.workdir %s does not exist — create it, or run `qifa setup --ssh-user root`", w))
 	}
 	hostArch := UnameArch(kv["arch"])
 	if want := firstNonEmpty(d.cfg.Native.Arch, artifactArch); want != "" && hostArch != want {
@@ -308,6 +333,9 @@ func (d *Deployer) sshUser() string {
 }
 
 func (d *Deployer) deployHost(ctx context.Context, deployment state.Deployment, host, id string, pkg *Package, envFile []byte) error {
+	if pkg == nil {
+		return d.deployInstalledHost(ctx, deployment, host, id, envFile)
+	}
 	n := d.cfg.Native
 	event := func(kind, msg string) { _ = d.audit().Event(deployment.ID, host, "", kind, msg) }
 	event("connecting", "")
@@ -451,16 +479,28 @@ func (d *Deployer) Plan(ctx context.Context, out io.Writer) error {
 	}
 	fmt.Fprintf(out, "Plan for service=%s (native)\n", d.cfg.Service)
 	fmt.Fprintf(out, "  Release:  %s\n", v)
-	fmt.Fprintf(out, "  Build:    %s\n", firstNonEmpty(n.Build, "(none; artifact must already exist)"))
-	fmt.Fprintf(out, "  Artifact: %s\n", n.Artifact)
-	fmt.Fprintf(out, "  Install:  %s/releases/%s, current -> it\n", n.Dir, v)
+	if n.Installed() {
+		fmt.Fprintf(out, "  Artifact: (none; runs %s, installed on the server)\n", strings.Join(d.installedExecs(), ", "))
+		fmt.Fprintf(out, "  Install:  the env file in %s/etc, then restart\n", n.Dir)
+	} else {
+		fmt.Fprintf(out, "  Build:    %s\n", firstNonEmpty(n.Build, "(none; artifact must already exist)"))
+		fmt.Fprintf(out, "  Artifact: %s\n", n.Artifact)
+		fmt.Fprintf(out, "  Install:  %s/releases/%s, current -> it\n", n.Dir, v)
+	}
+	if n.Workdir != "" {
+		fmt.Fprintf(out, "  Workdir:  %s\n", n.Workdir)
+	}
 	for _, role := range fleet.OrderedRoles(d.cfg.Servers) {
 		check := firstNonEmpty(d.healthURL(role), "unit active")
 		fmt.Fprintf(out, "  Role %s: %s on %v\n", role, d.cfg.NativeUnitName(role), d.cfg.Servers[role].Hosts)
 		fmt.Fprintf(out, "    ExecStart=%s\n", ExecStart(n.Dir, d.cfg.NativeExec(role)))
 		fmt.Fprintf(out, "    health:  %s (within %s)\n", check, d.cfg.Health().DeployTimeout)
 	}
-	fmt.Fprintln(out, "  On failure: restore the previous release and restart")
+	if n.Installed() {
+		fmt.Fprintln(out, "  On failure: restore the previous env and restart")
+	} else {
+		fmt.Fprintln(out, "  On failure: restore the previous release and restart")
+	}
 	return nil
 }
 
@@ -540,7 +580,7 @@ func (d *Deployer) Logs(ctx context.Context, lines int, follow bool, out io.Writ
 // on a command line. Needs the SETENV rule `qifa setup` installs.
 func (d *Deployer) Exec(ctx context.Context, command string, out io.Writer) error {
 	host := d.cfg.Servers[fleet.OrderedRoles(d.cfg.Servers)[0]].Hosts[0]
-	return d.ssh.Stream(ctx, host, execScript(d.cfg.Native.Dir, d.cfg.Native.User, command), out)
+	return d.ssh.Stream(ctx, host, execScript(d.cfg.Native.Dir, d.workdir(), d.cfg.Native.User, command), out)
 }
 
 func (d *Deployer) LockStatus(ctx context.Context, out io.Writer) error {

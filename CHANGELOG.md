@@ -1,5 +1,36 @@
 # Changelog
 
+## v0.4.0 — 2026-10-31
+
+### Added
+
+- **Native: run a program already installed on the server.** With no
+  `native.artifact` and an absolute `servers.<role>.cmd`, qifa ships nothing
+  and supervises the program: unit, env, restarts, health check, logs,
+  status, route. A deploy installs the env and restarts; a failed one
+  restores the previous env. `qifa rollback` refuses, as there are no
+  releases. See [docs/native.md](docs/native.md), "A program already
+  installed on the server".
+- **`native.workdir`**: the app's working directory, instead of the live
+  release. `qifa setup` creates it if missing.
+- **`native.hardening: false`** drops the unit's systemd sandboxing
+  (`NoNewPrivileges`, `PrivateTmp`, `ProtectSystem=strict`,
+  `ReadWritePaths`), for programs that write across their user's home or
+  start privileged helpers. The default is unchanged (on), and existing
+  units render byte for byte as before, so no `qifa setup` is needed.
+- **`qifa setup --print`** (native) writes the root setup script for a host
+  where qifa cannot become root (no root login, sudo with a password), to
+  run there with `sudo sh`.
+
+### Fixed
+
+- A host known in `known_hosts` only by a key type Go does not prefer (often
+  ed25519 alone) failed with `knownhosts: key mismatch` though `ssh` worked.
+  qifa now offers the host key types known for the host, as OpenSSH does.
+- `qifa remove --purge` deleted the `native.user` account even when it was
+  an existing login user rather than one `qifa setup` created. It now deletes
+  only an account whose home is the install directory.
+
 ## v0.3.0 — 2026-10-31
 
 ### Added

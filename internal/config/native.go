@@ -16,7 +16,10 @@ type Native struct {
 	// Optional: the artifact may be produced by CI or a hook instead.
 	Build string `yaml:"build"`
 	// Artifact is the file or directory to ship, relative to the config.
-	Artifact string `yaml:"artifact"`
+	// Optional when every role's cmd is an absolute path to a program already
+	// installed on the server: qifa then supervises it (unit, env, restart,
+	// health, logs) but ships nothing, so there is no release to roll back.
+	Artifact string `yaml:"artifact,omitempty"`
 	// Exec is the argv of the service. Exec[0] is resolved under the release
 	// (current/) when relative. Never passed through a shell.
 	// Deprecated: use servers.<role>.cmd.
@@ -41,7 +44,23 @@ type Native struct {
 	// SharedDirs are directories under shared/ linked into every release, for
 	// data that must outlive a release (uploads, sqlite files, logs).
 	SharedDirs []string `yaml:"shared_dirs"`
+	// Workdir is the service's working directory. Default: the live release
+	// (<dir>/current). Set it for a program that keeps its config and state
+	// in a fixed directory.
+	Workdir string `yaml:"workdir,omitempty"`
+	// Hardening adds systemd sandboxing to the unit: NoNewPrivileges,
+	// PrivateTmp, ProtectSystem=strict with only shared/ (and workdir)
+	// writable. Default true. Turn it off for a program that writes across
+	// its user's home, or starts privileged helpers (sudo, setuid sandboxes).
+	Hardening *bool `yaml:"hardening,omitempty"`
 }
+
+// HardeningOn reports whether the unit gets systemd hardening (the default).
+func (n *Native) HardeningOn() bool { return n.Hardening == nil || *n.Hardening }
+
+// Installed reports whether the config runs a program already on the server
+// instead of shipping releases.
+func (n *Native) Installed() bool { return strings.TrimSpace(n.Artifact) == "" }
 
 // IsNative reports whether the config deploys native processes.
 func (c *Config) IsNative() bool { return c.Native != nil }
@@ -170,8 +189,21 @@ func (c *Config) validateNative() error {
 			return err
 		}
 	}
-	if strings.TrimSpace(n.Artifact) == "" {
-		return errors.New("config.native.artifact is required (the file or directory to ship)")
+	if n.Installed() {
+		for role := range c.Servers {
+			if bin := c.NativeExec(role)[0]; !path.IsAbs(bin) {
+				return fmt.Errorf("config.native.artifact is required: servers.%s.cmd runs %q from the release (or make it an absolute path to a program installed on the server)", role, bin)
+			}
+		}
+		if strings.TrimSpace(n.Build) != "" {
+			return errors.New("config.native.build without native.artifact: nothing would be shipped")
+		}
+	}
+	if n.Workdir != "" {
+		n.Workdir = strings.TrimRight(n.Workdir, "/")
+		if !nativeDirRe.MatchString(n.Workdir) || strings.Contains(n.Workdir, "..") {
+			return fmt.Errorf("config.native.workdir %q must be an absolute path without spaces or '..'", n.Workdir)
+		}
 	}
 	if !nativeUserRe.MatchString(n.User) {
 		return fmt.Errorf("config.native.user %q: a service account name is required (lowercase, e.g. %q)", n.User, c.Service)

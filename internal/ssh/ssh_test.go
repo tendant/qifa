@@ -3,6 +3,9 @@ package ssh
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"crypto/rsa"
 	"errors"
 	"os"
 	"path/filepath"
@@ -11,6 +14,7 @@ import (
 
 	"github.com/tendant/qifa/internal/config"
 	gossh "golang.org/x/crypto/ssh"
+	"golang.org/x/crypto/ssh/knownhosts"
 )
 
 func TestFormatRemoteErrorUsesRemoteCommandLabel(t *testing.T) {
@@ -225,5 +229,44 @@ func TestLocalTransportIsOptInByExactName(t *testing.T) {
 	}
 	if !IsLocal("local") {
 		t.Error(`"local" should be the local transport`)
+	}
+}
+
+// A host known only by its ed25519 key is offered only ed25519, so the
+// handshake does not settle on ECDSA and fail as a key mismatch.
+func TestKnownHostKeyAlgorithms(t *testing.T) {
+	edPub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	edKey, err := gossh.NewPublicKey(edPub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rsaPriv, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rsaKey, err := gossh.NewPublicKey(&rsaPriv.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(t.TempDir(), "known_hosts")
+	lines := knownhosts.Line([]string{"10.0.0.5"}, edKey) + "\n" + knownhosts.Line([]string{"[10.0.0.6]:2222"}, rsaKey) + "\n"
+	if err := os.WriteFile(file, []byte(lines), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cb, err := knownHostsCallback([]string{file})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for addr, want := range map[string]string{
+		"10.0.0.5:22":   "ssh-ed25519",
+		"10.0.0.6:2222": "rsa-sha2-512 rsa-sha2-256 ssh-rsa",
+		"10.0.0.7:22":   "",
+	} {
+		if got := strings.Join(knownHostKeyAlgorithms(cb, addr), " "); got != want {
+			t.Errorf("%s: got %q, want %q", addr, got, want)
+		}
 	}
 }
