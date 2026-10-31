@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/tendant/qifa/internal/fleet"
 	"github.com/tendant/qifa/internal/hooks"
 	"github.com/tendant/qifa/internal/lock"
 	"github.com/tendant/qifa/internal/proxy"
@@ -195,7 +196,7 @@ func (d *Deployer) Rollback(ctx context.Context, version string) error {
 	if err := d.store.AppendDeployment(deployment); err != nil {
 		return err
 	}
-	err := d.rollout(ctx, deployment, hosts, func(ctx context.Context, host string) error {
+	err := fleet.Batches(ctx, hosts, d.cfg.Rollout, d.log.Printf, func(ctx context.Context, host string) error {
 		if invs[host].Current == target {
 			d.log.Printf("%s: %s is already live", host, target)
 			return nil
@@ -206,19 +207,19 @@ func (d *Deployer) Rollback(ctx context.Context, version string) error {
 		}
 		d.log.Printf("%s: current -> releases/%s (was %s)", host, target, firstNonEmpty(prev, "none"))
 		if err := d.restartAndCheck(ctx, host); err != nil {
-			_ = d.appendEvent(deployment.ID, host, "failed", err.Error())
+			_ = d.audit().Event(deployment.ID, host, "", "failed", err.Error())
 			return d.recover(ctx, host, strings.TrimSpace(prev), err)
 		}
 		if _, err := d.ssh.Run(ctx, host, markOKScript(d.cfg.Native.Dir, target)); err != nil {
 			return err
 		}
-		_ = d.appendEvent(deployment.ID, host, "rolled_back", target)
+		_ = d.audit().Event(deployment.ID, host, "", "rolled_back", target)
 		return nil
 	})
 	if err != nil {
-		return d.fail(deployment, err)
+		return d.audit().Fail(deployment, err)
 	}
-	if err := d.updateStatus(deployment, state.StatusRolledBack); err != nil {
+	if err := d.audit().Status(deployment, state.StatusRolledBack); err != nil {
 		return err
 	}
 	d.log.Printf("rolled back to %s", target)
@@ -320,7 +321,7 @@ func (d *Deployer) EnvDiff(ctx context.Context, out io.Writer) error {
 			drift = true
 			continue
 		}
-		lines := diffEnv(values, live)
+		lines := fleet.DiffEnv(values, live)
 		fmt.Fprintf(out, "%s:\n", host)
 		if len(lines) == 0 {
 			fmt.Fprintf(out, "  in sync (%d keys)\n", len(values))
@@ -335,35 +336,6 @@ func (d *Deployer) EnvDiff(ctx context.Context, out io.Writer) error {
 		fmt.Fprintln(out, "\nrun `qifa deploy` to apply the config's env (a restart re-reads the file on the host, which only deploy writes)")
 	}
 	return nil
-}
-
-func diffEnv(desired, live map[string]string) []string {
-	keys := map[string]bool{}
-	for k := range desired {
-		keys[k] = true
-	}
-	for k := range live {
-		keys[k] = true
-	}
-	sorted := make([]string, 0, len(keys))
-	for k := range keys {
-		sorted = append(sorted, k)
-	}
-	sort.Strings(sorted)
-	var lines []string
-	for _, key := range sorted {
-		want, inConfig := desired[key]
-		got, onHost := live[key]
-		switch {
-		case inConfig && !onHost:
-			lines = append(lines, "+ "+key+"  (in config, missing on host)")
-		case onHost && !inConfig:
-			lines = append(lines, "- "+key+"  (on host, not in config)")
-		case want != got:
-			lines = append(lines, "~ "+key+"  (value differs)")
-		}
-	}
-	return lines
 }
 
 // ParseEnv reads an env file as RenderEnv writes it (and as systemd reads it

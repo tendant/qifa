@@ -8,7 +8,6 @@
 package native
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -16,12 +15,12 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
-	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/tendant/qifa/internal/config"
+	"github.com/tendant/qifa/internal/fleet"
 	"github.com/tendant/qifa/internal/hooks"
 	"github.com/tendant/qifa/internal/lock"
 	"github.com/tendant/qifa/internal/logs"
@@ -83,33 +82,12 @@ func (d *Deployer) resolveVersion() (string, error) {
 	return v, nil
 }
 
-// hosts lists each host once, web roles first, as the Docker path orders them.
-func (d *Deployer) hosts() []string {
-	seen := map[string]bool{}
-	var out []string
-	for _, role := range orderedRoles(d.cfg.Servers) {
-		for _, h := range d.cfg.Servers[role].Hosts {
-			if !seen[h] {
-				seen[h] = true
-				out = append(out, h)
-			}
-		}
-	}
-	return out
-}
+// hosts lists each host once, web roles first.
+func (d *Deployer) hosts() []string { return fleet.Hosts(d.cfg.Servers) }
 
-func (d *Deployer) rolesOn(host string) []string {
-	var roles []string
-	for _, role := range orderedRoles(d.cfg.Servers) {
-		for _, h := range d.cfg.Servers[role].Hosts {
-			if h == host {
-				roles = append(roles, role)
-				break
-			}
-		}
-	}
-	return roles
-}
+func (d *Deployer) rolesOn(host string) []string { return fleet.RolesOn(d.cfg.Servers, host) }
+
+func (d *Deployer) audit() fleet.Audit { return fleet.Audit{Store: d.store} }
 
 func (d *Deployer) unitsOn(host string) []string {
 	var units []string
@@ -202,20 +180,20 @@ func (d *Deployer) Deploy(ctx context.Context) error {
 	// Every host is checked before any is changed: a missing sudo rule or a
 	// stale unit on the third host must not leave the first two upgraded.
 	if err := d.preflight(ctx, hosts, artifactArch); err != nil {
-		return d.fail(deployment, err)
+		return d.audit().Fail(deployment, err)
 	}
 	if err := d.syncFiles(ctx, hosts); err != nil {
-		return d.fail(deployment, err)
+		return d.audit().Fail(deployment, err)
 	}
-	if err := d.updateStatus(deployment, state.StatusStarting); err != nil {
+	if err := d.audit().Status(deployment, state.StatusStarting); err != nil {
 		return err
 	}
-	if err := d.rollout(ctx, deployment, hosts, func(ctx context.Context, host string) error {
+	if err := fleet.Batches(ctx, hosts, d.cfg.Rollout, d.log.Printf, func(ctx context.Context, host string) error {
 		return d.deployHost(ctx, deployment, host, v, pkg, envFile)
 	}); err != nil {
-		return d.fail(deployment, err)
+		return d.audit().Fail(deployment, err)
 	}
-	if err := d.updateStatus(deployment, state.StatusSucceeded); err != nil {
+	if err := d.audit().Status(deployment, state.StatusSucceeded); err != nil {
 		return err
 	}
 	if err := hooks.Run(ctx, d.cfg.Hooks.PostDeploy, hookEnv); err != nil {
@@ -230,7 +208,7 @@ func (d *Deployer) Deploy(ctx context.Context) error {
 func (d *Deployer) artifactArch(pkg *Package) (string, error) {
 	want := d.cfg.Native.Arch
 	found := ""
-	for _, role := range orderedRoles(d.cfg.Servers) {
+	for _, role := range fleet.OrderedRoles(d.cfg.Servers) {
 		local := ExecPathInArtifact(d.cfg.Native.Artifact, pkg.IsDir, d.cfg.NativeExec(role)[0])
 		if local == "" {
 			continue
@@ -325,49 +303,9 @@ func (d *Deployer) sshUser() string {
 	return "the ssh user"
 }
 
-// rollout runs fn over hosts in rollout.batch_size batches, as the Docker path
-// does: hosts in a batch in parallel, batches in order, stopping at the first
-// failed batch.
-func (d *Deployer) rollout(ctx context.Context, deployment state.Deployment, hosts []string, fn func(context.Context, string) error) error {
-	size := 1
-	if d.cfg.Rollout.BatchSize != nil {
-		size = *d.cfg.Rollout.BatchSize
-	}
-	if size <= 0 || size > len(hosts) {
-		size = len(hosts)
-	}
-	for i := 0; i < len(hosts); i += size {
-		batch := hosts[i:min(i+size, len(hosts))]
-		if i > 0 && d.cfg.Rollout.BatchWait > 0 {
-			select {
-			case <-time.After(d.cfg.Rollout.BatchWait):
-			case <-ctx.Done():
-				return ctx.Err()
-			}
-		}
-		var wg sync.WaitGroup
-		errs := make([]error, len(batch))
-		for j, host := range batch {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				errs[j] = fn(ctx, host)
-			}()
-		}
-		wg.Wait()
-		if err := errors.Join(errs...); err != nil {
-			if rest := len(hosts) - (i + len(batch)); rest > 0 {
-				d.log.Printf("skipping %d remaining host(s)", rest)
-			}
-			return err
-		}
-	}
-	return nil
-}
-
 func (d *Deployer) deployHost(ctx context.Context, deployment state.Deployment, host, id string, pkg *Package, envFile []byte) error {
 	n := d.cfg.Native
-	event := func(kind, msg string) { _ = d.appendEvent(deployment.ID, host, kind, msg) }
+	event := func(kind, msg string) { _ = d.audit().Event(deployment.ID, host, "", kind, msg) }
 	event("connecting", "")
 
 	d.log.Printf("%s: uploading release %s", host, id)
@@ -512,7 +450,7 @@ func (d *Deployer) Plan(ctx context.Context, out io.Writer) error {
 	fmt.Fprintf(out, "  Build:    %s\n", firstNonEmpty(n.Build, "(none; artifact must already exist)"))
 	fmt.Fprintf(out, "  Artifact: %s\n", n.Artifact)
 	fmt.Fprintf(out, "  Install:  %s/releases/%s, current -> it\n", n.Dir, v)
-	for _, role := range orderedRoles(d.cfg.Servers) {
+	for _, role := range fleet.OrderedRoles(d.cfg.Servers) {
 		check := firstNonEmpty(d.healthURL(role), "unit active")
 		fmt.Fprintf(out, "  Role %s: %s on %v\n", role, d.cfg.NativeUnitName(role), d.cfg.Servers[role].Hosts)
 		fmt.Fprintf(out, "    ExecStart=%s\n", ExecStart(n.Dir, d.cfg.NativeExec(role)))
@@ -562,9 +500,9 @@ func (d *Deployer) Logs(ctx context.Context, lines int, follow bool, out io.Writ
 	}
 	var mu sync.Mutex
 	stream := func(host string) error {
-		w := &prefixWriter{prefix: host + " | ", out: out, mu: &mu}
+		w := &fleet.PrefixWriter{Prefix: host + " | ", Out: out, Mu: &mu}
 		err := d.ssh.Stream(ctx, host, command(host), w)
-		w.flush()
+		w.Flush()
 		if err != nil {
 			return fmt.Errorf("%s: %w", host, err)
 		}
@@ -591,48 +529,13 @@ func (d *Deployer) Logs(ctx context.Context, lines int, follow bool, out io.Writ
 	return errors.Join(errs...)
 }
 
-// prefixWriter writes whole lines to out, each with prefix. Writers sharing
-// mu never interleave inside a line.
-type prefixWriter struct {
-	prefix string
-	out    io.Writer
-	mu     *sync.Mutex
-	buf    []byte
-}
-
-func (w *prefixWriter) Write(p []byte) (int, error) {
-	w.buf = append(w.buf, p...)
-	for {
-		i := bytes.IndexByte(w.buf, '\n')
-		if i < 0 {
-			return len(p), nil
-		}
-		w.emit(w.buf[:i+1])
-		w.buf = w.buf[i+1:]
-	}
-}
-
-func (w *prefixWriter) flush() {
-	if len(w.buf) > 0 {
-		w.emit(append(w.buf, '\n'))
-		w.buf = nil
-	}
-}
-
-func (w *prefixWriter) emit(line []byte) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	io.WriteString(w.out, w.prefix)
-	w.out.Write(line)
-}
-
 // Exec runs command on the first host of the first role, as the service
 // account, in the live release, with the app's environment: what the app
 // itself would see. The env file is valid shell (see RenderEnv), so the
 // deploy user loads it and sudo -E passes it on, and no value ever appears
 // on a command line. Needs the SETENV rule `qifa native setup` installs.
 func (d *Deployer) Exec(ctx context.Context, command string, out io.Writer) error {
-	host := d.cfg.Servers[orderedRoles(d.cfg.Servers)[0]].Hosts[0]
+	host := d.cfg.Servers[fleet.OrderedRoles(d.cfg.Servers)[0]].Hosts[0]
 	return d.ssh.Stream(ctx, host, execScript(d.cfg.Native.Dir, d.cfg.Native.User, command), out)
 }
 
@@ -641,53 +544,12 @@ func (d *Deployer) LockStatus(ctx context.Context, out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	for _, host := range d.hosts() {
-		fmt.Fprintf(out, "%s\t%s\n", host, firstNonEmpty(status[host], "(free)"))
-	}
+	fleet.WriteLockStatus(out, d.hosts(), status)
 	return nil
 }
 
 func (d *Deployer) LockRelease(ctx context.Context) error {
 	return lock.New(d.ssh, d.cfg.Service, d.hosts()).ForceRelease(ctx)
-}
-
-func (d *Deployer) fail(deployment state.Deployment, cause error) error {
-	_ = d.updateStatus(deployment, state.StatusFailed)
-	return cause
-}
-
-func (d *Deployer) updateStatus(deployment state.Deployment, next state.Status) error {
-	deployment.Status = next
-	if next == state.StatusSucceeded || next == state.StatusFailed || next == state.StatusRolledBack {
-		now := time.Now().UTC()
-		deployment.FinishedAt = &now
-	}
-	return d.store.AppendDeployment(deployment)
-}
-
-func (d *Deployer) appendEvent(deploymentID, host, eventType, message string) error {
-	return d.store.AppendEvent(state.Event{
-		ID:           fmt.Sprintf("%d", time.Now().UnixNano()),
-		DeploymentID: deploymentID,
-		Host:         host,
-		EventType:    eventType,
-		Message:      message,
-		CreatedAt:    time.Now().UTC(),
-	})
-}
-
-func orderedRoles(servers map[string]config.Server) []string {
-	roles := make([]string, 0, len(servers))
-	for role := range servers {
-		if role != "web" {
-			roles = append(roles, role)
-		}
-	}
-	sort.Strings(roles)
-	if _, ok := servers["web"]; ok {
-		roles = append([]string{"web"}, roles...)
-	}
-	return roles
 }
 
 func firstNonEmpty(values ...string) string {

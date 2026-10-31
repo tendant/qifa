@@ -3,7 +3,6 @@ package native
 import (
 	"os/exec"
 	"reflect"
-	"strings"
 	"testing"
 )
 
@@ -98,18 +97,6 @@ func TestParseEnvRoundTrip(t *testing.T) {
 	}
 }
 
-func TestDiffEnvNamesKeysOnly(t *testing.T) {
-	lines := diffEnv(map[string]string{"A": "secret1", "B": "x"}, map[string]string{"A": "secret2", "C": "y"})
-	joined := strings.Join(lines, "\n")
-	for _, want := range []string{"~ A", "+ B", "- C"} {
-		if !strings.Contains(joined, want) {
-			t.Fatalf("missing %q in %s", want, joined)
-		}
-	}
-	if strings.Contains(joined, "secret") {
-		t.Fatalf("diff printed a value: %s", joined)
-	}
-}
 
 func TestPhase2ScriptsParse(t *testing.T) {
 	for name, s := range map[string]string{

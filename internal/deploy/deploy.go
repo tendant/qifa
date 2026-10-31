@@ -9,12 +9,12 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"sync"
 	"text/tabwriter"
 	"time"
 
 	"github.com/tendant/qifa/internal/config"
 	"github.com/tendant/qifa/internal/docker"
+	"github.com/tendant/qifa/internal/fleet"
 	"github.com/tendant/qifa/internal/hooks"
 	"github.com/tendant/qifa/internal/lock"
 	"github.com/tendant/qifa/internal/logs"
@@ -246,59 +246,14 @@ func (d *Deployer) uniqueHosts() []string {
 
 func (d *Deployer) rolloutRole(ctx context.Context, deployment state.Deployment, role string, server config.Server, imageRef string, envFile []byte) error {
 	buildOnHost := d.cfg.Builder.IsPerTarget()
-	hosts := server.Hosts
-	batchSize := 1
-	if d.cfg.Rollout.BatchSize != nil {
-		batchSize = *d.cfg.Rollout.BatchSize
-	}
-	if batchSize <= 0 || batchSize > len(hosts) {
-		batchSize = len(hosts)
-	}
-	for i := 0; i < len(hosts); i += batchSize {
-		end := i + batchSize
-		if end > len(hosts) {
-			end = len(hosts)
+	return fleet.Batches(ctx, server.Hosts, d.cfg.Rollout, nil, func(ctx context.Context, host string) error {
+		err := d.deployHost(ctx, deployment, role, host, server, imageRef, envFile, buildOnHost)
+		// With several hosts, say which one failed.
+		if err != nil && len(server.Hosts) > 1 {
+			return fmt.Errorf("%s: %w", host, err)
 		}
-		batch := hosts[i:end]
-		if i > 0 && d.cfg.Rollout.BatchWait > 0 {
-			select {
-			case <-time.After(d.cfg.Rollout.BatchWait):
-			case <-ctx.Done():
-				return ctx.Err()
-			}
-		}
-		if err := d.runBatch(ctx, deployment, role, server, imageRef, envFile, batch, buildOnHost); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func (d *Deployer) runBatch(ctx context.Context, deployment state.Deployment, role string, server config.Server, imageRef string, envFile []byte, hosts []string, buildOnHost bool) error {
-	if len(hosts) == 1 {
-		return d.deployHost(ctx, deployment, role, hosts[0], server, imageRef, envFile, buildOnHost)
-	}
-	var wg sync.WaitGroup
-	errCh := make(chan error, len(hosts))
-	for _, host := range hosts {
-		wg.Add(1)
-		go func(host string) {
-			defer wg.Done()
-			if err := d.deployHost(ctx, deployment, role, host, server, imageRef, envFile, buildOnHost); err != nil {
-				errCh <- fmt.Errorf("%s: %w", host, err)
-			}
-		}(host)
-	}
-	wg.Wait()
-	close(errCh)
-	var errs []string
-	for err := range errCh {
-		errs = append(errs, err.Error())
-	}
-	if len(errs) > 0 {
-		return errors.New(strings.Join(errs, "; "))
-	}
-	return nil
+		return err
+	})
 }
 
 func (d *Deployer) deployHost(ctx context.Context, deployment state.Deployment, role, host string, server config.Server, imageRef string, envFile []byte, buildOnHost bool) error {
@@ -1174,33 +1129,7 @@ func (d *Deployer) EnvDiff(ctx context.Context, out io.Writer) error {
 
 // diffEnv describes how live differs from desired, one line per key, sorted.
 func diffEnv(desired, live map[string]string) []string {
-	keys := map[string]bool{}
-	for k := range desired {
-		keys[k] = true
-	}
-	for k := range live {
-		keys[k] = true
-	}
-	sorted := make([]string, 0, len(keys))
-	for k := range keys {
-		sorted = append(sorted, k)
-	}
-	sort.Strings(sorted)
-
-	var lines []string
-	for _, key := range sorted {
-		want, inConfig := desired[key]
-		got, onHost := live[key]
-		switch {
-		case inConfig && !onHost:
-			lines = append(lines, "+ "+key+"  (in config, missing on host)")
-		case onHost && !inConfig:
-			lines = append(lines, "- "+key+"  (on host, not in config)")
-		case want != got:
-			lines = append(lines, "~ "+key+"  (value differs)")
-		}
-	}
-	return lines
+	return fleet.DiffEnv(desired, live)
 }
 
 // parseEnvFile reads the KEY=VALUE form secrets.Render writes and docker's
@@ -1560,18 +1489,11 @@ func (d *Deployer) Plan(ctx context.Context, out io.Writer) error {
 
 // LockStatus prints the lock holder per host (or "(free)" if not locked).
 func (d *Deployer) LockStatus(ctx context.Context, out io.Writer) error {
-	locker := lock.New(d.ssh, d.cfg.Service, d.uniqueHosts())
-	status, err := locker.Status(ctx)
+	status, err := lock.New(d.ssh, d.cfg.Service, d.uniqueHosts()).Status(ctx)
 	if err != nil {
 		return err
 	}
-	for _, host := range d.uniqueHosts() {
-		if v := status[host]; v == "" {
-			fmt.Fprintf(out, "%s\t(free)\n", host)
-		} else {
-			fmt.Fprintf(out, "%s\t%s\n", host, v)
-		}
-	}
+	fleet.WriteLockStatus(out, d.uniqueHosts(), status)
 	return nil
 }
 
@@ -1811,8 +1733,7 @@ func healthcheckCommand(host string, port int, path string, timeout, interval in
 }
 
 func (d *Deployer) failDeployment(deployment state.Deployment, cause error) error {
-	_ = d.updateStatus(deployment, state.StatusFailed)
-	return cause
+	return fleet.Audit{Store: d.store}.Fail(deployment, cause)
 }
 
 func (d *Deployer) withContainerDiagnostics(ctx context.Context, host, containerName string, cause error) error {
@@ -1874,24 +1795,11 @@ func formatAccessoryState(name, container, state string, err error) string {
 }
 
 func (d *Deployer) updateStatus(deployment state.Deployment, next state.Status) error {
-	deployment.Status = next
-	if next == state.StatusSucceeded || next == state.StatusFailed || next == state.StatusRolledBack {
-		now := time.Now().UTC()
-		deployment.FinishedAt = &now
-	}
-	return d.store.AppendDeployment(deployment)
+	return fleet.Audit{Store: d.store}.Status(deployment, next)
 }
 
 func (d *Deployer) appendEvent(deploymentID, host, role, eventType, message string) error {
-	return d.store.AppendEvent(state.Event{
-		ID:           fmt.Sprintf("%d", time.Now().UnixNano()),
-		DeploymentID: deploymentID,
-		Host:         host,
-		Role:         role,
-		EventType:    eventType,
-		Message:      message,
-		CreatedAt:    time.Now().UTC(),
-	})
+	return fleet.Audit{Store: d.store}.Event(deploymentID, host, role, eventType, message)
 }
 
 func (d *Deployer) containerName(role, version string) string {
@@ -1986,15 +1894,7 @@ func (d *Deployer) appPort(role string, server config.Server) int {
 }
 
 func orderedRoles(servers map[string]config.Server) []string {
-	roles := make([]string, 0, len(servers))
-	for role := range servers {
-		roles = append(roles, role)
-	}
-	sort.Strings(roles)
-	sort.SliceStable(roles, func(i, j int) bool {
-		return roles[i] == "web"
-	})
-	return roles
+	return fleet.OrderedRoles(servers)
 }
 
 // resolveVersion is version.Resolve; kept as a name so the Docker path reads

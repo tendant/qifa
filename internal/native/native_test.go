@@ -1,7 +1,6 @@
 package native
 
 import (
-	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"os"
@@ -9,7 +8,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -367,20 +365,6 @@ func TestPackWritesATempFileMatchingItsChecksum(t *testing.T) {
 	}
 }
 
-func TestPrefixWriterKeepsLinesWhole(t *testing.T) {
-	var out bytes.Buffer
-	var mu sync.Mutex
-	a := &prefixWriter{prefix: "h1 | ", out: &out, mu: &mu}
-	b := &prefixWriter{prefix: "h2 | ", out: &out, mu: &mu}
-	a.Write([]byte("one\ntw"))
-	b.Write([]byte("x\n"))
-	a.Write([]byte("o\nthree"))
-	a.flush()
-	want := "h1 | one\nh2 | x\nh1 | two\nh1 | three\n"
-	if out.String() != want {
-		t.Fatalf("got %q, want %q", out.String(), want)
-	}
-}
 
 // app exec loads the env file in the deploy user's shell and hands it on
 // through sudo -E: the values never reach a command line.
