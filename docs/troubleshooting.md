@@ -333,7 +333,7 @@ changed on any host at that point.
 
 | Message | Cause and fix |
 | --- | --- |
-| `/opt/qifa/<svc> is missing or not writable by deploy` | Setup has not run on that host: `qifa native setup --ssh-user root`. |
+| `/opt/qifa/<svc> is missing or not writable by deploy` | Setup has not run on that host: `qifa setup --ssh-user root`. |
 | `deploy may not run sudo -n systemctl restart ...` | The sudoers rule is missing (setup not run, or run with another `--deploy-user`). Re-run setup. |
 | `unit ... differs from the config` | `exec`, `user`, `restart` or the roles changed since setup. Re-run setup; deploys cannot change units. |
 | `systemctl cannot reach systemd ... install dbus` | As non-root, `systemctl` goes through D-Bus. `apt install dbus` (or the distro's equivalent). |

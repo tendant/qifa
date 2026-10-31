@@ -68,7 +68,7 @@ the earlier native-only keys (`native.exec`, `native.port`,
 | `build` | none | Shell command run on your machine, in the config's directory, before upload. `QIFA_VERSION` is set. |
 | `artifact` | required | What to ship. A directory's contents become the release root; a single file lands at the root under its own name. |
 | `servers.<role>.cmd` | required | The command, as a list or a string split into words; no shell either way. The first word is relative to the release unless absolute. |
-| `user` | required | Service account, created by `qifa native setup`. Not root. |
+| `user` | required | Service account, created by `qifa setup`. Not root. |
 | `arch` | none | `amd64`, `arm64`, `arm`, `386` or `riscv64`. ELF binaries are checked before upload, so a Mac-built arm64 binary is caught before it reaches an amd64 server. |
 | `servers.<role>.app_port`, `healthcheck` | interval 2s, timeout 5s per attempt, deploy_timeout 30s | HTTP check on `127.0.0.1:<app_port><path>` for every role with an `app_port`; other roles must stay active. |
 | `shared_dirs` | none | Directories under `shared/` linked into every release, for data that must outlive it. The only place the app can write besides `/tmp`. |
@@ -80,13 +80,13 @@ Container settings (`image`, `builder`, `registry`, `proxy`, `proxy_boot`,
 `accessories`, `volumes`, `port`/`app_port` on roles, ...) are rejected next to `native:`,
 because a config that sets them was written for the other mode.
 
-## First time: `qifa native setup`
+## First time: `qifa setup`
 
 Setup is the only step that needs root. Run it as a user with passwordless
 sudo, or as root:
 
 ```sh
-qifa native setup --ssh-user root
+qifa setup --ssh-user root
 ```
 
 On every host it creates the service account, `/opt/qifa/<service>`, the
@@ -252,12 +252,14 @@ Docker-only commands (`cert`, `accessory`, `prune`,
 ## Removing
 
 ```sh
-qifa native remove --ssh-user root            # stop and delete units and sudoers; keep data
-qifa native remove --ssh-user root --purge    # also delete releases, shared/ and the account
+qifa remove --ssh-user root            # stop and delete units and sudoers; keep data
+qifa remove --ssh-user root --purge    # also delete releases, shared/ and the account
 ```
 
 `--purge` asks you to type the service name (`--yes` skips the prompt, for
-scripts). Plain `qifa remove` only explains this, since it needs root.
+scripts). Removing needs root, as setup does, so pass `--ssh-user root`
+(or use an account with passwordless sudo). `qifa native setup` and
+`qifa native remove`, the earlier names, still work.
 
 ## On the server
 
@@ -288,7 +290,7 @@ checkout on any machine can deploy, roll back, or ask for status.
 The mode is per config file, so one server can run Docker apps and native apps
 side by side. They share only the lock directory naming
 (`/tmp/qifa-lock-<service>`), so **service names must be unique per host
-across both modes**; `native setup` warns when a host already has containers
+across both modes**; `qifa setup` warns when a host already has containers
 for the same service name. If kamal-proxy runs on the server, it owns ports
 80 and 443, so give native apps other ports. One service cannot mix modes
 between roles: split it into two services. The same goes for accessories: a

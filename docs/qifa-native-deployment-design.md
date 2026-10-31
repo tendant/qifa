@@ -259,11 +259,10 @@ Two privilege tiers.
 | `status` | Audit log history plus, per host: `current` version, unit state, health, available releases (`*` marks known-good) |
 | `logs [-f] [-n N]` | `journalctl -u <unit> [-f] -n N` on every host, lines prefixed by host when there are several; `-f` streams all hosts at once |
 | `app exec <cmd>` | On the first host of the first role: as the service account, in `current/`, with the app's env. The deploy user loads `etc/env` (valid shell as well as a systemd env file: the same escapes) and `sudo -n -E -u <user>` passes it on, so no value appears on a command line. Needs a second sudoers line, `deploy ALL=(<user>) NOPASSWD:SETENV: ALL`, which grants nothing new: the deploy user can already make that account run anything by deploying a release |
-| `remove` | Refuses, pointing at `native remove`: deleting units and sudoers needs root, which deploys never have |
-| `native remove [--ssh-user root] [--purge [--yes]]` | As root: stop and disable the units, delete them and the sudoers rule. `--purge` also deletes `/opt/qifa/<service>` (releases and `shared/`) and the service account, after the operator types the service name (or `--yes`) |
+| `remove [--ssh-user root] [--purge [--yes]]` | As root: stop and disable the units, delete them and the sudoers rule. `--purge` also deletes `/opt/qifa/<service>` (releases and `shared/`) and the service account, after the operator types the service name (or `--yes`). Was `native remove`, which still works |
 | `env diff` | §9 |
 | `lock status` / `lock release` | Unchanged |
-| `native setup` | §10 (new) |
+| `setup [--ssh-user root]` | §10; the same command sets up a Docker host (Docker present, deploy user in the docker group). Was `native setup`, which still works |
 | `doctor` | Native checks (§10) instead of Docker and registry checks |
 | `proxy *`, `app maintenance/live/containers`, `sweep`, `prune`, `backup`, `restore`, `cert` | Error: "not available with `native:`" |
 

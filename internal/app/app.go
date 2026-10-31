@@ -183,13 +183,13 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		return withBackend(ctx, stdout, stderr, configFile, func(b backend) error {
 			return b.Restart(ctx)
 		})
+	case "setup":
+		return runSetup(ctx, args[1:], stdout, stderr, configFile)
 	case "remove":
-		return withBackend(ctx, stdout, stderr, configFile, func(b backend) error {
-			return b.Remove(ctx)
-		})
+		return runRemove(ctx, args[1:], stdout, stderr, configFile)
 	case "prune":
-		return withRuntime(ctx, stdout, stderr, configFile, args[0], func(rt *runtime) error {
-			return rt.deployer.Prune(ctx)
+		return withBackend(ctx, stdout, stderr, configFile, func(b backend) error {
+			return b.Prune(ctx)
 		})
 	case "backup":
 		return withRuntime(ctx, stdout, stderr, configFile, args[0], func(rt *runtime) error {
@@ -226,8 +226,8 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 			return b.EnvDiff(ctx, stdout)
 		})
 	case "sync":
-		return withRuntime(ctx, stdout, stderr, configFile, args[0], func(rt *runtime) error {
-			return rt.deployer.SyncFiles(ctx)
+		return withBackend(ctx, stdout, stderr, configFile, func(b backend) error {
+			return b.SyncFiles(ctx)
 		})
 	case "proxy":
 		if len(args) < 2 {
@@ -240,7 +240,14 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		} else if native {
 			return runNativeProxy(ctx, verb, rest, stdout, stderr, configFile)
 		}
+		sshUser, rest, err := takeFlag(rest, "--ssh-user")
+		if err != nil {
+			return err
+		}
 		return withRuntime(ctx, stdout, stderr, configFile, args[0], func(rt *runtime) error {
+			if sshUser != "" {
+				rt.deployer.UseSSHUser(sshUser)
+			}
 			switch verb {
 			case "boot":
 				return rt.deployer.ProxyBoot(ctx)
@@ -472,7 +479,11 @@ type backend interface {
 	Stop(ctx context.Context) error
 	Start(ctx context.Context) error
 	Restart(ctx context.Context) error
-	Remove(ctx context.Context) error
+	Remove(ctx context.Context, purge bool) error
+	Setup(ctx context.Context, deployUser string) error
+	Prune(ctx context.Context) error
+	SyncFiles(ctx context.Context) error
+	UseSSHUser(user string)
 	Status(ctx context.Context, out io.Writer) error
 	Logs(ctx context.Context, lines int, follow bool, out io.Writer) error
 	EnvDiff(ctx context.Context, out io.Writer) error
@@ -556,7 +567,8 @@ func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "  stop")
 	fmt.Fprintln(w, "  start")
 	fmt.Fprintln(w, "  restart")
-	fmt.Fprintln(w, "  remove")
+	fmt.Fprintln(w, "  setup [--ssh-user <user>] [--deploy-user <user>]")
+	fmt.Fprintln(w, "  remove [--purge [--yes]] [--ssh-user <user>]")
 	fmt.Fprintln(w, "  prune")
 	fmt.Fprintln(w, "  backup")
 	fmt.Fprintln(w, "  restore <local-file>")
@@ -575,6 +587,4 @@ func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "  app live")
 	fmt.Fprintln(w, "  accessory <boot|stop|start|restart|remove|logs|exec> <name> [args...]")
 	fmt.Fprintln(w, "  cert <issue|renew|list|remove> [args...]")
-	fmt.Fprintln(w, "  native setup [--ssh-user <user>] [--deploy-user <user>]")
-	fmt.Fprintln(w, "  native remove [--ssh-user <user>] [--purge [--yes]]")
 }

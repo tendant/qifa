@@ -211,7 +211,7 @@ proxy's public port.
 ### 6. Without Docker: a systemd service
 
 A static binary run by systemd: no image, registry or proxy on the server.
-`qifa native setup --ssh-user root` once, then `qifa deploy` as usual.
+`qifa setup --ssh-user root` once, then `qifa deploy` as usual.
 
 ```yaml
 service: myapp
@@ -273,7 +273,7 @@ qifa rollback [version]          # auto = previous; or explicit version
 qifa stop                        # docker stop the running container per role/host
 qifa start                       # docker start the most recent labeled container
 qifa restart                     # stop then start (re-registers with proxy)
-qifa remove                      # full teardown + deregister proxy
+qifa remove [--purge]            # full teardown + deregister proxy; --purge: env files (Docker), releases+data (native)
 
 qifa prune                       # keep last N stopped (config: prune.retain)
 qifa sweep                       # remove orphan running containers (also runs at deploy start)
@@ -295,6 +295,7 @@ qifa app maintenance [--message <msg>] [--drain-timeout <duration>]
 qifa app live                    # leave maintenance mode
 
 qifa accessory <boot|stop|start|restart|remove|logs|exec> <name> [args]
+qifa setup --ssh-user root       # once per host: docker group (Docker), or account/units/sudoers (native)
 ```
 
 ## When A Deploy Fails

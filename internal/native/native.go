@@ -265,7 +265,7 @@ func (d *Deployer) checkHost(ctx context.Context, host, artifactArch string) (pr
 		problems = append(problems, fmt.Sprintf("systemctl cannot reach systemd as %s (no D-Bus system bus?) — install dbus", d.sshUser()))
 	}
 	if kv["dir"] != "ok" {
-		problems = append(problems, fmt.Sprintf("%s is missing or not writable by %s — run `qifa native setup`", d.cfg.Native.Dir, d.sshUser()))
+		problems = append(problems, fmt.Sprintf("%s is missing or not writable by %s — run `qifa setup --ssh-user root`", d.cfg.Native.Dir, d.sshUser()))
 	}
 	hostArch := UnameArch(kv["arch"])
 	if want := firstNonEmpty(d.cfg.Native.Arch, artifactArch); want != "" && hostArch != want {
@@ -274,14 +274,14 @@ func (d *Deployer) checkHost(ctx context.Context, host, artifactArch string) (pr
 	for _, role := range d.rolesOn(host) {
 		unit := d.cfg.NativeUnitName(role)
 		if kv["sudo:"+unit] != "ok" {
-			problems = append(problems, fmt.Sprintf("%s may not run `sudo -n systemctl restart %s` — run `qifa native setup`", d.sshUser(), unit))
+			problems = append(problems, fmt.Sprintf("%s may not run `sudo -n systemctl restart %s` — run `qifa setup --ssh-user root`", d.sshUser(), unit))
 		}
 		switch sum := kv["unitsum:"+unit]; sum {
 		case "":
-			problems = append(problems, fmt.Sprintf("unit %s is not installed — run `qifa native setup`", unit))
+			problems = append(problems, fmt.Sprintf("unit %s is not installed — run `qifa setup --ssh-user root`", unit))
 		case sha256Hex(RenderUnit(unitParams(d.cfg, role))):
 		default:
-			problems = append(problems, fmt.Sprintf("unit %s differs from the config (exec, user or restart changed) — run `qifa native setup`", unit))
+			problems = append(problems, fmt.Sprintf("unit %s differs from the config (exec, user or restart changed) — run `qifa setup --ssh-user root`", unit))
 		}
 	}
 	if routed && kv["proxy"] != "ok" {
@@ -533,7 +533,7 @@ func (d *Deployer) Logs(ctx context.Context, lines int, follow bool, out io.Writ
 // account, in the live release, with the app's environment: what the app
 // itself would see. The env file is valid shell (see RenderEnv), so the
 // deploy user loads it and sudo -E passes it on, and no value ever appears
-// on a command line. Needs the SETENV rule `qifa native setup` installs.
+// on a command line. Needs the SETENV rule `qifa setup` installs.
 func (d *Deployer) Exec(ctx context.Context, command string, out io.Writer) error {
 	host := d.cfg.Servers[fleet.OrderedRoles(d.cfg.Servers)[0]].Hosts[0]
 	return d.ssh.Stream(ctx, host, execScript(d.cfg.Native.Dir, d.cfg.Native.User, command), out)

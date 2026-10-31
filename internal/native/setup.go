@@ -20,7 +20,7 @@ func (d *Deployer) Setup(ctx context.Context, deployUser string) error {
 		deployUser = d.cfg.SSH.User
 	}
 	if deployUser == "" {
-		return fmt.Errorf("native setup needs the deploy user: set ssh.user in the config, or pass --deploy-user")
+		return fmt.Errorf("setup needs the deploy user: set ssh.user in the config, or pass --deploy-user")
 	}
 	if !deployUserRe.MatchString(deployUser) || deployUser == "root" {
 		return fmt.Errorf("deploy user %q: must be a normal account name, not root", deployUser)
@@ -29,7 +29,7 @@ func (d *Deployer) Setup(ctx context.Context, deployUser string) error {
 		d.log.Printf("setup %s: service user %s, deploy user %s, dir %s", host, d.cfg.Native.User, deployUser, d.cfg.Native.Dir)
 		systemctl, err := d.ssh.Run(ctx, host, "command -v systemctl")
 		if err != nil || !strings.HasPrefix(systemctl, "/") {
-			return fmt.Errorf("native setup on %s: systemd (systemctl) not found: %v", host, err)
+			return fmt.Errorf("setup on %s: systemd (systemctl) not found: %v", host, err)
 		}
 		script := d.setupScript(host, deployUser, systemctl)
 		wrapped := fmt.Sprintf(`if [ "$(id -u)" = 0 ]; then sh -c %[1]s; else sudo -n sh -c %[1]s; fi`, q(script))
@@ -40,7 +40,7 @@ func (d *Deployer) Setup(ctx context.Context, deployUser string) error {
 			}
 		}
 		if err != nil {
-			return fmt.Errorf("native setup on %s (needs root, or a user with passwordless sudo — try --ssh-user): %w", host, err)
+			return fmt.Errorf("setup on %s (needs root, or a user with passwordless sudo — try --ssh-user root): %w", host, err)
 		}
 	}
 	d.log.Printf("setup complete; deploy with `qifa deploy` as %s", deployUser)

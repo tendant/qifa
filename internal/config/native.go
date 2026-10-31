@@ -21,7 +21,7 @@ type Native struct {
 	// (current/) when relative. Never passed through a shell.
 	// Deprecated: use servers.<role>.cmd.
 	Exec []string `yaml:"exec,omitempty"`
-	// User is the account the service runs as, created by `qifa native setup`.
+	// User is the account the service runs as, created by `qifa setup`.
 	User string `yaml:"user"`
 	// Arch, when set (amd64, arm64, ...), is checked against the artifact and
 	// each host before anything is uploaded.

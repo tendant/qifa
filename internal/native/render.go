@@ -12,7 +12,7 @@ import (
 
 // UnitParams is everything a unit file depends on. Units go through `current`,
 // so they do not change from one release to the next — only when the config
-// does, which is what `qifa native setup` is for.
+// does, which is what `qifa setup` is for.
 type UnitParams struct {
 	Service string
 	Role    string
@@ -36,7 +36,7 @@ func unitParams(cfg *config.Config, role string) UnitParams {
 // RenderUnit renders the systemd unit for one role.
 func RenderUnit(p UnitParams) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "# Managed by qifa (qifa native setup). Local edits are overwritten.\n")
+	fmt.Fprintf(&b, "# Managed by qifa (qifa setup). Local edits are overwritten.\n")
 	fmt.Fprintf(&b, "[Unit]\n")
 	fmt.Fprintf(&b, "Description=qifa: %s (%s)\n", p.Service, p.Role)
 	fmt.Fprintf(&b, "After=network-online.target\n")
@@ -134,7 +134,7 @@ func RenderSudoers(deployUser, serviceUser, systemctl string, units []string) st
 			cmds = append(cmds, fmt.Sprintf("%s %s %s", systemctl, verb, u))
 		}
 	}
-	return "# Managed by qifa native setup.\n" +
+	return "# Managed by qifa setup.\n" +
 		fmt.Sprintf("%s ALL=(root) NOPASSWD: %s\n", deployUser, strings.Join(cmds, ", ")) +
 		fmt.Sprintf("%s ALL=(%s) NOPASSWD:SETENV: ALL\n", deployUser, serviceUser)
 }

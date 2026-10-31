@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"text/tabwriter"
 	"time"
 
@@ -704,7 +705,7 @@ func (d *Deployer) Restart(ctx context.Context) error {
 	return d.Start(ctx)
 }
 
-func (d *Deployer) Remove(ctx context.Context) error {
+func (d *Deployer) Remove(ctx context.Context, purge bool) error {
 	for _, host := range d.uniqueHosts() {
 		anyProxy := false
 		for _, role := range orderedRoles(d.cfg.Servers) {
@@ -735,6 +736,70 @@ func (d *Deployer) Remove(ctx context.Context) error {
 		}
 	}
 	d.log.Printf("removed all containers for %s", d.cfg.Service)
+	if purge {
+		// Each container's env file stays in /tmp after it is removed, and
+		// it holds the app's secrets.
+		for _, host := range d.uniqueHosts() {
+			var globs []string
+			for _, role := range fleet.RolesOn(d.cfg.Servers, host) {
+				globs = append(globs, "/tmp/"+shellQuoteB(d.cfg.Service+"-"+role+"-")+"*.env")
+			}
+			if len(globs) == 0 {
+				continue
+			}
+			if _, err := d.ssh.Run(ctx, host, "rm -f "+strings.Join(globs, " ")); err != nil {
+				return fmt.Errorf("%s: remove env files: %w", host, err)
+			}
+			d.log.Printf("%s: removed %s's env files", host, d.cfg.Service)
+		}
+	}
+	return nil
+}
+
+// UseSSHUser switches the SSH account, for commands that need root on the
+// hosts (setup), the same flag as in native mode.
+func (d *Deployer) UseSSHUser(user string) {
+	sshCfg := d.cfg.SSH
+	sshCfg.User = user
+	client := ssh.New(sshCfg)
+	d.ssh = client
+	d.remoteDocker = docker.NewRemote(client, d.stdout)
+	d.proxy = proxy.New(client, d.cfg.ProxyRoute(), d.cfg.ProxyBoot)
+}
+
+// Setup prepares every host for deploys by deployUser, as root: Docker must
+// be installed and running, and the deploy user in the docker group (the
+// steps docs/deploying.md lists). Idempotent; prints only what it changed.
+func (d *Deployer) Setup(ctx context.Context, deployUser string) error {
+	if deployUser == "" {
+		deployUser = d.cfg.SSH.User
+	}
+	if deployUser == "" || deployUser == "root" || strings.ContainsAny(deployUser, " '\"$`;") {
+		return fmt.Errorf("setup needs the deploy user (ssh.user, or --deploy-user), not %q", deployUser)
+	}
+	script := fmt.Sprintf(`set -eu
+deploy=%s
+command -v docker >/dev/null 2>&1 || { echo "docker is not installed: https://docs.docker.com/engine/install/" >&2; exit 1; }
+docker info >/dev/null 2>&1 || { echo "the docker daemon is not running" >&2; exit 1; }
+id "$deploy" >/dev/null 2>&1 || { echo "deploy user $deploy does not exist; create it first (docs/deploying.md)" >&2; exit 1; }
+if ! id -nG "$deploy" | tr ' ' '\n' | grep -qx docker; then
+  if command -v usermod >/dev/null 2>&1; then usermod -aG docker "$deploy"; else addgroup "$deploy" docker; fi
+  echo "added $deploy to the docker group"
+fi
+`, shellQuoteB(deployUser))
+	wrapped := fmt.Sprintf(`if [ "$(id -u)" = 0 ]; then sh -c %[1]s; else sudo -n sh -c %[1]s; fi`, shellQuoteB(script))
+	for _, host := range d.uniqueHosts() {
+		out, err := d.ssh.Run(ctx, host, wrapped)
+		for _, line := range strings.Split(out, "\n") {
+			if line != "" {
+				d.log.Printf("setup %s: %s", host, line)
+			}
+		}
+		if err != nil {
+			return fmt.Errorf("setup on %s (needs root, or passwordless sudo — try --ssh-user root): %w", host, err)
+		}
+	}
+	d.log.Printf("setup complete; deploy with `qifa deploy` as %s", deployUser)
 	return nil
 }
 
@@ -896,40 +961,60 @@ func (d *Deployer) Status(ctx context.Context, out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	sort.Slice(deployments, func(i, j int) bool {
-		return deployments[i].StartedAt.After(deployments[j].StartedAt)
-	})
-	for _, dep := range deployments {
-		fmt.Fprintf(out, "%s %s %s %s\n", dep.StartedAt.Format(time.RFC3339), dep.Service, dep.Version, dep.Status)
-	}
-	if len(events) > 0 {
-		fmt.Fprintln(out, "")
-		for _, event := range events {
-			fmt.Fprintf(out, "%s %s %s %s\n", event.CreatedAt.Format(time.RFC3339), event.Role, event.Host, event.Message)
-		}
-	}
-	printedHeader := false
-	for _, role := range orderedRoles(d.cfg.Servers) {
-		server := d.cfg.Servers[role]
-		for _, host := range server.Hosts {
-			containers, err := d.remoteDocker.ListContainersByService(ctx, host, d.cfg.Service, role)
-			if err != nil {
-				fmt.Fprintf(out, "active %s %s ERROR %v\n", role, host, err)
-				continue
-			}
-			for _, c := range containers {
-				if c.State != "running" && c.State != "restarting" {
-					continue
-				}
-				if !printedHeader {
-					fmt.Fprintln(out, "")
-					printedHeader = true
-				}
-				fmt.Fprintf(out, "active %s %s %s %s %s\n", c.CreatedAt.Format(time.RFC3339), role, host, c.Version, c.Name)
-			}
-		}
+	fleet.WriteHistory(out, deployments, events, 10)
+	for _, host := range fleet.Hosts(d.cfg.Servers) {
+		fleet.WriteHostStatus(out, d.hostStatus(ctx, host))
 	}
 	return nil
+}
+
+// hostStatus describes one host in the layout native mode uses too: each
+// role's running container, the versions its labelled containers cover
+// (newest first), the one a rollback would pick, and the proxy route.
+func (d *Deployer) hostStatus(ctx context.Context, host string) fleet.HostStatus {
+	h := fleet.HostStatus{Host: host}
+	seen := map[string]bool{}
+	routed := false
+	for _, role := range fleet.RolesOn(d.cfg.Servers, host) {
+		containers, err := d.remoteDocker.ListContainersByService(ctx, host, d.cfg.Service, role)
+		if err != nil {
+			h.Err = err
+			return h
+		}
+		rs := fleet.RoleStatus{Role: role}
+		for _, c := range containers {
+			if rs.Version == "" && (c.State == "running" || c.State == "restarting") {
+				rs.Version, rs.State, rs.Name = c.Version, c.State, c.Name
+			}
+		}
+		for _, c := range containers {
+			if c.Version != "" && !seen[c.Version] {
+				seen[c.Version] = true
+				h.Versions = append(h.Versions, fleet.Version{Version: c.Version})
+			}
+			if h.Rollback == "" && c.Version != "" && c.Version != rs.Version && rs.Version != "" {
+				h.Rollback = c.Version
+			}
+		}
+		h.Roles = append(h.Roles, rs)
+		routed = routed || serverUsesProxy(role, d.cfg.Servers[role])
+	}
+	if routed {
+		reg, ok, err := d.proxy.Registered(ctx, host, d.cfg.Service)
+		switch {
+		case err != nil:
+			h.Route = "ERROR kamal-proxy: " + err.Error()
+		case !ok:
+			h.Route = "(not registered — `qifa deploy` registers it)"
+		default:
+			from := reg.Host
+			if from == "" {
+				from = "*"
+			}
+			h.Route = fmt.Sprintf("%s -> %s (%s)", from, reg.Target, reg.State)
+		}
+	}
+	return h
 }
 
 // Backup runs cfg.Backup.Command inside the running app container, copies
@@ -1532,23 +1617,62 @@ func (d *Deployer) ListContainers(ctx context.Context, out io.Writer) error {
 }
 
 func (d *Deployer) Logs(ctx context.Context, lines int, follow bool, out io.Writer) error {
-	host, container, err := d.defaultTarget(ctx)
-	if err != nil {
-		return err
+	type target struct{ host, role, name string }
+	var targets []target
+	for _, role := range orderedRoles(d.cfg.Servers) {
+		for _, host := range d.cfg.Servers[role].Hosts {
+			name, err := d.findRunningContainer(ctx, host, role)
+			if err != nil {
+				return err
+			}
+			if name != "" {
+				targets = append(targets, target{host, role, name})
+			}
+		}
 	}
-	if follow {
-		return d.remoteDocker.LogsStream(ctx, host, container, lines, true, out)
+	if len(targets) == 0 {
+		return errors.New("no running container found")
 	}
-	if lines == 200 {
-		// Preserve the legacy one-shot path that buffers + trims.
-		logOutput, err := d.remoteDocker.Logs(ctx, host, container)
-		if err != nil {
+	if len(targets) == 1 {
+		t := targets[0]
+		if !follow && lines == 200 {
+			// Preserve the legacy one-shot path that buffers + trims.
+			logOutput, err := d.remoteDocker.Logs(ctx, t.host, t.name)
+			if err != nil {
+				return err
+			}
+			_, err = fmt.Fprintln(out, logOutput)
 			return err
 		}
-		_, err = fmt.Fprintln(out, logOutput)
-		return err
+		return d.remoteDocker.LogsStream(ctx, t.host, t.name, lines, follow, out)
 	}
-	return d.remoteDocker.LogsStream(ctx, host, container, lines, false, out)
+	// Several containers: every line says where it came from, as in native
+	// mode; following streams them all at once.
+	var mu sync.Mutex
+	stream := func(t target) error {
+		w := &fleet.PrefixWriter{Prefix: t.host + " " + t.role + " | ", Out: out, Mu: &mu}
+		err := d.remoteDocker.LogsStream(ctx, t.host, t.name, lines, follow, w)
+		w.Flush()
+		if err != nil {
+			return fmt.Errorf("%s %s: %w", t.host, t.role, err)
+		}
+		return nil
+	}
+	if !follow {
+		for _, t := range targets {
+			if err := stream(t); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	errs := make([]error, len(targets))
+	var wg sync.WaitGroup
+	for i, t := range targets {
+		wg.Go(func() { errs[i] = stream(t) })
+	}
+	wg.Wait()
+	return errors.Join(errs...)
 }
 
 func (d *Deployer) Exec(ctx context.Context, command string, out io.Writer) error {

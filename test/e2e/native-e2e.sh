@@ -107,13 +107,15 @@ proxy_status() { on_host "curl -s -k -o /dev/null -w '%{http_code}' --resolve ap
 step "deploy before setup is refused without touching the host"
 build_app v1
 if qifa deploy --version v1 >"$work/out" 2>&1; then cat "$work/out"; fail "deploy before setup succeeded"; fi
-grep -q "qifa native setup" "$work/out" || { cat "$work/out"; fail "error does not point at native setup"; }
+grep -q "qifa setup --ssh-user root" "$work/out" || { cat "$work/out"; fail "error does not point at qifa setup"; }
 on_host '[ ! -e /opt/qifa/nativeapp/current ]' || fail "deploy before setup changed the host"
 
-step "native setup (as root), twice: idempotent"
-qifa native setup --ssh-user root
+step "setup (as root), twice: idempotent; the old name still works"
+qifa setup --ssh-user root
+# The pre-unification spelling runs the same setup, and says it was renamed.
 qifa native setup --ssh-user root >"$work/out" 2>&1
 if grep -q "installed\|created" "$work/out"; then cat "$work/out"; fail "second setup changed something"; fi
+grep -q "qifa native setup is now qifa setup" "$work/out" || { cat "$work/out"; fail "no rename notice"; }
 
 step "deploy is refused until the proxy runs"
 if qifa deploy --version v1 >"$work/out" 2>&1; then cat "$work/out"; fail "deploy without a proxy succeeded"; fi
@@ -191,8 +193,8 @@ grep -q "not available when the config has native" "$work/out" || { cat "$work/o
 
 step "status shows live, known-good and rollback target"
 qifa status >"$work/out"
-grep -q "current  v2$" "$work/out" || { cat "$work/out"; fail "status current"; }
-grep -q "releases v3 v2\* v1\*" "$work/out" || { cat "$work/out"; fail "status releases"; }
+grep -q "^  web      v2  active  qifa-nativeapp.service$" "$work/out" || { cat "$work/out"; fail "status role"; }
+grep -q "versions v3 v2\* v1\*" "$work/out" || { cat "$work/out"; fail "status versions"; }
 grep -q "rollback v1" "$work/out" || { cat "$work/out"; fail "status rollback target"; }
 grep -q "health   up" "$work/out" || { cat "$work/out"; fail "status health"; }
 grep -q "route    app.test -> 127.0.0.1:8080 (running, tls)" "$work/out" || { cat "$work/out"; fail "status route"; }
@@ -249,6 +251,8 @@ build_app v5; qifa deploy --version v5 >/dev/null
 build_app v6; qifa deploy --version v6 >/dev/null
 releases=$(on_host 'ls /opt/qifa/nativeapp/releases | sort | tr "\n" " "')
 expect_eq "$releases" "v3 v5 v6 " "releases after pruning"
+qifa prune
+expect_eq "$(on_host 'ls /opt/qifa/nativeapp/releases | sort | tr "\n" " "')" "v3 v5 v6 " "qifa prune keeps the same releases"
 
 step "automatic certificates: kamal-proxy gets one from an ACME server (Pebble)"
 # kamal-proxy's ACME server is fixed: Let's Encrypt, or its staging URL with
@@ -370,17 +374,17 @@ expect_eq "$(leaf_served)" "$after" "served certificate after renewal"
 qifa deploy --version v6 >/dev/null
 expect_eq "$(via_proxy /version)" v6 "static certificate again"
 
-step "remove: plain remove points at native remove; teardown keeps data; purge deletes it"
+step "remove: needs root; keeps data; --purge deletes it after confirmation"
 if qifa remove >"$work/out" 2>&1; then fail "qifa remove succeeded without root"; fi
-grep -q "qifa native remove" "$work/out" || { cat "$work/out"; fail "remove hint"; }
-qifa native remove --ssh-user root
+grep -q "ssh-user root" "$work/out" || { cat "$work/out"; fail "remove does not say it needs root"; }
+qifa remove --ssh-user root
 on_host '[ ! -e /etc/systemd/system/qifa-nativeapp.service ] && [ ! -e /etc/sudoers.d/qifa-nativeapp ]' || fail "units or sudoers left"
 qifa proxy details | grep -q "app.test" && fail "route left on the proxy after remove"
 on_host '[ -d /opt/qifa/nativeapp/shared/storage ]' || fail "plain remove deleted data"
 on_host 'curl -fsS http://127.0.0.1:8080/up' 2>/dev/null && fail "app still running after remove"
-echo wrong | qifa native remove --ssh-user root --purge >"$work/out" 2>&1 && fail "purge without confirmation"
+echo wrong | qifa remove --ssh-user root --purge >"$work/out" 2>&1 && fail "purge without confirmation"
 on_host '[ -d /opt/qifa/nativeapp ]' || fail "unconfirmed purge deleted data"
-echo nativeapp | qifa native remove --ssh-user root --purge
+echo nativeapp | qifa remove --ssh-user root --purge
 on_host '[ ! -e /opt/qifa/nativeapp ] && ! id nativeapp 2>/dev/null' || fail "purge left data or user"
 
 step "proxy remove --purge"

@@ -3,7 +3,6 @@ package native
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"sort"
@@ -226,77 +225,61 @@ func (d *Deployer) Rollback(ctx context.Context, version string) error {
 	return nil
 }
 
-// Status prints the audit log, then what each host is running. Hosts are
-// the source of truth; the log only explains how they got there.
+// Status prints the audit log, then what each host is running, in the
+// layout Docker mode uses too. Hosts are the source of truth; the log only
+// explains how they got there.
 func (d *Deployer) Status(ctx context.Context, out io.Writer) error {
-	deployments, _, err := d.store.Snapshot()
+	deployments, events, err := d.store.Snapshot()
 	if err != nil {
 		return err
 	}
-	sort.Slice(deployments, func(i, j int) bool { return deployments[i].StartedAt.After(deployments[j].StartedAt) })
-	for i, dep := range deployments {
-		if i == 10 {
-			fmt.Fprintf(out, "... %d older\n", len(deployments)-10)
-			break
-		}
-		fmt.Fprintf(out, "%s %s %s %s\n", dep.StartedAt.Format(time.RFC3339), dep.Service, dep.Version, dep.Status)
-	}
+	fleet.WriteHistory(out, deployments, events, 10)
 	for _, host := range d.hosts() {
-		fmt.Fprintf(out, "\n%s\n", host)
-		inv, err := d.inventory(ctx, host, true)
-		if err != nil {
-			fmt.Fprintf(out, "  ERROR %v\n", err)
-			continue
-		}
-		cur, ok := inv.find(inv.Current)
-		switch {
-		case inv.Current == "":
-			fmt.Fprintln(out, "  current  (none — not deployed)")
-		case !ok:
-			fmt.Fprintf(out, "  current  %s (MISSING: the link points at a release that is not there)\n", inv.Current)
-		case cur.Healthy == 0:
-			fmt.Fprintf(out, "  current  %s (never passed a health check — interrupted deploy? `qifa deploy` or `qifa rollback`)\n", inv.Current)
-		default:
-			fmt.Fprintf(out, "  current  %s\n", inv.Current)
-		}
-		for _, unit := range d.unitsOn(host) {
-			fmt.Fprintf(out, "  unit     %s %s\n", unit, inv.Units[unit])
-		}
-		if inv.Health != "" {
-			fmt.Fprintf(out, "  health   %s\n", inv.Health)
-		}
-		var rels []string
-		for _, r := range inv.Releases {
-			tag := r.ID
-			if r.Healthy > 0 {
-				tag += "*"
-			}
-			rels = append(rels, tag)
-		}
-		fmt.Fprintf(out, "  releases %s  (* passed a health check; newest first)\n", firstNonEmpty(strings.Join(rels, " "), "(none)"))
-		if t := rollbackTarget(inv); t != "" {
-			fmt.Fprintf(out, "  rollback %s\n", t)
-		}
-		if d.routedOn(host) {
-			routes, err := d.ssh.Run(ctx, host, proxy.NativeCLI()+" list --json")
-			line := ""
-			if err == nil {
-				line, err = routeLine(routes, d.cfg.Service)
-			}
-			switch {
-			case err != nil:
-				fmt.Fprintf(out, "  route    ERROR kamal-proxy: %v\n", err)
-			case line == "":
-				fmt.Fprintln(out, "  route    (not registered — `qifa deploy` registers it)")
-			default:
-				fmt.Fprintf(out, "  route    %s\n", line)
-			}
-		}
-		if len(inv.Tmp) > 0 {
-			fmt.Fprintf(out, "  leftover %s (half-staged; removed by the next deploy)\n", strings.Join(inv.Tmp, " "))
-		}
+		fleet.WriteHostStatus(out, d.hostStatus(ctx, host))
 	}
 	return nil
+}
+
+func (d *Deployer) hostStatus(ctx context.Context, host string) fleet.HostStatus {
+	h := fleet.HostStatus{Host: host}
+	inv, err := d.inventory(ctx, host, true)
+	if err != nil {
+		h.Err = err
+		return h
+	}
+	for _, role := range d.rolesOn(host) {
+		unit := d.cfg.NativeUnitName(role)
+		h.Roles = append(h.Roles, fleet.RoleStatus{Role: role, Version: inv.Current, State: inv.Units[unit], Name: unit})
+	}
+	h.Health = inv.Health
+	for _, r := range inv.Releases {
+		h.Versions = append(h.Versions, fleet.Version{Version: r.ID, Healthy: r.Healthy > 0})
+	}
+	h.Rollback = rollbackTarget(inv)
+	if cur, ok := inv.find(inv.Current); inv.Current != "" && !ok {
+		h.Notes = append(h.Notes, fmt.Sprintf("current points at release %s, which is not there", inv.Current))
+	} else if inv.Current != "" && cur.Healthy == 0 {
+		h.Notes = append(h.Notes, fmt.Sprintf("release %s never passed a health check (an interrupted deploy?): `qifa deploy` or `qifa rollback`", inv.Current))
+	}
+	if len(inv.Tmp) > 0 {
+		h.Notes = append(h.Notes, fmt.Sprintf("half-staged %s, removed by the next deploy", strings.Join(inv.Tmp, " ")))
+	}
+	if d.routedOn(host) {
+		routes, err := d.ssh.Run(ctx, host, proxy.NativeCLI()+" list --json")
+		line := ""
+		if err == nil {
+			line, err = routeLine(routes, d.cfg.Service)
+		}
+		switch {
+		case err != nil:
+			h.Route = "ERROR kamal-proxy: " + err.Error()
+		case line == "":
+			h.Route = "(not registered — `qifa deploy` registers it)"
+		default:
+			h.Route = line
+		}
+	}
+	return h
 }
 
 // EnvDiff compares the env the config renders now with the env file on each
@@ -479,11 +462,29 @@ func (d *Deployer) Doctor(ctx context.Context, out io.Writer) error {
 	return nil
 }
 
-// Remove needs root (units and sudoers are root's), which deploys never have,
-// so it is a separate command run like setup.
-func (d *Deployer) Remove(context.Context) error {
-	return errors.New("removing a native service deletes its units and sudoers rule, which needs root: " +
-		"run `qifa native remove --ssh-user root` (add --purge to also delete releases, shared data and the service account)")
+// Remove undoes setup on every host: units and sudoers rule go, and with
+// purge the install directory (releases, shared data) and the service account
+// too. Units and sudoers are root's, so it needs --ssh-user root or
+// passwordless sudo; Teardown says so when it fails.
+func (d *Deployer) Remove(ctx context.Context, purge bool) error {
+	return d.Teardown(ctx, purge)
+}
+
+// Prune deletes old releases on every host, keeping prune.retain, the live
+// release and the rollback target. Deploys do this already; this is the
+// command for doing it on its own, as in Docker mode.
+func (d *Deployer) Prune(ctx context.Context) error {
+	for _, host := range d.hosts() {
+		if err := d.prune(ctx, host); err != nil {
+			return fmt.Errorf("%s: %w", host, err)
+		}
+	}
+	return nil
+}
+
+// SyncFiles uploads config.files to every host, as a deploy does first.
+func (d *Deployer) SyncFiles(ctx context.Context) error {
+	return d.syncFiles(ctx, d.hosts())
 }
 
 // Teardown undoes Setup on every host, as root.
@@ -503,7 +504,7 @@ func (d *Deployer) Teardown(ctx context.Context, purge bool) error {
 			}
 		}
 		if err != nil {
-			return fmt.Errorf("native remove on %s (needs root, or passwordless sudo — try --ssh-user): %w", host, err)
+			return fmt.Errorf("remove on %s (needs root, or passwordless sudo — try --ssh-user root): %w", host, err)
 		}
 	}
 	return nil

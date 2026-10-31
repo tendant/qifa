@@ -26,6 +26,7 @@ func runNative(ctx context.Context, args []string, stdout, stderr io.Writer, con
 	if len(args) == 0 || (args[0] != "setup" && args[0] != "remove") {
 		return errors.New(nativeUsage)
 	}
+	fmt.Fprintf(stderr, "warning: qifa native %[1]s is now qifa %[1]s (the same in both modes)\n", args[0])
 	verb := args[0]
 	sshUser, deployUser := "", ""
 	purge, yes := false, false
@@ -175,4 +176,87 @@ func runNativeProxy(ctx context.Context, verb string, rest []string, stdout, std
 	default:
 		return errors.New(nativeProxyUsage)
 	}
+}
+
+// takeFlag removes `flag <value>` from args and returns the value.
+func takeFlag(args []string, flag string) (string, []string, error) {
+	var rest []string
+	value := ""
+	for i := 0; i < len(args); i++ {
+		if args[i] == flag {
+			if i+1 >= len(args) {
+				return "", nil, fmt.Errorf("%s requires a value", flag)
+			}
+			value = args[i+1]
+			i++
+			continue
+		}
+		rest = append(rest, args[i])
+	}
+	return value, rest, nil
+}
+
+// runSetup prepares the hosts for deploys, as root, in either mode: a
+// native host gets its account, directories, units and sudoers rule; a Docker
+// host is checked for Docker and its deploy user put in the docker group.
+func runSetup(ctx context.Context, args []string, stdout, stderr io.Writer, configFile string) error {
+	sshUser, args, err := takeFlag(args, "--ssh-user")
+	if err != nil {
+		return err
+	}
+	deployUser, args, err := takeFlag(args, "--deploy-user")
+	if err != nil {
+		return err
+	}
+	if len(args) > 0 {
+		return fmt.Errorf("unknown argument %q\nusage: qifa setup [--ssh-user <user>] [--deploy-user <user>]", args[0])
+	}
+	return withBackend(ctx, stdout, stderr, configFile, func(b backend) error {
+		if sshUser != "" {
+			b.UseSSHUser(sshUser)
+		}
+		return b.Setup(ctx, deployUser)
+	})
+}
+
+// runRemove tears the service down in either mode. --purge also deletes what
+// a plain remove keeps: on a native host the install directory (every
+// release and shared data) and the service account, after confirmation; in
+// Docker mode the env files left in /tmp, which hold the app's secrets.
+func runRemove(ctx context.Context, args []string, stdout, stderr io.Writer, configFile string) error {
+	sshUser, args, err := takeFlag(args, "--ssh-user")
+	if err != nil {
+		return err
+	}
+	purge, yes := false, false
+	for _, a := range args {
+		switch a {
+		case "--purge":
+			purge = true
+		case "--yes":
+			yes = true
+		default:
+			return fmt.Errorf("unknown argument %q\nusage: qifa remove [--purge [--yes]] [--ssh-user <user>]", a)
+		}
+	}
+	if yes && !purge {
+		return errors.New("--yes only applies to --purge")
+	}
+	cfg, _, err := loadConfig(configFile)
+	if err != nil {
+		return err
+	}
+	if purge && cfg.IsNative() && !yes {
+		fmt.Fprintf(stdout, "--purge deletes %s on every host — every release and all shared data — and the %s account.\nType the service name (%s) to confirm: ", cfg.Native.Dir, cfg.Native.User, cfg.Service)
+		line, _ := bufio.NewReader(confirmInput).ReadString('\n')
+		if strings.TrimSpace(line) != cfg.Service {
+			return errors.New("not confirmed; nothing was removed")
+		}
+	}
+	return withBackend(ctx, stdout, stderr, configFile, func(b backend) error {
+		if sshUser != "" {
+			b.UseSSHUser(sshUser)
+		}
+		return b.Remove(ctx, purge)
+	})
 }

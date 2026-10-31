@@ -86,8 +86,8 @@ qifa app live           # take service out of maintenance mode (kamal-proxy resu
 qifa accessory <boot|stop|start|restart|remove|logs|exec> <name> [args...]
 
 # native mode (config with a native: block); docs/native.md
-qifa native setup [--ssh-user root]           # once per host, as root: account, dirs, units, sudoers
-qifa native remove [--ssh-user root] [--purge]
+qifa setup [--ssh-user root]                  # both modes, once per host, as root
+qifa remove [--purge] [--ssh-user root]       # native: units, sudoers (+ releases, data); Docker: + env files
 qifa proxy boot|upgrade|remove [--ssh-user root]  # kamal-proxy as a systemd service
 ```
 

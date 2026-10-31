@@ -81,6 +81,12 @@ ssh-keyscan -p $SSH_PORT 127.0.0.1 > "$HOME_DIR/.ssh/known_hosts"
 printf 'zottest 127.0.0.1\n' > "$TMP_DIR/hosts.aliases"
 
 export HOME="$HOME_DIR"
+# ssh finds ~/.ssh from the account, not $HOME: name the test's key and
+# known_hosts explicitly.
+host_ssh() {
+  ssh -p "$SSH_PORT" -o BatchMode=yes -o UserKnownHostsFile="$HOME_DIR/.ssh/known_hosts" \
+    -i "$HOME_DIR/.ssh/id_ed25519" root@127.0.0.1 "$@"
+}
 export DOCKER_HOST="tcp://127.0.0.1:$DOCKER_PORT"
 export HOSTALIASES="$TMP_DIR/hosts.aliases"
 export REGISTRY_PASSWORD="$REGISTRY_PASSWORD_VALUE"
@@ -174,6 +180,12 @@ EOF
 
 (
   cd "$WEB_DIR"
+  # setup: Docker present, the deploy user in the docker group; idempotent.
+  host_ssh 'id deploy >/dev/null 2>&1 || adduser -D deploy'
+  "$BIN_DIR/qifa" setup --deploy-user deploy
+  host_ssh 'id -nG deploy' | tr ' ' '\n' | grep -qx docker \
+    || { echo "FAIL: setup did not put deploy in the docker group" >&2; exit 1; }
+  "$BIN_DIR/qifa" setup --deploy-user deploy | grep -q "added" && { echo "FAIL: second setup changed something" >&2; exit 1; }
   "$BIN_DIR/qifa" proxy boot
   "$BIN_DIR/qifa" deploy
   curl -fsS -H 'Host: localhost' http://127.0.0.1:$HTTP_PORT/up
@@ -261,6 +273,20 @@ load_check() {
   load_check zd1 zd1 "same-version redeploy"
   docker --host "$DOCKER_HOST" ps --format '{{.Names}}' | grep -qx 'demo-web-web-zd1-r' \
     || { echo "FAIL: same-version redeploy did not run as demo-web-web-zd1-r" >&2; exit 1; }
+
+  # status: the same per-host layout as native mode.
+  "$BIN_DIR/qifa" status > "$RUN_ROOT/status.out"
+  for want in "^  web      zd1  running  demo-web-web-zd1-r\$" "^  versions zd1 zd2" "^  rollback zd2\$" "^  route    localhost -> demo-web-web-zd1-r:3000 (running)\$"; do
+    grep -q "$want" "$RUN_ROOT/status.out" || { echo "FAIL: status lacks /$want/:" >&2; cat "$RUN_ROOT/status.out" >&2; exit 1; }
+  done
+
+  # remove --purge: containers, route and the env files holding secrets go.
+  "$BIN_DIR/qifa" remove --purge
+  [ -z "$(docker --host "$DOCKER_HOST" ps -aq --filter label=qifa.service=demo-web)" ] \
+    || { echo "FAIL: containers left after remove" >&2; exit 1; }
+  host_ssh 'ls /tmp/demo-web-web-*.env 2>/dev/null' \
+    && { echo "FAIL: env files left after remove --purge" >&2; exit 1; }
+  echo "remove --purge: containers and env files gone"
 )
 
 (

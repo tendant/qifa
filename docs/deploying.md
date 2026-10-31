@@ -47,7 +47,7 @@ Then `qifa proxy boot` once per host, and `qifa doctor` from each person's
 machine to confirm SSH, docker, and registry access before their first deploy.
 
 Apps deployed without Docker (`native:` configs) use the same `deploy` user,
-without the docker group: `qifa native setup --ssh-user root` once per host
+without the docker group: `qifa setup --ssh-user root` once per host
 grants it start/stop/restart of that app's units and nothing more. See
 [native.md](native.md).
 
