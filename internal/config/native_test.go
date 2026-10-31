@@ -291,3 +291,31 @@ func TestUnsetDeployTimeoutKeepsFiveAttempts(t *testing.T) {
 		t.Fatalf("explicit deploy_timeout = %vs", got)
 	}
 }
+
+// A native app can route through the server's Docker kamal-proxy instead of
+// a native one: both kinds of app behind one proxy on a mixed server.
+func TestNativeContainerProxyMode(t *testing.T) {
+	base := nativeBase + "proxy:\n  host: app.example.com\n"
+	cfg, err := loadString(t, base+"proxy_boot:\n  mode: container\n  network: edge\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ProxyMode() != ProxyModeContainer || cfg.ProxyBoot.Network != "edge" {
+		t.Fatalf("mode=%s network=%s", cfg.ProxyMode(), cfg.ProxyBoot.Network)
+	}
+	if cfg, _ := loadString(t, base); cfg.ProxyMode() != ProxyModeNative {
+		t.Fatal("native configs default to the native proxy")
+	}
+	for name, c := range map[string]struct{ yaml, want string }{
+		"bad mode":              {base + "proxy_boot:\n  mode: sidecar\n", "proxy_boot.mode"},
+		"network without mode":  {base + "proxy_boot:\n  network: edge\n", "proxy_boot.network"},
+		"binary with container": {base + "proxy_boot:\n  mode: container\n  binary: ./kp\n", "proxy_boot.binary"},
+		"docker config native":  {"service: app\nimage: x/app:1\nservers:\n  web:\n    hosts: [h]\nproxy_boot:\n  mode: native\n", "always uses the container proxy"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := loadString(t, c.yaml); err == nil || !strings.Contains(err.Error(), c.want) {
+				t.Fatalf("got %v, want %q", err, c.want)
+			}
+		})
+	}
+}

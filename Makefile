@@ -1,4 +1,4 @@
-.PHONY: build install uninstall test test-e2e test-e2e-native ci
+.PHONY: build install uninstall test test-e2e test-e2e-native test-e2e-mixed ci
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
@@ -39,5 +39,10 @@ test-e2e:
 # systemd host container. Needs Docker locally, privileged containers allowed.
 test-e2e-native:
 	test/e2e/native-e2e.sh
+
+# Docker and native apps behind one (Docker) kamal-proxy on a systemd+Docker
+# host.
+test-e2e-mixed:
+	test/e2e/mixed-e2e.sh
 
 ci: test test-e2e

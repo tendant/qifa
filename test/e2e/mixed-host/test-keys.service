@@ -1,0 +1,12 @@
+# Installs the mounted public key for root and deploy before sshd starts.
+# Copied rather than read off the bind mount so ownership is right on any host.
+[Unit]
+Description=install e2e ssh keys
+Before=ssh.service
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c 'for u in root deploy; do h=$(getent passwd $u | cut -d: -f6); install -d -m 700 -o $u -g $u $h/.ssh; install -m 600 -o $u -g $u /test-ssh/authorized_keys $h/.ssh/authorized_keys; done'
+
+[Install]
+WantedBy=multi-user.target

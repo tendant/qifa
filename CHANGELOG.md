@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **Docker and native apps behind one proxy on the same server.** A native
+  config can set `proxy_boot.mode: container` to route through the server's
+  Docker kamal-proxy, reached via the Docker network's gateway, instead of a
+  native one. The native proxy stays the default. See
+  [docs/native.md](docs/native.md), "One proxy for both".
+
 ## v0.2.1 — 2026-10-31
 
 ### Fixed

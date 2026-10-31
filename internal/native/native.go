@@ -253,7 +253,7 @@ func (d *Deployer) preflight(ctx context.Context, hosts []string, artifactArch s
 // earlier deploy) that the deploy itself will repair.
 func (d *Deployer) checkHost(ctx context.Context, host, artifactArch string) (problems, warnings []string, err error) {
 	routed := d.routedOn(host)
-	out, err := d.ssh.Run(ctx, host, preflightScript(d.cfg.Native.Dir, d.unitsOn(host), routed))
+	out, err := d.ssh.Run(ctx, host, preflightScript(d.cfg.Native.Dir, d.unitsOn(host), routed, d.proxyCLI()))
 	if err != nil {
 		return nil, nil, err
 	}
@@ -285,7 +285,11 @@ func (d *Deployer) checkHost(ctx context.Context, host, artifactArch string) (pr
 		}
 	}
 	if routed && kv["proxy"] != "ok" {
-		problems = append(problems, fmt.Sprintf("kamal-proxy is not running here, or %s cannot reach its socket — run `qifa proxy boot --ssh-user root`", d.sshUser()))
+		if d.containerProxy() {
+			problems = append(problems, fmt.Sprintf("the Docker kamal-proxy is not running here, or %s cannot use Docker — boot it from a Docker config on this server (`qifa proxy boot`), and put %s in the docker group (`qifa setup` from a Docker config)", d.sshUser(), d.sshUser()))
+		} else {
+			problems = append(problems, fmt.Sprintf("kamal-proxy is not running here, or %s cannot reach its socket — run `qifa proxy boot --ssh-user root`", d.sshUser()))
+		}
 	}
 	if kv["currentok"] == "no" {
 		warnings = append(warnings, fmt.Sprintf("current release %s never passed its health check (an interrupted deploy?)", strings.TrimPrefix(kv["current"], "releases/")))

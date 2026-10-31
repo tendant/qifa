@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/tendant/qifa/internal/config"
 	"github.com/tendant/qifa/internal/proxy"
 )
 
@@ -50,15 +51,68 @@ func (d *Deployer) routedOn(host string) bool {
 // health-checks the target itself before routing to it, using the app's own
 // health check path; each check gets 5s, the deploy timeout bounds them all.
 func (d *Deployer) routeProxy() *proxy.KamalProxy {
+	if d.containerProxy() {
+		return proxy.New(d.ssh, d.cfg.ProxyRoute(), d.cfg.ProxyBoot)
+	}
 	return proxy.NewNative(d.ssh, d.cfg.ProxyRoute())
+}
+
+// containerProxy reports whether the app routes through the server's Docker
+// kamal-proxy (proxy_boot.mode: container) rather than a native one.
+func (d *Deployer) containerProxy() bool {
+	return d.cfg.ProxyMode() == config.ProxyModeContainer
+}
+
+// proxyCLI is the command prefix that reaches the app's proxy on a host.
+func (d *Deployer) proxyCLI() string {
+	if d.containerProxy() {
+		return proxy.ContainerCLI()
+	}
+	return proxy.NativeCLI()
+}
+
+// proxyNetwork is the Docker network the container proxy runs on.
+func (d *Deployer) proxyNetwork() string {
+	if d.cfg.ProxyBoot.Network != "" {
+		return d.cfg.ProxyBoot.Network
+	}
+	return "kamal"
+}
+
+// targetHost is the address the proxy reaches the app at on host: loopback
+// for a native proxy; for the container proxy, the gateway of its Docker
+// network, which is the host itself as seen from inside the container. The
+// app must listen there (or on 0.0.0.0), not only on 127.0.0.1.
+func (d *Deployer) targetHost(ctx context.Context, host string) (string, error) {
+	if !d.containerProxy() {
+		return "127.0.0.1", nil
+	}
+	out, err := d.ssh.Run(ctx, host, "docker network inspect -f '{{range .IPAM.Config}}{{.Gateway}} {{end}}' "+q(d.proxyNetwork()))
+	if err != nil {
+		return "", fmt.Errorf("%s: find the gateway of Docker network %s: %w", host, d.proxyNetwork(), err)
+	}
+	for _, ip := range strings.Fields(out) {
+		if !strings.Contains(ip, ":") { // IPv4
+			return ip, nil
+		}
+	}
+	return "", fmt.Errorf("%s: Docker network %s has no IPv4 gateway", host, d.proxyNetwork())
 }
 
 func (d *Deployer) registerRoute(ctx context.Context, host string) error {
 	port := d.cfg.AppPort(d.cfg.NativeProxyRole())
-	target := proxy.Target{Service: d.cfg.Service, Host: "127.0.0.1", Port: port}
-	d.log.Printf("%s: routing %s to 127.0.0.1:%d", host, strings.Join(d.routeNames(), ", "), port)
+	addr, err := d.targetHost(ctx, host)
+	if err != nil {
+		return err
+	}
+	target := proxy.Target{Service: d.cfg.Service, Host: addr, Port: port}
+	d.log.Printf("%s: routing %s to %s:%d", host, strings.Join(d.routeNames(), ", "), addr, port)
 	if err := d.routeProxy().Deploy(ctx, host, target); err != nil {
-		return fmt.Errorf("%s: the new release is running, but kamal-proxy did not accept the route: %w", host, err)
+		hint := ""
+		if d.containerProxy() {
+			hint = fmt.Sprintf(" (the Docker proxy reaches the app at %s:%d: it must listen on 0.0.0.0 or that address, and a host firewall must allow it)", addr, port)
+		}
+		return fmt.Errorf("%s: the new release is running, but kamal-proxy did not accept the route%s: %w", host, hint, err)
 	}
 	return nil
 }
@@ -127,7 +181,14 @@ func (d *Deployer) proxyPorts() (int, int) {
 // ProxyBoot installs or upgrades the native proxy on every proxy host, as
 // root. Idempotent: it restarts the proxy only when the binary or unit
 // changed. Routes survive, being in the state directory.
+// errContainerManaged answers proxy boot/upgrade/remove/start/stop/restart
+// from a native config that routes through the Docker proxy.
+var errContainerManaged = errors.New("this app routes through the Docker kamal-proxy (proxy_boot.mode: container), which the server's Docker configs manage: run `qifa proxy ...` from one of them")
+
 func (d *Deployer) ProxyBoot(ctx context.Context, deployUser string) error {
+	if d.containerProxy() {
+		return errContainerManaged
+	}
 	if err := checkDeployUser(deployUser, d.cfg.SSH.User); err != nil {
 		return err
 	}
@@ -328,6 +389,9 @@ func buildKamalProxy(ctx context.Context, v, arch, out string, stderr io.Writer)
 // ProxyRemove undoes ProxyBoot, as root. Routes and certificates are kept
 // unless purge, which also deletes the state directory and account.
 func (d *Deployer) ProxyRemove(ctx context.Context, purge bool) error {
+	if d.containerProxy() {
+		return errContainerManaged
+	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "set -eu\nunit=%s\n", q(proxy.NativeUnit))
 	b.WriteString(`systemctl disable --now "$unit" >/dev/null 2>&1 || true
@@ -352,6 +416,9 @@ if [ -e /etc/sudoers.d/qifa-proxy ]; then rm -f /etc/sudoers.d/qifa-proxy; echo 
 // ProxyCtl starts, stops or restarts the proxy service as the deploy user,
 // through the sudoers rule proxy boot installs.
 func (d *Deployer) ProxyCtl(ctx context.Context, verb string) error {
+	if d.containerProxy() {
+		return errContainerManaged
+	}
 	for _, host := range d.proxyHosts() {
 		d.log.Printf("%s: systemctl %s %s", host, verb, proxy.NativeUnit)
 		if _, err := d.ssh.Sudo(ctx, host, "systemctl", verb, proxy.NativeUnit); err != nil {
@@ -367,6 +434,9 @@ func (d *Deployer) ProxyLogs(ctx context.Context, lines int, follow bool, out io
 		return errors.New("no proxy hosts configured")
 	}
 	cmd := fmt.Sprintf("journalctl --no-pager -u %s -n %d", q(proxy.NativeUnit), lines)
+	if d.containerProxy() {
+		cmd = fmt.Sprintf("docker logs --tail %d kamal-proxy", lines)
+	}
 	if follow {
 		cmd += " -f"
 	}
@@ -377,7 +447,7 @@ func (d *Deployer) ProxyLogs(ctx context.Context, lines int, follow bool, out io
 func (d *Deployer) ProxyDetails(ctx context.Context, out io.Writer) error {
 	for _, host := range d.proxyHosts() {
 		fmt.Fprintf(out, "%s:\n", host)
-		if err := d.ssh.Stream(ctx, host, proxy.NativeCLI()+" list", out); err != nil {
+		if err := d.ssh.Stream(ctx, host, d.proxyCLI()+" list", out); err != nil {
 			return fmt.Errorf("%s: %w", host, err)
 		}
 	}

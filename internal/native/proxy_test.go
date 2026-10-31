@@ -1,6 +1,7 @@
 package native
 
 import (
+	"context"
 	"os/exec"
 	"strings"
 	"testing"
@@ -35,7 +36,7 @@ func TestProxyScriptsParse(t *testing.T) {
 	d := &Deployer{cfg: cfg}
 	for name, s := range map[string]string{
 		"boot":      proxyBootScript("/var/tmp/qifa-kamal-proxy-1", "deploy", RenderProxyUnit(80, 443)),
-		"preflight": preflightScript("/opt/qifa/app", []string{"qifa-app.service"}, true),
+		"preflight": preflightScript("/opt/qifa/app", []string{"qifa-app.service"}, true, proxy.NativeCLI()),
 	} {
 		if out, err := exec.Command("sh", "-n", "-c", s).CombinedOutput(); err != nil {
 			t.Errorf("%s does not parse: %v\n%s", name, err, out)
@@ -76,5 +77,30 @@ func TestNativeConfigRoutedOnlyOnProxyRole(t *testing.T) {
 	}
 	if got := strings.Join(d.proxyHosts(), ","); got != "h1,h2" {
 		t.Fatalf("proxy hosts = %s", got)
+	}
+}
+
+func TestContainerModeUsesTheDockerProxy(t *testing.T) {
+	cfg := testConfig()
+	cfg.Proxy = config.Proxy{Host: "app.example.com"}
+	cfg.ProxyBoot.Mode = config.ProxyModeContainer
+	d := &Deployer{cfg: cfg}
+	if d.proxyCLI() != proxy.ContainerCLI() || !strings.HasPrefix(d.proxyCLI(), "docker exec 'kamal-proxy' ") {
+		t.Fatalf("proxy CLI = %s", d.proxyCLI())
+	}
+	if d.proxyNetwork() != "kamal" {
+		t.Fatalf("default network = %s", d.proxyNetwork())
+	}
+	if !strings.Contains(preflightScript("/opt/qifa/app", nil, true, d.proxyCLI()), "docker exec 'kamal-proxy' kamal-proxy list") {
+		t.Fatal("preflight must check the Docker proxy")
+	}
+	// The Docker configs on the server own that proxy.
+	if err := d.ProxyBoot(context.Background(), "deploy"); err == nil || !strings.Contains(err.Error(), "Docker configs manage") {
+		t.Fatalf("proxy boot from a container-mode native config: %v", err)
+	}
+	// Native mode is unchanged.
+	cfg.ProxyBoot.Mode = ""
+	if d.proxyCLI() != proxy.NativeCLI() {
+		t.Fatal("native mode must keep the native proxy")
 	}
 }

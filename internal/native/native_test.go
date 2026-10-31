@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/tendant/qifa/internal/config"
+	"github.com/tendant/qifa/internal/proxy"
 )
 
 func TestExecStartQuotesArgumentsAndNeutralisesExpansion(t *testing.T) {
@@ -177,7 +178,7 @@ func TestScriptsParse(t *testing.T) {
 		"markok":      markOKScript("/opt/qifa/app", "abc123"),
 		"health-http": healthScript("qifa-app.service", "http://127.0.0.1:8080/up", 30, 2, 5),
 		"health":      healthScript("qifa-app.service", "", 30, 2, 5),
-		"preflight":   preflightScript("/opt/qifa/app", []string{"qifa-app.service"}, true),
+		"preflight":   preflightScript("/opt/qifa/app", []string{"qifa-app.service"}, true, proxy.NativeCLI()),
 		"diagnostics": diagnosticsScript("qifa-app.service"),
 	}
 	cfg := testConfig()

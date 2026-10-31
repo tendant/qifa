@@ -470,7 +470,7 @@ func newCertManager(out io.Writer, configFile, legoImage string) (*cert.Manager,
 		AlpineImage: os.Getenv("QIFA_ALPINE_IMAGE"),
 		// A native config's proxy is a systemd service: lego runs as a
 		// binary there and certificates are a plain directory.
-		Native: cfg.IsNative(),
+		Native: cfg.IsNative() && cfg.ProxyMode() == config.ProxyModeNative,
 	}), nil
 }
 

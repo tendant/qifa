@@ -241,7 +241,18 @@ type ProxyBoot struct {
 	// Binary is a local kamal-proxy executable for the hosts, used by a
 	// native proxy (config.native) instead of building one with Go. Optional.
 	Binary string `yaml:"binary"`
+	// Mode is which kamal-proxy a native app routes through: "native" (a
+	// systemd service, the default) or "container" (the Docker proxy that
+	// the server's Docker apps already use). Docker configs always use the
+	// container proxy.
+	Mode string `yaml:"mode,omitempty"`
 }
+
+// Proxy modes.
+const (
+	ProxyModeNative    = "native"
+	ProxyModeContainer = "container"
+)
 
 type Healthcheck struct {
 	Path     string        `yaml:"path"`
@@ -472,6 +483,9 @@ func (c *Config) Validate() error {
 	}
 	if c.ProxyBoot.Binary != "" {
 		return errors.New("config.proxy_boot.binary applies only with config.native (the container proxy runs its image)")
+	}
+	if c.ProxyBoot.Mode != "" && c.ProxyBoot.Mode != ProxyModeContainer {
+		return fmt.Errorf("config.proxy_boot.mode %q: a Docker config always uses the container proxy", c.ProxyBoot.Mode)
 	}
 	if c.ProxyBoot.HTTPPort < 0 {
 		return errors.New("config.proxy_boot.http_port must not be negative")

@@ -50,7 +50,7 @@ type KamalProxy struct {
 const proxyContainerName = "kamal-proxy"
 
 func New(client *ssh.Client, app config.Proxy, boot config.ProxyBoot) *KamalProxy {
-	return &KamalProxy{client: client, app: app, boot: boot, cli: "docker exec " + shellQuote(proxyContainerName) + " kamal-proxy", qifaCertRoot: QifaCertRootInContainer}
+	return &KamalProxy{client: client, app: app, boot: boot, cli: ContainerCLI(), qifaCertRoot: QifaCertRootInContainer}
 }
 
 // Native-proxy layout on a host. The server runs as NativeUser with HOME set
@@ -70,6 +70,11 @@ const (
 	// reads. Outside .config/kamal-proxy, which kamal-proxy creates 0700.
 	NativeQifaDir = NativeStateDir + "/qifa"
 )
+
+// ContainerCLI is the command prefix that reaches the proxy container.
+func ContainerCLI() string {
+	return "docker exec " + shellQuote(proxyContainerName) + " kamal-proxy"
+}
 
 // NativeCLI is the command prefix that reaches a native proxy.
 func NativeCLI() string {

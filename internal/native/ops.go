@@ -265,10 +265,21 @@ func (d *Deployer) hostStatus(ctx context.Context, host string) fleet.HostStatus
 		h.Notes = append(h.Notes, fmt.Sprintf("half-staged %s, removed by the next deploy", strings.Join(inv.Tmp, " ")))
 	}
 	if d.routedOn(host) {
-		routes, err := d.ssh.Run(ctx, host, proxy.NativeCLI()+" list --json")
 		line := ""
-		if err == nil {
-			line, err = routeLine(routes, d.cfg.Service)
+		var err error
+		if d.containerProxy() {
+			// The Docker proxy may predate list --json; Registered falls back
+			// to its table.
+			var reg proxy.Registration
+			var ok bool
+			if reg, ok, err = d.routeProxy().Registered(ctx, host, d.cfg.Service); err == nil && ok {
+				line = fmt.Sprintf("%s -> %s (%s)", firstNonEmpty(reg.Host, "*"), reg.Target, reg.State)
+			}
+		} else {
+			var routes string
+			if routes, err = d.ssh.Run(ctx, host, proxy.NativeCLI()+" list --json"); err == nil {
+				line, err = routeLine(routes, d.cfg.Service)
+			}
 		}
 		switch {
 		case err != nil:
@@ -494,7 +505,7 @@ func (d *Deployer) Teardown(ctx context.Context, purge bool) error {
 		if d.routedOn(host) {
 			// The route goes first, so the proxy stops sending traffic to a
 			// port nothing will listen on.
-			script = fmt.Sprintf("if %s remove %s >/dev/null 2>&1; then echo \"removed route %s\"; fi\n", proxy.NativeCLI(), q(d.cfg.Service), d.cfg.Service) + script
+			script = fmt.Sprintf("if %s remove %s >/dev/null 2>&1; then echo \"removed route %s\"; fi\n", d.proxyCLI(), q(d.cfg.Service), d.cfg.Service) + script
 		}
 		wrapped := fmt.Sprintf(`if [ "$(id -u)" = 0 ]; then sh -c %[1]s; else sudo -n sh -c %[1]s; fi`, q(script))
 		out, err := d.ssh.Run(ctx, host, wrapped)

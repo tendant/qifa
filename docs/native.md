@@ -291,9 +291,38 @@ The mode is per config file, so one server can run Docker apps and native apps
 side by side. They share only the lock directory naming
 (`/tmp/qifa-lock-<service>`), so **service names must be unique per host
 across both modes**; `qifa setup` warns when a host already has containers
-for the same service name. If kamal-proxy runs on the server, it owns ports
-80 and 443, so give native apps other ports. One service cannot mix modes
-between roles: split it into two services. The same goes for accessories: a
-database container for a native app is a separate Docker config on that host.
+for the same service name. One service cannot mix modes between roles: split
+it into two services. The same goes for accessories: a database container for
+a native app is a separate Docker config on that host.
+
+### One proxy for both: `proxy_boot.mode: container`
+
+A server runs one kamal-proxy, since it owns ports 80 and 443. On a server
+whose Docker apps already use the Docker kamal-proxy, a native app can join
+it instead of booting a native one:
+
+```yaml
+proxy:
+  host: app.example.com
+proxy_boot:
+  mode: container        # default: native (a systemd kamal-proxy)
+  # network: kamal       # the Docker proxy's network, if not "kamal"
+```
+
+The Docker proxy reaches the native app through the Docker network's gateway
+(e.g. `172.18.0.1:<app_port>`), which qifa looks up on each host at deploy
+time. Two things follow:
+
+- The app must listen on `0.0.0.0` (or that gateway address), not only on
+  `127.0.0.1`, or kamal-proxy's health check fails and the deploy says so.
+- A host firewall must let the Docker network reach that port. With ufw,
+  for example: `ufw allow from 172.16.0.0/12 to any port <app_port>`.
+
+The deploy user needs the docker group (`qifa setup` from a Docker config on
+the server). Routes, `status`, maintenance mode and `remove` work as with a
+native proxy; `tls.source: qifa` certificates are kept where the Docker proxy
+reads them. The proxy itself belongs to the Docker configs: `proxy boot`,
+`upgrade`, `remove`, `start`, `stop` and `restart` from a native config point
+there, while `proxy details` and `proxy logs` work from either.
 
 Design notes: [qifa-native-deployment-design.md](qifa-native-deployment-design.md).

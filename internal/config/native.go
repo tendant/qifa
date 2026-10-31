@@ -122,7 +122,8 @@ func (c *Config) validateNative() error {
 		{c.PullPolicy == PullAlways, "pull_policy"},
 		{c.Builder != nil, "builder (use native.build)"},
 		{c.Registry.Server != "", "registry"},
-		{c.ProxyBoot.Image != "" || c.ProxyBoot.Network != "" || c.ProxyBoot.StateVolume != "" || c.ProxyBoot.AppsConfigDir != "", "proxy_boot image, network, state_volume and apps_config_dir (a native proxy is not a container)"},
+		{c.ProxyBoot.Image != "" || c.ProxyBoot.StateVolume != "" || c.ProxyBoot.AppsConfigDir != "", "proxy_boot image, state_volume and apps_config_dir (the proxy is booted by a Docker config, or is not a container)"},
+		{c.ProxyBoot.Network != "" && c.ProxyBoot.Mode != ProxyModeContainer, "proxy_boot.network (only with proxy_boot.mode: container, to name the Docker proxy's network)"},
 		{len(c.ProxyBoot.BindIPs) > 0, "proxy_boot.bind_ips (a native proxy listens on all interfaces)"},
 		{c.Backup != nil, "backup"},
 		{c.Restore != nil, "restore"},
@@ -223,6 +224,16 @@ func (c *Config) validateNative() error {
 
 // NativeProxied reports whether a native app is routed through kamal-proxy:
 // its config names the host(s) or path(s) to serve it on.
+// ProxyMode is which kamal-proxy the app's routes go through: the container
+// proxy for a Docker config, and for a native one proxy_boot.mode (native by
+// default).
+func (c *Config) ProxyMode() string {
+	if c.Native == nil || c.ProxyBoot.Mode == ProxyModeContainer {
+		return ProxyModeContainer
+	}
+	return ProxyModeNative
+}
+
 func (c *Config) NativeProxied() bool {
 	return c.Native != nil && (c.Proxy.Host != "" || len(c.Proxy.Hosts) > 0 || len(c.Proxy.PathPrefixes) > 0)
 }
@@ -241,6 +252,14 @@ func (c *Config) NativeProxyRole() string {
 }
 
 func (c *Config) validateNativeProxy() error {
+	switch c.ProxyBoot.Mode {
+	case "", ProxyModeNative, ProxyModeContainer:
+	default:
+		return fmt.Errorf("config.proxy_boot.mode %q: use native (a systemd kamal-proxy) or container (the Docker one this server's Docker apps use)", c.ProxyBoot.Mode)
+	}
+	if c.ProxyMode() == ProxyModeContainer && c.ProxyBoot.Binary != "" {
+		return errors.New("config.proxy_boot.binary is for a native proxy; with mode: container the Docker configs run the proxy")
+	}
 	if !c.NativeProxied() {
 		if c.Proxy.SSL || c.Proxy.TLS != nil {
 			return errors.New("config.proxy.ssl needs config.proxy.host (or hosts) to route a native app")
