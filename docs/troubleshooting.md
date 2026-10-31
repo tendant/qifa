@@ -334,3 +334,7 @@ changed on any host at that point.
 | `first deploy ... failed; there is no previous release to restore` | Nothing to fall back to; the unit is stopped so it does not restart forever. Fix and deploy again. |
 | `current release X never passed its health check` (warning) | A deploy was interrupted after switching releases. The next deploy fixes it, or `qifa rollback`. |
 | `qifa <cmd> works with containers and is not available ...` | A Docker-only command run against a native config. |
+| `kamal-proxy is not running here, or deploy cannot reach its socket` | Run `qifa proxy boot --ssh-user root`. If it already ran, the deploy user's group membership (`qifa-proxy`) applies to new SSH sessions only; a deploy started before boot finishes may not see it. |
+| `kamal-proxy publishes no binaries ... go is not installed here` | Install Go where qifa runs, or set `proxy_boot.binary` to a Linux kamal-proxy for the server's architecture. |
+| `the kamal-proxy container is running on this host` | A server runs one proxy. Remove the container proxy (`qifa proxy remove` from the Docker config) or keep native apps elsewhere. |
+| `the new release is running, but kamal-proxy did not accept the route` | The app passed qifa's check but not kamal-proxy's: usually `native.healthcheck.path` answers non-2xx, or a static certificate is not readable by `qifa-proxy`. `qifa proxy logs`. |

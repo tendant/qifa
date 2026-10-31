@@ -212,6 +212,11 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		}
 		verb := args[1]
 		rest := args[2:]
+		if native, err := isNative(configFile); err != nil {
+			return err
+		} else if native {
+			return runNativeProxy(ctx, verb, rest, stdout, stderr, configFile)
+		}
 		return withRuntime(ctx, stdout, stderr, configFile, args[0], func(rt *runtime) error {
 			switch verb {
 			case "boot":
@@ -360,12 +365,12 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 					return fmt.Errorf("unknown flag %q", rest[i])
 				}
 			}
-			return withRuntime(ctx, stdout, stderr, configFile, args[0], func(rt *runtime) error {
-				return rt.deployer.Maintenance(ctx, message, drainTimeout)
+			return withBackend(ctx, stdout, stderr, configFile, func(b backend) error {
+				return b.Maintenance(ctx, message, drainTimeout)
 			})
 		case "live":
-			return withRuntime(ctx, stdout, stderr, configFile, args[0], func(rt *runtime) error {
-				return rt.deployer.Live(ctx)
+			return withBackend(ctx, stdout, stderr, configFile, func(b backend) error {
+				return b.Live(ctx)
 			})
 		default:
 			return errors.New("usage: qifa app <exec <command> | containers | maintenance | live>")
@@ -452,6 +457,8 @@ type backend interface {
 	Doctor(ctx context.Context, out io.Writer) error
 	LockStatus(ctx context.Context, out io.Writer) error
 	LockRelease(ctx context.Context) error
+	Maintenance(ctx context.Context, message string, drainTimeout time.Duration) error
+	Live(ctx context.Context) error
 }
 
 var (

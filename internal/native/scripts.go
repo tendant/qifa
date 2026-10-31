@@ -5,6 +5,7 @@ import (
 	"path"
 	"strings"
 
+	"github.com/tendant/qifa/internal/proxy"
 	"github.com/tendant/qifa/internal/ssh"
 )
 
@@ -135,7 +136,7 @@ func diagnosticsScript(unit string) string {
 
 // preflightScript is read-only. It prints key=value lines the deployer checks
 // on every host before changing any of them.
-func preflightScript(dir string, units []string) string {
+func preflightScript(dir string, units []string, routed bool) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "echo arch=$(uname -m)\n")
 	fmt.Fprintf(&b, "if command -v systemctl >/dev/null 2>&1; then echo systemd=yes; else echo systemd=no; fi\n")
@@ -151,6 +152,11 @@ func preflightScript(dir string, units []string) string {
 	// goes through D-Bus; a host without dbus fails it for every unit, and
 	// the deploy would read that as an unhealthy app.
 	b.WriteString("if systemctl show -p ActiveState --value systemd-journald.service >/dev/null 2>&1; then echo bus=ok; else echo bus=no; fi\n")
+	if routed {
+		// Reaching the socket proves three things at once: the proxy runs,
+		// it is the native one, and this user is in its group.
+		fmt.Fprintf(&b, "if %s list >/dev/null 2>&1; then echo proxy=ok; else echo proxy=no; fi\n", proxy.NativeCLI())
+	}
 	return b.String()
 }
 

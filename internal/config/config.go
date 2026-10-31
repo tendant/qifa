@@ -229,6 +229,9 @@ type ProxyBoot struct {
 	// internal NICs, or to bind to specific IPs on a multi-IP host.
 	// Each entry produces one set of -p <ip>:<port>:<port> flags.
 	BindIPs []string `yaml:"bind_ips"`
+	// Binary is a local kamal-proxy executable for the hosts, used by a
+	// native proxy (config.native) instead of building one with Go. Optional.
+	Binary string `yaml:"binary"`
 }
 
 type Healthcheck struct {
@@ -452,6 +455,9 @@ func (c *Config) Validate() error {
 			}
 		}
 	}
+	if c.ProxyBoot.Binary != "" {
+		return errors.New("config.proxy_boot.binary applies only with config.native (the container proxy runs its image)")
+	}
 	if c.ProxyBoot.HTTPPort < 0 {
 		return errors.New("config.proxy_boot.http_port must not be negative")
 	}
@@ -595,20 +601,25 @@ func applyDefaults(cfg *Config) {
 	if cfg.ProxyBoot.HTTPSPort == 0 {
 		cfg.ProxyBoot.HTTPSPort = 443
 	}
-	if cfg.ProxyBoot.Image == "" {
-		cfg.ProxyBoot.Image = "basecamp/kamal-proxy"
-	}
-	if cfg.ProxyBoot.Version == "" {
-		cfg.ProxyBoot.Version = "v0.9.2"
-	}
-	if cfg.ProxyBoot.Network == "" {
-		cfg.ProxyBoot.Network = "kamal"
-	}
-	if cfg.ProxyBoot.StateVolume == "" {
-		cfg.ProxyBoot.StateVolume = "kamal-proxy-config"
-	}
-	if cfg.ProxyBoot.AppsConfigDir == "" {
-		cfg.ProxyBoot.AppsConfigDir = ".kamal/proxy/apps-config"
+	// The container proxy's settings stay unset for a native config: there
+	// they would describe a container that does not exist, and validation
+	// rejects them when the file sets them.
+	if cfg.Native == nil {
+		if cfg.ProxyBoot.Image == "" {
+			cfg.ProxyBoot.Image = "basecamp/kamal-proxy"
+		}
+		if cfg.ProxyBoot.Version == "" {
+			cfg.ProxyBoot.Version = "v0.9.2"
+		}
+		if cfg.ProxyBoot.Network == "" {
+			cfg.ProxyBoot.Network = "kamal"
+		}
+		if cfg.ProxyBoot.StateVolume == "" {
+			cfg.ProxyBoot.StateVolume = "kamal-proxy-config"
+		}
+		if cfg.ProxyBoot.AppsConfigDir == "" {
+			cfg.ProxyBoot.AppsConfigDir = ".kamal/proxy/apps-config"
+		}
 	}
 	if cfg.PullPolicy == "" {
 		cfg.PullPolicy = PullMissing

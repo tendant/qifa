@@ -157,7 +157,7 @@ func TestScriptsParse(t *testing.T) {
 		"markok":      markOKScript("/opt/qifa/app", "abc123"),
 		"health-http": healthScript("qifa-app.service", "http://127.0.0.1:8080/up", 30, 2),
 		"health":      healthScript("qifa-app.service", "", 30, 2),
-		"preflight":   preflightScript("/opt/qifa/app", []string{"qifa-app.service"}),
+		"preflight":   preflightScript("/opt/qifa/app", []string{"qifa-app.service"}, true),
 		"diagnostics": diagnosticsScript("qifa-app.service"),
 	}
 	cfg := testConfig()

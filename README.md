@@ -233,8 +233,10 @@ native:
     path: /up
 ```
 
-Releases, rollback, status and env work as they do for containers; there is no
-zero-downtime switch or TLS. See [docs/native.md](docs/native.md).
+Releases, rollback, status and env work as they do for containers. For HTTPS
+and domains, kamal-proxy runs natively too (`qifa proxy boot --ssh-user root`,
+then a `proxy:` block). There is no zero-downtime switch yet. See
+[docs/native.md](docs/native.md).
 
 ## Verb Cheatsheet
 

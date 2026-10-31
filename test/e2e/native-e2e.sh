@@ -75,9 +75,19 @@ native:
     interval: 1s
   shared_dirs: [storage]
   retain: 3
+proxy:
+  host: app.test
+  ssl: true
+  tls:
+    source: static
+    cert_path: /etc/qifa-proxy-certs/app.test.crt
+    key_path: /etc/qifa-proxy-certs/app.test.key
 EOF
 qifa() { "$work/qifa" -c "$work/app/qifa.yaml" "$@"; }
 app_get() { on_host "curl -fsS http://127.0.0.1:8080$1"; }
+# Through kamal-proxy, over TLS, by name: what a client on the internet does.
+via_proxy() { on_host "curl -fsS -k --resolve app.test:443:127.0.0.1 https://app.test$1"; }
+proxy_status() { on_host "curl -s -k -o /dev/null -w '%{http_code}' --resolve app.test:443:127.0.0.1 https://app.test$1"; }
 
 step "deploy before setup is refused without touching the host"
 build_app v1
@@ -90,8 +100,27 @@ qifa native setup --ssh-user root
 qifa native setup --ssh-user root >"$work/out" 2>&1
 if grep -q "installed\|created" "$work/out"; then cat "$work/out"; fail "second setup changed something"; fi
 
+step "deploy is refused until the proxy runs"
+if qifa deploy --version v1 >"$work/out" 2>&1; then cat "$work/out"; fail "deploy without a proxy succeeded"; fi
+grep -q "qifa proxy boot" "$work/out" || { cat "$work/out"; fail "error does not point at proxy boot"; }
+
+step "proxy boot: kamal-proxy as a systemd service (built from source), twice: idempotent"
+qifa proxy boot --ssh-user root
+qifa proxy boot --ssh-user root >"$work/out" 2>&1
+if grep -q "installed\|created" "$work/out"; then cat "$work/out"; fail "second proxy boot changed something"; fi
+on_host 'systemctl is-active --quiet qifa-proxy.service' || fail "proxy not running"
+on_host '/opt/qifa/proxy/bin/kamal-proxy version' | grep -q "v0.10" || fail "proxy is not the pinned latest version"
+on_host 'stat -c %U /proc/$(systemctl show -p MainPID --value qifa-proxy.service)' | grep -qx qifa-proxy || fail "proxy does not run as qifa-proxy"
+openssl req -x509 -newkey rsa:2048 -nodes -subj /CN=app.test -addext subjectAltName=DNS:app.test -days 1 \
+  -keyout "$work/app.test.key" -out "$work/app.test.crt" 2>/dev/null
+on_host 'install -d -m 0750 -o root -g qifa-proxy /etc/qifa-proxy-certs'
+docker cp "$work/app.test.crt" "$name:/etc/qifa-proxy-certs/app.test.crt"
+docker cp "$work/app.test.key" "$name:/etc/qifa-proxy-certs/app.test.key"
+on_host 'chown root:qifa-proxy /etc/qifa-proxy-certs/* && chmod 0640 /etc/qifa-proxy-certs/*'
+
 step "deploy v1"
 qifa deploy --version v1
+expect_eq "$(via_proxy /version)" v1 "via kamal-proxy over TLS after v1"
 expect_eq "$(app_get /version)" v1 "version after v1"
 expected=$(printf 'say "hi" \\ $HOME `x` 100%% '"'"'q'"'"'\nline2')
 expect_eq "$(app_get /env)" "$expected" "env value through systemd EnvironmentFile"
@@ -103,6 +132,7 @@ step "deploy v2"
 build_app v2
 qifa deploy --version v2
 expect_eq "$(app_get /version)" v2 "version after v2"
+expect_eq "$(via_proxy /version)" v2 "via kamal-proxy after v2"
 expect_eq "$(on_host 'readlink /opt/qifa/nativeapp/current')" releases/v2 "current after v2"
 
 step "redeploy v2 reuses the release"
@@ -117,6 +147,7 @@ grep -q "restored releases/v2" "$work/out" || { cat "$work/out"; fail "no rollba
 grep -q "boom" "$work/out" || { cat "$work/out"; fail "journal not attached to the error"; }
 expect_eq "$(on_host 'readlink /opt/qifa/nativeapp/current')" releases/v2 "current after failed v3"
 expect_eq "$(app_get /version)" v2 "version after failed v3"
+expect_eq "$(via_proxy /version)" v2 "via kamal-proxy after failed v3"
 expect_eq "$(app_get /env)" "$expected" "env after rollback"
 on_host '[ ! -f /opt/qifa/nativeapp/releases/v3/.qifa-ok ]' || fail "failed v3 marked known-good"
 
@@ -132,7 +163,7 @@ qifa restart
 expect_eq "$(app_get /version)" v2 "version after restart"
 qifa logs -n 20 | grep -q "native-app v2" || fail "logs do not show the app"
 qifa lock status | grep -q free || fail "lock left held"
-if qifa proxy details >"$work/out" 2>&1; then fail "proxy command ran in native mode"; fi
+if qifa sweep >"$work/out" 2>&1; then fail "sweep ran in native mode"; fi
 grep -q "not available when the config has native" "$work/out" || { cat "$work/out"; fail "unclear Docker-only error"; }
 
 step "status shows live, known-good and rollback target"
@@ -141,6 +172,20 @@ grep -q "current  v2$" "$work/out" || { cat "$work/out"; fail "status current"; 
 grep -q "releases v3 v2\* v1\*" "$work/out" || { cat "$work/out"; fail "status releases"; }
 grep -q "rollback v1" "$work/out" || { cat "$work/out"; fail "status rollback target"; }
 grep -q "health   up" "$work/out" || { cat "$work/out"; fail "status health"; }
+grep -q "route    app.test -> 127.0.0.1:8080 (running, tls)" "$work/out" || { cat "$work/out"; fail "status route"; }
+
+step "maintenance mode through the proxy"
+qifa app maintenance --message "back soon" >/dev/null
+expect_eq "$(proxy_status /version)" 503 "status in maintenance"
+qifa app live >/dev/null
+expect_eq "$(proxy_status /version)" 200 "status after live"
+
+step "proxy restart keeps routes; deploy user may restart the proxy, nothing more"
+qifa proxy restart
+for i in $(seq 1 20); do [ "$(proxy_status /up)" = 200 ] && break; sleep 0.25; done
+expect_eq "$(via_proxy /version)" v2 "route after proxy restart"
+qifa proxy details | grep -q "app.test" || fail "proxy details lacks the route"
+on_host "su deploy -c 'sudo -n systemctl stop ssh' 2>/dev/null" && fail "deploy user may stop other units"
 
 step "env diff: in sync, then drift by key name only"
 qifa env diff | grep -q "in sync (1 keys)" || fail "env diff not in sync"
@@ -187,11 +232,17 @@ if qifa remove >"$work/out" 2>&1; then fail "qifa remove succeeded without root"
 grep -q "qifa native remove" "$work/out" || { cat "$work/out"; fail "remove hint"; }
 qifa native remove --ssh-user root
 on_host '[ ! -e /etc/systemd/system/qifa-nativeapp.service ] && [ ! -e /etc/sudoers.d/qifa-nativeapp ]' || fail "units or sudoers left"
+qifa proxy details | grep -q "app.test" && fail "route left on the proxy after remove"
 on_host '[ -d /opt/qifa/nativeapp/shared/storage ]' || fail "plain remove deleted data"
 on_host 'curl -fsS http://127.0.0.1:8080/up' 2>/dev/null && fail "app still running after remove"
 echo wrong | qifa native remove --ssh-user root --purge >"$work/out" 2>&1 && fail "purge without confirmation"
 on_host '[ -d /opt/qifa/nativeapp ]' || fail "unconfirmed purge deleted data"
 echo nativeapp | qifa native remove --ssh-user root --purge
 on_host '[ ! -e /opt/qifa/nativeapp ] && ! id nativeapp 2>/dev/null' || fail "purge left data or user"
+
+step "proxy remove --purge"
+echo qifa-proxy | qifa proxy remove --ssh-user root --purge
+on_host '[ ! -e /etc/systemd/system/qifa-proxy.service ] && [ ! -e /var/lib/qifa-proxy ] && ! id qifa-proxy 2>/dev/null' || fail "proxy purge left state"
+on_host 'curl -s -o /dev/null --max-time 2 http://127.0.0.1/' && fail "port 80 still served"
 
 printf '\nPASS: native e2e\n'

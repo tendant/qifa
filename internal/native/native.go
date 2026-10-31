@@ -272,7 +272,8 @@ func (d *Deployer) preflight(ctx context.Context, hosts []string, artifactArch s
 // deploy; warnings describe a state worth knowing about (an interrupted
 // earlier deploy) that the deploy itself will repair.
 func (d *Deployer) checkHost(ctx context.Context, host, artifactArch string) (problems, warnings []string, err error) {
-	out, err := d.ssh.Run(ctx, host, preflightScript(d.cfg.Native.Dir, d.unitsOn(host)))
+	routed := d.routedOn(host)
+	out, err := d.ssh.Run(ctx, host, preflightScript(d.cfg.Native.Dir, d.unitsOn(host), routed))
 	if err != nil {
 		return nil, nil, err
 	}
@@ -302,6 +303,9 @@ func (d *Deployer) checkHost(ctx context.Context, host, artifactArch string) (pr
 		default:
 			problems = append(problems, fmt.Sprintf("unit %s differs from the config (exec, user or restart changed) — run `qifa native setup`", unit))
 		}
+	}
+	if routed && kv["proxy"] != "ok" {
+		problems = append(problems, fmt.Sprintf("kamal-proxy is not running here, or %s cannot reach its socket — run `qifa proxy boot --ssh-user root`", d.sshUser()))
 	}
 	if kv["currentok"] == "no" {
 		warnings = append(warnings, fmt.Sprintf("current release %s never passed its health check (an interrupted deploy?)", strings.TrimPrefix(kv["current"], "releases/")))
@@ -398,6 +402,12 @@ func (d *Deployer) deployHost(ctx context.Context, deployment state.Deployment, 
 	}
 	if _, err := d.ssh.Run(ctx, host, markOKScript(n.Dir, id)); err != nil {
 		return fmt.Errorf("%s: mark release %s healthy: %w", host, id, err)
+	}
+	if d.routedOn(host) {
+		if err := d.registerRoute(ctx, host); err != nil {
+			event("failed", err.Error())
+			return err
+		}
 	}
 	event("deployed", id)
 	d.log.Printf("%s: release %s is live", host, id)

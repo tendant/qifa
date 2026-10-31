@@ -2,6 +2,7 @@ package native
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/tendant/qifa/internal/hooks"
 	"github.com/tendant/qifa/internal/lock"
+	"github.com/tendant/qifa/internal/proxy"
 	"github.com/tendant/qifa/internal/secrets"
 	"github.com/tendant/qifa/internal/state"
 )
@@ -274,6 +276,21 @@ func (d *Deployer) Status(ctx context.Context, out io.Writer) error {
 		if t := rollbackTarget(inv); t != "" {
 			fmt.Fprintf(out, "  rollback %s\n", t)
 		}
+		if d.routedOn(host) {
+			routes, err := d.ssh.Run(ctx, host, proxy.NativeCLI()+" list --json")
+			line := ""
+			if err == nil {
+				line, err = routeLine(routes, d.cfg.Service)
+			}
+			switch {
+			case err != nil:
+				fmt.Fprintf(out, "  route    ERROR kamal-proxy: %v\n", err)
+			case line == "":
+				fmt.Fprintln(out, "  route    (not registered — `qifa deploy` registers it)")
+			default:
+				fmt.Fprintf(out, "  route    %s\n", line)
+			}
+		}
 		if len(inv.Tmp) > 0 {
 			fmt.Fprintf(out, "  leftover %s (half-staged; removed by the next deploy)\n", strings.Join(inv.Tmp, " "))
 		}
@@ -501,6 +518,11 @@ func (d *Deployer) Remove(context.Context) error {
 func (d *Deployer) Teardown(ctx context.Context, purge bool) error {
 	for _, host := range d.hosts() {
 		script := teardownScript(d.cfg.Native.Dir, d.cfg.Native.User, d.sudoersFile(), d.unitsOn(host), purge)
+		if d.routedOn(host) {
+			// The route goes first, so the proxy stops sending traffic to a
+			// port nothing will listen on.
+			script = fmt.Sprintf("if %s remove %s >/dev/null 2>&1; then echo \"removed route %s\"; fi\n", proxy.NativeCLI(), q(d.cfg.Service), d.cfg.Service) + script
+		}
 		wrapped := fmt.Sprintf(`if [ "$(id -u)" = 0 ]; then sh -c %[1]s; else sudo -n sh -c %[1]s; fi`, q(script))
 		out, err := d.ssh.Run(ctx, host, wrapped)
 		for _, line := range strings.Split(out, "\n") {
@@ -513,4 +535,38 @@ func (d *Deployer) Teardown(ctx context.Context, purge bool) error {
 		}
 	}
 	return nil
+}
+
+// routeLine describes the service's route from `kamal-proxy list --json`
+// (kamal-proxy v0.10+), or "" when it has none.
+func routeLine(listJSON, service string) (string, error) {
+	var services map[string]struct {
+		Hosts        []string `json:"hosts"`
+		PathPrefixes []string `json:"path_prefixes"`
+		Targets      []string `json:"targets"`
+		State        string   `json:"state"`
+		TLS          bool     `json:"tls"`
+	}
+	if err := json.Unmarshal([]byte(listJSON), &services); err != nil {
+		return "", fmt.Errorf("unexpected `kamal-proxy list --json` output: %w", err)
+	}
+	s, ok := services[service]
+	if !ok {
+		return "", nil
+	}
+	parts := append([]string{}, s.Hosts...)
+	for _, p := range s.PathPrefixes {
+		if p != "/" { // kamal-proxy reports the default prefix as "/"
+			parts = append(parts, p)
+		}
+	}
+	from := strings.Join(parts, ",")
+	if from == "" {
+		from = "*"
+	}
+	state := s.State
+	if s.TLS {
+		state += ", tls"
+	}
+	return fmt.Sprintf("%s -> %s (%s)", from, strings.Join(s.Targets, ","), state), nil
 }

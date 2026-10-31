@@ -8,10 +8,10 @@ fails, qifa puts the previous release back.
 
 Use it for a single static binary (Go, Rust, Zig), or a directory with its
 runtime already on the server (a JVM jar, a Python venv you build for the
-target). There is no image, registry, or kamal-proxy, so there is also no
-TLS termination or zero-downtime switch: a deploy restarts the process, and
-the app is down for as long as it takes to start. Put Caddy or nginx in front
-if you need HTTPS on a domain.
+target). There is no image or registry. For HTTPS on a domain, qifa can run
+kamal-proxy as a systemd service in front of the app ([below](#https-and-domains-kamal-proxy)).
+There is no zero-downtime switch yet: a deploy restarts the process, and the
+app is down for as long as it takes to start.
 
 ## Requirements on the server
 
@@ -127,6 +127,70 @@ the app's own account. As in Docker mode, only `qifa deploy` writes it.
 Unlike a container, `qifa restart` re-reads it, but since nothing else writes
 it, the effect is the same.
 
+## HTTPS and domains: kamal-proxy
+
+kamal-proxy, the proxy qifa uses for Docker apps, also runs as a plain systemd
+service, so the server still needs no Docker. Give the app a `proxy:` block:
+
+```yaml
+native:
+  # ...as above; port and healthcheck.path are required with a proxy
+  port: 8080
+  healthcheck:
+    path: /up
+
+proxy:
+  host: app.example.com          # or hosts: [...], path_prefixes: [...]
+  ssl: true
+  tls:
+    source: kamal                # automatic Let's Encrypt certificates
+    # source: static
+    # cert_path: /etc/qifa-proxy-certs/app.example.com.crt
+    # key_path:  /etc/qifa-proxy-certs/app.example.com.key
+
+proxy_boot:
+  hosts: [10.0.0.11]             # default: the web role's hosts
+  # version: v0.10.2             # default; v0.10 or later is required
+  # binary: ./bin/kamal-proxy    # instead of building it with Go
+```
+
+Once per server, as root:
+
+```sh
+qifa proxy boot --ssh-user root
+```
+
+kamal-proxy publishes no binaries, so qifa builds the pinned version from
+source for the server's architecture (this needs Go where you run qifa; the
+build is cached). Set `proxy_boot.binary` to ship one you built instead. Boot
+installs `qifa-proxy.service`, which runs as its own `qifa-proxy` account and
+binds ports 80 and 443 through a capability, not root. It also adds the deploy
+user to the `qifa-proxy` group, which is what lets deploys register routes.
+`qifa proxy upgrade` does the same after a version change, and restarts the
+proxy only when something changed.
+
+From then on, every deploy registers the app's route once the new release
+passes its health check: kamal-proxy forwards `app.example.com` to
+`127.0.0.1:8080`. The app should listen on `127.0.0.1` only; nothing outside
+the server needs to reach its port. A deploy is refused while the proxy is not
+running.
+
+```sh
+qifa app maintenance --message "Back soon"   # the proxy answers 503
+qifa app live
+qifa proxy details                           # routes on each proxy host
+qifa proxy logs -f
+qifa proxy restart                           # routes survive restarts
+qifa proxy remove --ssh-user root [--purge]  # --purge also deletes routes and certificates
+```
+
+Static certificate files must be readable by the `qifa-proxy` account, for
+example `root:qifa-proxy`, mode 0640. Certificates managed by qifa itself
+(`tls.source: qifa`) need Docker and are not available here.
+
+A server runs one proxy or the other: `proxy boot` refuses while the
+kamal-proxy container is running there.
+
 ## Day to day
 
 ```sh
@@ -146,7 +210,7 @@ warns when the live release never did, for example when a deploy was killed
 between switching `current` and finishing its check. `qifa deploy` or
 `qifa rollback` repairs that.
 
-Docker-only commands (`proxy`, `cert`, `app exec`, `accessory`, `prune`,
+Docker-only commands (`cert`, `app exec`, `accessory`, `prune`,
 `sweep`, `backup`, `restore`, `sync`) say so and do nothing.
 
 ## Removing
@@ -171,6 +235,13 @@ scripts). Plain `qifa remove` only explains this, since it needs root.
 └── shared/storage/       owned by the app; never pruned
 /etc/systemd/system/qifa-myapp.service
 /etc/sudoers.d/qifa-myapp
+
+# with the proxy
+/opt/qifa/proxy/bin/kamal-proxy
+/var/lib/qifa-proxy/               routes and certificates
+/run/qifa-proxy/kamal-proxy.sock   group qifa-proxy
+/etc/systemd/system/qifa-proxy.service
+/etc/sudoers.d/qifa-proxy          start/stop/restart of qifa-proxy.service
 ```
 
 The server is the source of truth, as Docker labels are in Docker mode, so any

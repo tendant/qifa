@@ -51,11 +51,16 @@ func TestNativeConfigLoadsWithDefaults(t *testing.T) {
 
 func TestNativeConfigRejects(t *testing.T) {
 	cases := map[string]struct{ edit, want string }{
-		"image":     {"image: x/app\n", "config.image is not used"},
-		"builder":   {"builder:\n  context: .\n", "config.builder"},
-		"proxy":     {"proxy:\n  host: a.example.com\n", "config.proxy"},
-		"registry":  {"registry:\n  server: r\n  username: u\n  password_env: P\n", "config.registry"},
-		"accessory": {"accessories:\n  redis:\n    image: redis:7\n    host: h\n", "config.accessories"},
+		"image":             {"image: x/app\n", "config.image is not used"},
+		"builder":           {"builder:\n  context: .\n", "config.builder"},
+		"proxy app_port":    {"proxy:\n  host: a.example.com\n  app_port: 80\n", "proxy.app_port"},
+		"proxy healthcheck": {"proxy:\n  host: a.example.com\n  healthcheck:\n    path: /x\n", "proxy.healthcheck"},
+		"proxy tls qifa":    {"proxy:\n  host: a.example.com\n  ssl: true\n  tls:\n    source: qifa\n    provider: cloudflare\n", "tls.source: qifa"},
+		"ssl without host":  {"proxy:\n  ssl: true\n  tls:\n    source: kamal\n", "needs config.proxy.host"},
+		"proxy_boot image":  {"proxy_boot:\n  image: x/proxy\n", "proxy_boot image"},
+		"proxy_boot bind":   {"proxy_boot:\n  bind_ips: [10.0.0.1]\n", "bind_ips"},
+		"registry":          {"registry:\n  server: r\n  username: u\n  password_env: P\n", "config.registry"},
+		"accessory":         {"accessories:\n  redis:\n    image: redis:7\n    host: h\n", "config.accessories"},
 	}
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -109,5 +114,30 @@ func TestNativeMultiRoleUnitNames(t *testing.T) {
 	}
 	if cfg.NativeUnitName("worker") != "qifa-app-worker.service" || cfg.NativeExec("worker")[1] != "work" || cfg.NativeExec("web")[1] != "--port" {
 		t.Fatalf("multi-role: %s %v %v", cfg.NativeUnitName("worker"), cfg.NativeExec("worker"), cfg.NativeExec("web"))
+	}
+}
+
+func TestNativeProxiedConfig(t *testing.T) {
+	cfg, err := loadString(t, nativeBase+"proxy:\n  host: app.example.com\n  ssl: true\n  tls:\n    source: kamal\nproxy_boot:\n  hosts: [10.0.0.1]\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.NativeProxied() || cfg.NativeProxyRole() != "web" {
+		t.Fatalf("proxied=%v role=%q", cfg.NativeProxied(), cfg.NativeProxyRole())
+	}
+	if cfg.ProxyBoot.Version != NativeProxyVersion || cfg.ProxyBoot.Image != "" || cfg.ProxyBoot.Network != "" {
+		t.Fatalf("native proxy_boot defaults: %+v", cfg.ProxyBoot)
+	}
+	// Routing needs a port and a health path to give kamal-proxy.
+	noHealth := strings.Replace(nativeBase, "  healthcheck:\n    path: /up\n", "", 1)
+	if _, err := loadString(t, noHealth+"proxy:\n  host: app.example.com\n"); err == nil || !strings.Contains(err.Error(), "healthcheck.path") {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestProxyBootBinaryOnlyWithNative(t *testing.T) {
+	_, err := loadString(t, "service: app\nimage: x/app:1\nservers:\n  web:\n    hosts: [h]\nproxy_boot:\n  binary: ./kamal-proxy\n")
+	if err == nil || !strings.Contains(err.Error(), "proxy_boot.binary") {
+		t.Fatalf("got %v", err)
 	}
 }

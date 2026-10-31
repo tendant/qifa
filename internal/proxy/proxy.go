@@ -33,12 +33,46 @@ type KamalProxy struct {
 	client *ssh.Client
 	app    config.Proxy
 	boot   config.ProxyBoot
+	// cli is how a route command reaches kamal-proxy on a host: through the
+	// container, or the native binary and its socket. The arguments after
+	// it are the same either way.
+	cli string
+	// acmeCache, when set, is passed as --tls-acme-cache-path. The deploy
+	// command defaults it from the *caller's* home directory, which is right
+	// inside the container (same user as the server) and wrong for a native
+	// proxy, where the deploy user would point the server at its own home.
+	acmeCache string
 }
 
 const proxyContainerName = "kamal-proxy"
 
 func New(client *ssh.Client, app config.Proxy, boot config.ProxyBoot) *KamalProxy {
-	return &KamalProxy{client: client, app: app, boot: boot}
+	return &KamalProxy{client: client, app: app, boot: boot, cli: "docker exec " + shellQuote(proxyContainerName) + " kamal-proxy"}
+}
+
+// Native-proxy layout on a host. The server runs as NativeUser with HOME set
+// to NativeStateDir (kamal-proxy keeps its state under $HOME/.config), and
+// listens on NativeSocket, which members of NativeUser's group may use.
+const (
+	NativeUser       = "qifa-proxy"
+	NativeUnit       = "qifa-proxy.service"
+	NativeBinary     = "/opt/qifa/proxy/bin/kamal-proxy"
+	NativeStateDir   = "/var/lib/qifa-proxy"
+	NativeRuntimeDir = "/run/qifa-proxy"
+	NativeSocket     = NativeRuntimeDir + "/kamal-proxy.sock"
+	NativeACMECache  = NativeStateDir + "/.config/kamal-proxy/certs"
+)
+
+// NativeCLI is the command prefix that reaches a native proxy.
+func NativeCLI() string {
+	return "KAMAL_PROXY_SOCKET=" + shellQuote(NativeSocket) + " " + shellQuote(NativeBinary)
+}
+
+// NewNative returns a KamalProxy for a proxy running as a systemd service
+// (config.native). Only route commands apply; the service itself is managed
+// by internal/native.
+func NewNative(client *ssh.Client, app config.Proxy) *KamalProxy {
+	return &KamalProxy{client: client, app: app, cli: NativeCLI(), acmeCache: NativeACMECache}
 }
 
 // Boot starts the kamal-proxy container on every host listed in
@@ -174,7 +208,7 @@ func (k *KamalProxy) Details(ctx context.Context, out io.Writer) error {
 		if len(k.boot.Hosts) > 1 {
 			fmt.Fprintf(out, "\n=== %s ===\n", host)
 		}
-		if err := k.client.Stream(ctx, host, "docker exec "+proxyContainerName+" kamal-proxy list", out); err != nil {
+		if err := k.client.Stream(ctx, host, k.cli+" list", out); err != nil {
 			return err
 		}
 	}
@@ -255,13 +289,12 @@ func formatBindIP(ip string) string {
 }
 
 func (k *KamalProxy) Deploy(ctx context.Context, host string, target Target) error {
-	command := "docker exec " + shellQuote(proxyContainerName) + " " + k.deployCommand(target)
-	_, err := k.client.Run(ctx, host, command)
+	_, err := k.client.Run(ctx, host, k.cli+" "+k.deployArgs(target))
 	return err
 }
 
 func (k *KamalProxy) Remove(ctx context.Context, host, service string) error {
-	_, err := k.client.Run(ctx, host, "docker exec "+shellQuote(proxyContainerName)+" kamal-proxy remove "+shellQuote(service))
+	_, err := k.client.Run(ctx, host, k.cli+" remove "+shellQuote(service))
 	return err
 }
 
@@ -269,8 +302,7 @@ func (k *KamalProxy) Remove(ctx context.Context, host, service string) error {
 // configured message (default 503-style) for incoming requests and drains
 // in-flight requests over drainTimeout.
 func (k *KamalProxy) Stop(ctx context.Context, host, service, message string, drainTimeout time.Duration) error {
-	args := []string{"docker", "exec", shellQuote(proxyContainerName),
-		"kamal-proxy", "stop", shellQuote(service)}
+	args := []string{k.cli, "stop", shellQuote(service)}
 	if drainTimeout > 0 {
 		args = append(args, "--drain-timeout", shellQuote(drainTimeout.String()))
 	}
@@ -284,7 +316,7 @@ func (k *KamalProxy) Stop(ctx context.Context, host, service, message string, dr
 // Resume brings a stopped service back online — kamal-proxy resumes routing
 // requests to the previously registered target.
 func (k *KamalProxy) Resume(ctx context.Context, host, service string) error {
-	_, err := k.client.Run(ctx, host, "docker exec "+shellQuote(proxyContainerName)+" kamal-proxy resume "+shellQuote(service))
+	_, err := k.client.Run(ctx, host, k.cli+" resume "+shellQuote(service))
 	return err
 }
 
@@ -305,8 +337,14 @@ func shellQuote(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
 }
 
+// deployCommand is the full command, as run inside the container.
 func (k *KamalProxy) deployCommand(target Target) string {
-	args := []string{"kamal-proxy", "deploy", shellQuote(target.Service)}
+	return "kamal-proxy " + k.deployArgs(target)
+}
+
+// deployArgs is `deploy <service> <flags>`, without the kamal-proxy prefix.
+func (k *KamalProxy) deployArgs(target Target) string {
+	args := []string{"deploy", shellQuote(target.Service)}
 	for _, host := range k.hosts() {
 		args = append(args, "--host", shellQuote(host))
 	}
@@ -338,6 +376,9 @@ func (k *KamalProxy) deployCommand(target Target) string {
 			case "kamal":
 				if k.app.TLS.Staging {
 					args = append(args, "--tls-staging")
+				}
+				if k.acmeCache != "" {
+					args = append(args, "--tls-acme-cache-path", shellQuote(k.acmeCache))
 				}
 			case "qifa":
 				certPath, keyPath := QifaCertPaths(PrimaryHost(k.app))

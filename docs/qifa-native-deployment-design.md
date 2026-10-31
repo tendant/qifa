@@ -322,7 +322,7 @@ A mixed host may already run the containerized kamal-proxy; §16 covers putting 
 
 ## 16. Next: native apps behind kamal-proxy
 
-**Status:** proposed, not built.
+**Status:** phase 1 (§16.6) built: a native kamal-proxy with routes, HTTPS and maintenance mode. Zero downtime (level 2) is not built.
 
 Native mode as built gives an app a process on a port. Compared with Docker apps it lacks HTTPS and domain routing (operators bring Caddy or nginx), zero-downtime deploys (`systemctl restart` means the app is down while it starts), and maintenance mode (`qifa app maintenance` / `app live` go through kamal-proxy). kamal-proxy provides all three, and qifa already drives it. It does not care what it forwards to: a Docker deploy registers `--target <container-ip>:<port>`, and a native deploy can register a port on the host.
 
@@ -369,18 +369,22 @@ Two processes must run at once, so a release needs two ports:
 
 Not every app can run twice at once: one holding an SQLite write lock, a single-instance scheduler, anything binding a fixed second port. Those stay on level 1. Non-web roles (workers) never go behind the proxy and keep restart mode.
 
-### 16.5 To verify before building
+### 16.5 Verified against kamal-proxy v0.10.2
 
-Against kamal-proxy v0.9.x, in the e2e container:
+Read from the v0.10.2 source and confirmed by the e2e test. The native proxy defaults to v0.10.2, the latest release; the container proxy's default (v0.9.2) is unchanged.
 
-- the flags that set the state directory and the control socket path, and the socket's default ownership and mode
-- that `--target 127.0.0.1:<port>` and kamal-proxy's own health check behave as expected for a host-local target
-- that the state directory holds routes across a restart of `qifa-proxy.service`, as the Docker volume does today
-- autocert (`tls.source: kamal`) when the proxy runs as a non-root account with `CAP_NET_BIND_SERVICE`
+- **No binaries are published**, only the `basecamp/kamal-proxy` image. `qifa proxy boot` therefore uses `proxy_boot.binary` when set, and otherwise cross-compiles `github.com/basecamp/kamal-proxy@<version>` for the host's architecture (CGO off, version stamped so `kamal-proxy version` reports it), cached under the deployer's user cache directory. That needs Go on the deployer; without it the error says to set `proxy_boot.binary`.
+- **State follows `$HOME`.** There is no flag for it: routes are saved to `$HOME/.config/kamal-proxy/kamal-proxy.state` and ACME data to `.../certs`. The unit sets `HOME=/var/lib/qifa-proxy` (also its `StateDirectory=`), and routes survive a restart of `qifa-proxy.service` (tested).
+- **Socket.** v0.10 added `KAMAL_PROXY_SOCKET`. Before it, the socket was `$XDG_RUNTIME_DIR/kamal-proxy.sock`, falling back to the temp directory, and every client had to match. The unit and every client set `KAMAL_PROXY_SOCKET=/run/qifa-proxy/kamal-proxy.sock`, which is one reason v0.10+ is required.
+- **Socket permissions.** kamal-proxy creates the socket with the process umask and never chmods it, and connecting to a Unix socket needs write permission. `UMask=0007` plus `RuntimeDirectoryMode=0750` give the `qifa-proxy` group access, and `proxy boot` adds the deploy user to that group. Routing needs no sudo.
+- **The client derives the ACME cache path from the caller's home.** `kamal-proxy deploy`'s `--tls-acme-cache-path` defaults to `$HOME/.config/kamal-proxy/certs` *of the process running the command*. Inside the container that is the server's user, so Docker mode is fine. Natively, the deploy user would point the server at `/home/deploy/...`. The native client passes `--tls-acme-cache-path /var/lib/qifa-proxy/.config/kamal-proxy/certs` explicitly.
+- **`list --json`** (v0.10) gives services keyed by name with hosts, path prefixes (default `/`), targets, state and TLS; `qifa status` parses it rather than the display table.
+- **Host-local targets** work as expected: `--target 127.0.0.1:<port>` with kamal-proxy's own health check on the app's `native.healthcheck.path`.
+- **Ports 80/443 without root** work through `AmbientCapabilities=CAP_NET_BIND_SERVICE` (tested with a static certificate). Automatic certificates (`tls.source: kamal`) are not exercised by the e2e, which has no public DNS; they use the same listener and the pinned cache path above.
 
 ### 16.6 Phases
 
-1. Native proxy boot, the command seam in `internal/proxy`, and level 1 for native apps: HTTPS, domains and maintenance mode on a Docker-free host. The e2e extends to a second unit for the proxy and a request through it.
+1. **Done.** Native proxy boot, the command seam in `internal/proxy`, and level 1 for native apps: HTTPS, domains and maintenance mode on a Docker-free host. `qifa proxy boot|upgrade|remove` (root), `start|stop|restart|logs|details` (deploy user), route registration after each healthy deploy, `qifa app maintenance|live`, the route in `qifa status`, deregistration in `native remove`. A host refuses to boot the native proxy while the kamal-proxy container runs on it.
 2. Level 2: port slots, the templated unit, switch and rollback through the proxy, and an e2e test that keeps requesting during a deploy and expects no failed request.
 3. `tls.source: qifa` (lego DNS-01) on native hosts, if needed.
 

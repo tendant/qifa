@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/tendant/qifa/internal/native"
@@ -82,4 +83,96 @@ func runNative(ctx context.Context, args []string, stdout, stderr io.Writer, con
 		}
 	}
 	return d.Teardown(ctx, purge)
+}
+
+const nativeProxyUsage = `usage (native proxy):
+  qifa proxy boot|upgrade [--ssh-user <user>] [--deploy-user <user>]
+  qifa proxy remove [--ssh-user <user>] [--purge [--yes]]
+  qifa proxy start|stop|restart|details
+  qifa proxy logs [--follow] [--lines N]`
+
+// isNative reports whether the config selects native mode, for commands
+// whose meaning differs between modes.
+func isNative(configFile string) (bool, error) {
+	cfg, _, err := loadConfig(configFile)
+	if err != nil {
+		return false, err
+	}
+	return cfg.IsNative(), nil
+}
+
+// runNativeProxy handles `qifa proxy ...` for a native config: kamal-proxy
+// as a systemd service. boot, upgrade and remove need root (--ssh-user).
+func runNativeProxy(ctx context.Context, verb string, rest []string, stdout, stderr io.Writer, configFile string) error {
+	sshUser, deployUser := "", ""
+	purge, yes, follow := false, false, false
+	lines := 200
+	rootVerb := verb == "boot" || verb == "upgrade" || verb == "remove"
+	for i := 0; i < len(rest); i++ {
+		switch flag := rest[i]; {
+		case (flag == "--ssh-user" || flag == "--deploy-user") && rootVerb:
+			if i+1 >= len(rest) {
+				return fmt.Errorf("%s requires a value", flag)
+			}
+			if flag == "--ssh-user" {
+				sshUser = rest[i+1]
+			} else {
+				deployUser = rest[i+1]
+			}
+			i++
+		case flag == "--purge" && verb == "remove":
+			purge = true
+		case flag == "--yes" && verb == "remove":
+			yes = true
+		case (flag == "--follow" || flag == "-f") && verb == "logs":
+			follow = true
+		case (flag == "--lines" || flag == "-n") && verb == "logs":
+			if i+1 >= len(rest) {
+				return fmt.Errorf("%s requires a value", flag)
+			}
+			n, err := strconv.Atoi(rest[i+1])
+			if err != nil {
+				return fmt.Errorf("--lines: %w", err)
+			}
+			lines = n
+			i++
+		default:
+			return fmt.Errorf("unknown flag %q\n%s", flag, nativeProxyUsage)
+		}
+	}
+	cfg, store, err := loadConfig(configFile)
+	if err != nil {
+		return err
+	}
+	d, err := native.New(cfg, store, stdout, stderr)
+	if err != nil {
+		return err
+	}
+	if deployUser == "" {
+		deployUser = cfg.SSH.User
+	}
+	if sshUser != "" {
+		d.UseSSHUser(sshUser)
+	}
+	switch verb {
+	case "boot", "upgrade":
+		return d.ProxyBoot(ctx, deployUser)
+	case "remove":
+		if purge && !yes {
+			fmt.Fprintf(stdout, "--purge deletes kamal-proxy's routes and certificates on every proxy host.\nType \"qifa-proxy\" to confirm: ")
+			line, _ := bufio.NewReader(confirmInput).ReadString('\n')
+			if strings.TrimSpace(line) != "qifa-proxy" {
+				return errors.New("not confirmed; nothing was removed")
+			}
+		}
+		return d.ProxyRemove(ctx, purge)
+	case "start", "stop", "restart":
+		return d.ProxyCtl(ctx, verb)
+	case "logs":
+		return d.ProxyLogs(ctx, lines, follow, stdout)
+	case "details":
+		return d.ProxyDetails(ctx, stdout)
+	default:
+		return errors.New(nativeProxyUsage)
+	}
 }

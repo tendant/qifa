@@ -324,3 +324,19 @@ func TestHealthCheckPortIsPassedOnlyWhenSet(t *testing.T) {
 		})
 	}
 }
+
+func TestNativeDeployArgsUseServerACMECache(t *testing.T) {
+	app := config.Proxy{Host: "app.example.com", SSL: true, TLS: &config.TLS{Source: "kamal"}}
+	k := NewNative(nil, app)
+	args := k.deployArgs(Target{Service: "app", Host: "127.0.0.1", Port: 8080})
+	if !strings.Contains(args, "--tls-acme-cache-path '/var/lib/qifa-proxy/.config/kamal-proxy/certs'") {
+		t.Fatalf("native deploy must pin the server's ACME cache: %s", args)
+	}
+	if !strings.Contains(args, "--target '127.0.0.1:8080'") || strings.HasPrefix(args, "kamal-proxy") {
+		t.Fatalf("args: %s", args)
+	}
+	// The container proxy keeps kamal-proxy's own default.
+	if strings.Contains(New(nil, app, config.ProxyBoot{}).deployCommand(Target{Service: "app", Host: "c", Port: 1}), "acme-cache") {
+		t.Fatal("container proxy should not pass an ACME cache path")
+	}
+}

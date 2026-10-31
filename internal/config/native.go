@@ -94,7 +94,14 @@ func applyNativeDefaults(cfg *Config) {
 	if n.Healthcheck.Timeout == 0 {
 		n.Healthcheck.Timeout = 30 * time.Second
 	}
+	if cfg.ProxyBoot.Version == "" {
+		cfg.ProxyBoot.Version = NativeProxyVersion
+	}
 }
+
+// NativeProxyVersion is the kamal-proxy a native proxy runs by default. It
+// is built from source (kamal-proxy publishes no binaries), so it is pinned.
+const NativeProxyVersion = "v0.10.2"
 
 func (c *Config) validateNative() error {
 	n := c.Native
@@ -113,8 +120,10 @@ func (c *Config) validateNative() error {
 		{c.PullPolicy == PullAlways, "pull_policy"},
 		{c.Builder != nil, "builder (use native.build)"},
 		{c.Registry.Server != "", "registry"},
-		{c.Proxy.Host != "" || len(c.Proxy.Hosts) > 0 || c.Proxy.AppPort != 0 || c.Proxy.SSL || c.Proxy.Healthcheck.Path != "", "proxy (use native.port and native.healthcheck)"},
-		{len(c.ProxyBoot.Hosts) > 0, "proxy_boot"},
+		{c.Proxy.AppPort != 0, "proxy.app_port (the target is native.port)"},
+		{c.Proxy.Healthcheck.Path != "" || c.Proxy.Healthcheck.Port != 0, "proxy.healthcheck (kamal-proxy uses native.healthcheck)"},
+		{c.ProxyBoot.Image != "" || c.ProxyBoot.Network != "" || c.ProxyBoot.StateVolume != "" || c.ProxyBoot.AppsConfigDir != "", "proxy_boot image, network, state_volume and apps_config_dir (a native proxy is not a container)"},
+		{len(c.ProxyBoot.BindIPs) > 0, "proxy_boot.bind_ips (a native proxy listens on all interfaces)"},
 		{c.Backup != nil, "backup"},
 		{c.Restore != nil, "restore"},
 		// Accessories are containers; a native config cannot manage them, so
@@ -195,12 +204,57 @@ func (c *Config) validateNative() error {
 			return fmt.Errorf("config.native.shared_dirs[%d] %q must be a plain relative path", i, d)
 		}
 	}
+	if err := c.validateNativeProxy(); err != nil {
+		return err
+	}
 	for i, f := range c.Files {
 		if strings.TrimSpace(f.Src) == "" || strings.TrimSpace(f.Dest) == "" {
 			return fmt.Errorf("config.files[%d]: src and dest are required", i)
 		}
 	}
 	return nil
+}
+
+// NativeProxied reports whether a native app is routed through kamal-proxy:
+// its config names the host(s) or path(s) to serve it on.
+func (c *Config) NativeProxied() bool {
+	return c.Native != nil && (c.Proxy.Host != "" || len(c.Proxy.Hosts) > 0 || len(c.Proxy.PathPrefixes) > 0)
+}
+
+// NativeProxyRole is the role kamal-proxy routes to: web, or the only role.
+func (c *Config) NativeProxyRole() string {
+	if _, ok := c.Servers["web"]; ok {
+		return "web"
+	}
+	if len(c.Servers) == 1 {
+		for role := range c.Servers {
+			return role
+		}
+	}
+	return ""
+}
+
+func (c *Config) validateNativeProxy() error {
+	n := c.Native
+	if !c.NativeProxied() {
+		if c.Proxy.SSL || c.Proxy.TLS != nil {
+			return errors.New("config.proxy.ssl needs config.proxy.host (or hosts) to route a native app")
+		}
+		return nil
+	}
+	if c.NativeProxyRole() == "" {
+		return errors.New("config.proxy: a native app with several roles is routed to its web role; name one role web")
+	}
+	if n.Port == 0 {
+		return errors.New("config.proxy needs config.native.port: kamal-proxy forwards to 127.0.0.1:<port>")
+	}
+	if n.Healthcheck.Path == "" {
+		return errors.New("config.proxy needs config.native.healthcheck.path: kamal-proxy checks it before routing")
+	}
+	if c.Proxy.TLS != nil && c.Proxy.TLS.Source == "qifa" {
+		return errors.New("config.proxy.tls.source: qifa runs lego in a container; with config.native use kamal (automatic certificates) or static")
+	}
+	return c.validateProxyTLS()
 }
 
 func validateExec(field string, argv []string, optional bool) error {
