@@ -2,9 +2,10 @@
 
 ## Goal
 
-A Go-native deployment CLI for Docker apps on plain Linux servers. Reuses the
-existing **kamal-proxy** for zero-downtime traffic switching; everything else
-(orchestration, build, lifecycle) is qifa's own.
+A Go-native deployment CLI for Docker apps on plain Linux servers, and for
+apps run directly under systemd with no Docker (see [Native Mode](#native-mode)).
+Reuses the existing **kamal-proxy** for zero-downtime traffic switching;
+everything else (orchestration, build, lifecycle) is qifa's own.
 
 ```text
 qifa CLI
@@ -83,6 +84,11 @@ qifa app containers     # list labeled containers per role/host (rollback target
 qifa app maintenance    # put service into maintenance mode (kamal-proxy stop)
 qifa app live           # take service out of maintenance mode (kamal-proxy resume)
 qifa accessory <boot|stop|start|restart|remove|logs|exec> <name> [args...]
+
+# native mode (config with a native: block); docs/native.md
+qifa native setup [--ssh-user root]           # once per host, as root: account, dirs, units, sudoers
+qifa native remove [--ssh-user root] [--purge]
+qifa proxy boot|upgrade|remove [--ssh-user root]  # kamal-proxy as a systemd service
 ```
 
 ## Config
@@ -606,16 +612,13 @@ the host while it's intentionally offline.
 - Primary-role healthcheck barrier for multi-role apps (qifa serializes
   roles strictly, so the barrier kamal needs for parallel-role booting
   doesn't apply here)
-- Native adapters for individual secret backends (use `env.secret_command`
-  to integrate with any of them)
+- Built-in adapters for secret managers (SOPS, Vault, AWS Secrets Manager,
+  1Password): `env.secret_command` integrates any of them
 - OpenTelemetry / web UI
-- GitHub Actions integration
-- Maintenance mode / explicit traffic on/off
-- Deploy locks (multiple deployers racing)
-- Multi-arch builds
-- Secret managers (SOPS, Vault, AWS SM, 1Password)
-- OpenTelemetry / web UI
-- GitHub Actions integration
+- A published GitHub Action (CI runs qifa as a command; see
+  [docs/deploying.md](docs/deploying.md#ci))
+- Zero-downtime deploys for native apps (decided against; a native deploy
+  restarts the process — design doc §16.4)
 
 ## Native Mode
 

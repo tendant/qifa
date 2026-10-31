@@ -14,8 +14,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/tendant/qifa/internal/config"
 	ksshconfig "github.com/kevinburke/ssh_config"
+	"github.com/tendant/qifa/internal/config"
 	gossh "golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/agent"
 	"golang.org/x/crypto/ssh/knownhosts"

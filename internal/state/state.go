@@ -149,4 +149,3 @@ func (s *Store) LatestSuccessful(service string) (*Deployment, error) {
 	}
 	return latest, nil
 }
-
