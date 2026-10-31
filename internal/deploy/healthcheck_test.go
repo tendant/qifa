@@ -36,6 +36,7 @@ func TestHealthAttemptsFitDeployTimeout(t *testing.T) {
 		want                      int
 	}{
 		{30 * time.Second, 5 * time.Second, 2 * time.Second, 5},
+		{75 * time.Second, 10 * time.Second, 5 * time.Second, 5},
 		{60 * time.Second, 5 * time.Second, 5 * time.Second, 6},
 		{time.Second, 5 * time.Second, 2 * time.Second, 1},
 	} {

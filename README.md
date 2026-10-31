@@ -255,7 +255,8 @@ setting both is an error.
 
 `healthcheck.timeout` bounds one attempt (default 5s) and
 `healthcheck.deploy_timeout` the whole wait for a new container or release
-(default 30s); with a proxy, `deploy_timeout` is also kamal-proxy's unless
+(default: room for five attempts, 5 × (timeout + interval), 35s with the
+defaults); with a proxy, `deploy_timeout` is also kamal-proxy's unless
 `proxy.deploy_timeout` overrides it. A native `cmd` given as a string is split
 into words without a shell; one that needs a shell (`$`, pipes, globs) is
 refused, so write it as a list.

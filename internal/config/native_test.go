@@ -41,7 +41,7 @@ func TestNativeConfigLoadsWithDefaults(t *testing.T) {
 		t.Fatal("native block not detected")
 	}
 	n := cfg.Native
-	if n.Dir != "/opt/qifa/app" || cfg.Retain() != 5 || n.Restart != "on-failure" || cfg.Health().DeployTimeout.Seconds() != 30 || cfg.Health().Timeout.Seconds() != 5 {
+	if n.Dir != "/opt/qifa/app" || cfg.Retain() != 5 || n.Restart != "on-failure" || cfg.Health().DeployTimeout.Seconds() != 35 || cfg.Health().Timeout.Seconds() != 5 {
 		t.Fatalf("defaults not applied: %+v %+v", n, cfg.Health())
 	}
 	if len(cfg.Warnings) != 0 {
@@ -236,13 +236,13 @@ prune:
 	if err != nil {
 		t.Fatal(err)
 	}
-	if h := cfg.Health(); h.Path != "/ready" || h.Timeout.Seconds() != 3 || h.DeployTimeout.Seconds() != 30 {
+	if h := cfg.Health(); h.Path != "/ready" || h.Timeout.Seconds() != 3 || h.DeployTimeout.Seconds() != 25 {
 		t.Fatalf("health = %+v", h)
 	}
 	if cfg.Retain() != 7 {
 		t.Fatalf("retain = %d", cfg.Retain())
 	}
-	if p := cfg.ProxyRoute(); p.Healthcheck.Path != "/ready" || p.DeployTimeout.Seconds() != 30 {
+	if p := cfg.ProxyRoute(); p.Healthcheck.Path != "/ready" || p.DeployTimeout.Seconds() != 25 {
 		t.Fatalf("proxy route = %+v", p)
 	}
 	if len(cfg.Warnings) != 2 {
@@ -268,5 +268,26 @@ func TestSplitWords(t *testing.T) {
 		if _, err := SplitWords(bad); err == nil {
 			t.Errorf("SplitWords(%q) accepted something that needs a shell", bad)
 		}
+	}
+}
+
+// Docker mode always allowed five attempts. A config with a longer timeout
+// or interval must keep that time when deploy_timeout is not set: it went
+// from 75s to 30s for a 10s/5s check in the first cut of the unified key.
+func TestUnsetDeployTimeoutKeepsFiveAttempts(t *testing.T) {
+	cfg, err := loadString(t, "service: app\nimage: x/app:1\nservers:\n  web:\n    hosts: [h]\nproxy:\n  host: a.example.com\n  healthcheck:\n    path: /health\n    interval: 5s\n    timeout: 10s\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.Health().DeployTimeout.Seconds(); got != 75 {
+		t.Fatalf("deploy_timeout = %vs, want 75s (5 x (10s + 5s))", got)
+	}
+	// An explicit deploy_timeout is taken as given.
+	cfg, err = loadString(t, "service: app\nimage: x/app:1\nservers:\n  web:\n    hosts: [h]\nhealthcheck:\n  path: /health\n  timeout: 10s\n  deploy_timeout: 20s\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.Health().DeployTimeout.Seconds(); got != 20 {
+		t.Fatalf("explicit deploy_timeout = %vs", got)
 	}
 }

@@ -21,10 +21,13 @@ import (
 
 // Health-check defaults, for both modes.
 const (
-	DefaultHealthInterval      = 2 * time.Second
-	DefaultHealthTimeout       = 5 * time.Second
-	DefaultHealthDeployTimeout = 30 * time.Second
-	DefaultRetain              = 5
+	DefaultHealthInterval = 2 * time.Second
+	DefaultHealthTimeout  = 5 * time.Second
+	// DefaultHealthAttempts sizes deploy_timeout when it is not set: room for
+	// this many attempts. Five is what Docker mode always allowed, so a
+	// config with a longer timeout or interval keeps the time it had.
+	DefaultHealthAttempts = 5
+	DefaultRetain         = 5
 )
 
 // Health returns the health check with defaults applied: Timeout bounds one
@@ -46,7 +49,7 @@ func (c *Config) Health() Healthcheck {
 		h.Timeout = DefaultHealthTimeout
 	}
 	if h.DeployTimeout == 0 {
-		h.DeployTimeout = DefaultHealthDeployTimeout
+		h.DeployTimeout = DefaultHealthAttempts * (h.Timeout + h.Interval)
 	}
 	return h
 }

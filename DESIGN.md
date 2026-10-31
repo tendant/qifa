@@ -126,7 +126,7 @@ healthcheck:              # both modes; see README "Keys shared by both modes"
   path: /up
   interval: 2s
   timeout: 5s             # one attempt
-  deploy_timeout: 30s     # the whole wait
+  deploy_timeout: 35s     # the whole wait (default: 5 x (timeout + interval))
 
 registry:
   server: registry.example.com

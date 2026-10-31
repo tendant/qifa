@@ -67,7 +67,7 @@ Docker-only commands (`proxy *`, `app maintenance|live|containers`, `sweep`, `pr
 
 ## 4. Configuration
 
-> **Since unified with Docker mode.** The command, app port, health check and retention below moved to keys both modes share: `servers.<role>.cmd` (string or list), `servers.<role>.app_port`, the top-level `healthcheck` (`timeout` per attempt, `deploy_timeout` for the whole wait; the old `native.healthcheck.timeout` maps to `deploy_timeout`) and `prune.retain`. The native-only keys below still load, with a deprecation warning. See README, "Keys shared by both modes".
+> **Since unified with Docker mode.** The command, app port, health check and retention below moved to keys both modes share: `servers.<role>.cmd` (string or list), `servers.<role>.app_port`, the top-level `healthcheck` (`timeout` per attempt, `deploy_timeout` for the whole wait, defaulting to five attempts' worth; the old `native.healthcheck.timeout` maps to `deploy_timeout`) and `prune.retain`. The native-only keys below still load, with a deprecation warning. See README, "Keys shared by both modes".
 
 The existing `builder:` block means a Docker build (`host`, `context`, `dockerfile`, `platform`, `repo`), `image` is required (`config.go`), and the loader rejects unknown keys. Native mode therefore gets its own top-level block rather than overloading `builder:` or adding a `deploy.type` switch. **The presence of `native:` selects native mode.**
 

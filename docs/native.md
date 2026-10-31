@@ -37,7 +37,7 @@ servers:
 
 healthcheck:
   path: /up                      # HTTP check on roles with an app_port; others must stay active
-  deploy_timeout: 30s            # the whole wait for a release
+  deploy_timeout: 35s            # the whole wait (default: 5 x (timeout + interval))
 
 prune:
   retain: 5
@@ -70,7 +70,7 @@ the earlier native-only keys (`native.exec`, `native.port`,
 | `servers.<role>.cmd` | required | The command, as a list or a string split into words; no shell either way. The first word is relative to the release unless absolute. |
 | `user` | required | Service account, created by `qifa setup`. Not root. |
 | `arch` | none | `amd64`, `arm64`, `arm`, `386` or `riscv64`. ELF binaries are checked before upload, so a Mac-built arm64 binary is caught before it reaches an amd64 server. |
-| `servers.<role>.app_port`, `healthcheck` | interval 2s, timeout 5s per attempt, deploy_timeout 30s | HTTP check on `127.0.0.1:<app_port><path>` for every role with an `app_port`; other roles must stay active. |
+| `servers.<role>.app_port`, `healthcheck` | interval 2s, timeout 5s per attempt, deploy_timeout 5 × (timeout + interval) = 35s | HTTP check on `127.0.0.1:<app_port><path>` for every role with an `app_port`; other roles must stay active. |
 | `shared_dirs` | none | Directories under `shared/` linked into every release, for data that must outlive it. The only place the app can write besides `/tmp`. |
 | `dir` | `/opt/qifa/<service>` | Install root on the server. |
 | `prune.retain` | 5 | Releases kept per host (at least 2). The live release and the rollback target are always kept. |
