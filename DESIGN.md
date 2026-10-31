@@ -603,7 +603,7 @@ deploys — is a runbook rather than a design decision: see
 `kamal-proxy stop <service>` on every host where the proxy is running. The
 proxy returns the configured message for incoming requests (default 503) and
 drains in-flight requests over `drain-timeout`. Note: requests to the
-configured `proxy.healthcheck.path` still return 200 OK during maintenance —
+configured `healthcheck.path` still return 200 OK during maintenance —
 this is kamal-proxy behavior to keep downstream load balancers from dropping
 the host while it's intentionally offline.
 

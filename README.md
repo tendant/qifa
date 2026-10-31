@@ -21,15 +21,26 @@ systemd service: see [Native deploys](docs/native.md).
 
 ## Install
 
+The current release is **v0.2.1** ([CHANGELOG](CHANGELOG.md)). Building
+needs Go 1.27.1 or newer (an older `go` fetches the right toolchain itself
+unless `GOTOOLCHAIN=local`).
+
 ```bash
-git clone https://github.com/tendant/qifa.git
+go install github.com/tendant/qifa/cmd/qifa@v0.2.1
+qifa version
+```
+
+Or from a checkout, which stamps the version from git:
+
+```bash
+git clone https://github.com/tendant/qifa.git    # mirror: https://gitee.com/tendant/qifa.git
 cd qifa
-make build
-./qifa version
+make install        # or: make build, for ./qifa
 ```
 
 The binary is statically linkable (no cgo) and self-contained. Drop it
-anywhere on `$PATH`.
+anywhere on `$PATH`. Install the same version on every machine that deploys:
+configs written for one version may be rejected by an older one.
 
 ## Quickstart
 
@@ -438,8 +449,10 @@ Deploying without Docker: [docs/native.md](docs/native.md).
 
 ## Status
 
-Active development. The CLI is reasonably stable; the schema may still
-change before a 1.0 tag.
+Active development; current release v0.2.1, changes in
+[CHANGELOG.md](CHANGELOG.md). The CLI is reasonably stable; the schema may
+still change before a 1.0 tag, and renamed keys keep loading with a warning
+when it does.
 
 ## License
 
