@@ -14,6 +14,12 @@ This repo includes a Docker-based integration harness for real build, authentica
 - `qifa logs`
 - `qifa app exec`
 - worker redeploy and rollback flow
+- **zero downtime** through `kamal-proxy`: one client sends requests back to
+  back while the web role is deployed from `zd1` to `zd2` and rolled back to
+  `zd1`. Every request must succeed, there must be at least 20 of them, and
+  the responses must show the version change happening during the run. Each
+  response carries the version that served it (`APP_VERSION`), which is how
+  the check tells a switch under load from one before or after it
 
 ## Run It
 
@@ -27,6 +33,14 @@ To keep the Docker environment up after the script exits:
 KEEP_E2E_ENV=1 bash scripts/test-zot-e2e.sh
 ```
 
+If a default host port is taken on your machine, move it (the registry stays
+`zottest:5001` inside the test network):
+
+```bash
+QIFA_E2E_ZOT_PORT=25001 QIFA_E2E_HTTP_PORT=28080 \
+QIFA_E2E_SSH_PORT=22222 QIFA_E2E_DOCKER_PORT=33750 make test-e2e
+```
+
 To run the same sequence used in CI:
 
 ```bash
@@ -35,11 +49,11 @@ make ci
 
 ## Services
 
-- `zot` on `127.0.0.1:5001`
+- `zot` on `127.0.0.1:5001` (`QIFA_E2E_ZOT_PORT`)
 - registry hostname `zottest:5001`
-- SSH deploy host on `127.0.0.1:2222`
-- remote Docker daemon on `127.0.0.1:23750`
-- deployed web app through `kamal-proxy` on `127.0.0.1:8080`
+- SSH deploy host on `127.0.0.1:2222` (`QIFA_E2E_SSH_PORT`)
+- remote Docker daemon on `127.0.0.1:23750` (`QIFA_E2E_DOCKER_PORT`)
+- deployed web app through `kamal-proxy` on `127.0.0.1:8080` (`QIFA_E2E_HTTP_PORT`)
 
 ## Registry Auth
 
@@ -58,6 +72,15 @@ Authentication is exercised with a static `htpasswd` file mounted into `zot`, an
 ## Important Limitation
 
 The harness now validates repeated web deploys without publishing app containers directly on the host. The proxy routes to container IPs discovered from the remote Docker daemon, which is close to the production model but still assumes the proxy process can reach bridge-network container addresses on the host.
+
+## Zero downtime: what is and is not covered
+
+The check covers a proxied role moving between two different versions, on
+deploy and on rollback. It does not cover the cases that are not zero-downtime
+by design: roles without the proxy and roles with `extra_ports` stop the old
+container first. Redeploying the version that is already live is also not
+zero-downtime, because the container is replaced by name: under the same load,
+one request in a few hundred got a 502 from kamal-proxy.
 
 ## CI
 

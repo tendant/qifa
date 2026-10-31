@@ -3,7 +3,7 @@ services:
     image: ghcr.io/project-zot/zot:latest
     command: ["serve", "/etc/zot/config.json"]
     ports:
-      - "5001:5001"
+      - "${QIFA_E2E_ZOT_PORT:-5001}:5001"
     volumes:
       - ./zot/config.json:/etc/zot/config.json:ro
       - ./zot/htpasswd:/etc/zot/htpasswd:ro
@@ -20,9 +20,9 @@ services:
     depends_on:
       - zot
     ports:
-      - "2222:22"
-      - "23750:2375"
-      - "8080:80"
+      - "${QIFA_E2E_SSH_PORT:-2222}:22"
+      - "${QIFA_E2E_DOCKER_PORT:-23750}:2375"
+      - "${QIFA_E2E_HTTP_PORT:-8080}:80"
     volumes:
       - ./.tmp/ssh:/test-ssh
       - deploy-host-data:/var/lib/docker
