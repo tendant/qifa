@@ -38,6 +38,8 @@ qifa/
   internal/lock/       per-service mutex held across target hosts during deploy
   internal/state/      append-only audit log (deployments + events)
   internal/ssh/        SSH client (parallel fanout, sudo, known_hosts)
+  internal/native/     native (systemd, no Docker) deploys — docs/native.md
+  internal/version/    deploy version resolution, shared by both modes
   internal/logs/       stdout/stderr formatting
   DESIGN.md
 ```
@@ -614,6 +616,16 @@ the host while it's intentionally offline.
 - Secret managers (SOPS, Vault, AWS SM, 1Password)
 - OpenTelemetry / web UI
 - GitHub Actions integration
+
+## Native Mode
+
+A config with a `native:` block deploys a binary or directory as a systemd
+service instead of a container: releases under `/opt/qifa/<service>`, a
+`current` link, and a unit per role. CLI commands both modes support go
+through a small backend interface in `internal/app`; Docker-only commands
+refuse. The Docker deployer is unchanged. Design:
+[docs/qifa-native-deployment-design.md](docs/qifa-native-deployment-design.md);
+usage: [docs/native.md](docs/native.md).
 
 ## Positioning
 

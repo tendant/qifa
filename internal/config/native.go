@@ -117,6 +117,9 @@ func (c *Config) validateNative() error {
 		{len(c.ProxyBoot.Hosts) > 0, "proxy_boot"},
 		{c.Backup != nil, "backup"},
 		{c.Restore != nil, "restore"},
+		// Accessories are containers; a native config cannot manage them, so
+		// they belong in a separate Docker config for the same host.
+		{len(c.Accessories) > 0, "accessories (run them from a separate Docker config)"},
 	}
 	for _, f := range forbidden {
 		if f.set {

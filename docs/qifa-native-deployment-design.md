@@ -1,6 +1,6 @@
 # Qifa Native Deployment — Design
 
-**Status:** Implemented: phases 1 and 2 on branch `native-deploy`; phase 3 (user docs) in progress  
+**Status:** Implemented on branch `native-deploy` (phases 1–3). User guide: [native.md](native.md)  
 **Scope:** Linux hosts, native application deployment without Docker  
 **Principle:** Keep Qifa simple: build → SSH upload → activate release → systemd restart → health check → rollback on failure.
 
@@ -112,7 +112,7 @@ Validation in native mode:
 - `native.artifact` and `native.exec` are required; `exec` must be a non-empty list and `exec[0]` a relative path (no `..`) unless absolute.
 - Forbidden alongside `native:`: `image`, `source`, `pull_policy`, `registry`, `builder`, `proxy`, `proxy_boot`, `backup`, `restore`. `image` is no longer required in this mode.
 - `servers.<role>.cmd`, `port`, `app_port`, `volumes`, `privileged`, `extra_ports` are container concepts and are rejected. A role may set `exec` to override `native.exec` (e.g. a worker role from the same artifact).
-- `accessories` remain Docker containers. They are allowed only if the accessory host has Docker; `qifa doctor` checks this. A fully Docker-free host simply has no accessories.
+- `accessories` are rejected: they are containers, which a native config does not manage. Run them from a separate Docker config for the same host (see §15).
 - `port` is required only if `healthcheck.path` is set. Without it, the check is `systemctl is-active` after a settle period (process liveness, not readiness).
 
 Defaults:
@@ -299,7 +299,7 @@ Code layout: `internal/native/` with `native.go` (Backend), `release.go` (stagin
 - Pruning runs after each successful host deploy: keep the newest `retain` releases by staging time, plus always the live release and the automatic rollback target, however old.
 - Interrupted deploys (a `current` release without `.qifa-ok`, or leftover `*.tmp`) are reported by `status`, flagged by `reconcile`, and warned about at the start of the next deploy.
 
-**Phase 3: docs.** README section, `docs/deploying.md` native notes (env-on-restart semantics, sudoers, arch), troubleshooting entries.
+**Phase 3: docs (done).** User guide `docs/native.md` (config, setup and sudoers, env-on-restart semantics, arch, mixed hosts), README example, `docs/deploying.md` pointer, troubleshooting entries, DESIGN.md section.
 
 ## 15. Native and Docker apps on the same host
 

@@ -16,6 +16,9 @@ qifa CLI
 
 For the full design, see [DESIGN.md](DESIGN.md).
 
+No Docker on the server? qifa can also deploy a binary or directory as a
+systemd service: see [Native deploys](docs/native.md).
+
 ## Install
 
 ```bash
@@ -205,6 +208,34 @@ Nothing here registers a route with kamal-proxy, which is the point: a route
 would make the service answer to anyone who sends that `Host:` header to the
 proxy's public port.
 
+### 6. Without Docker: a systemd service
+
+A static binary run by systemd: no image, registry or proxy on the server.
+`qifa native setup --ssh-user root` once, then `qifa deploy` as usual.
+
+```yaml
+service: myapp
+
+servers:
+  web:
+    hosts: [10.0.0.11]
+
+ssh:
+  user: deploy
+
+native:
+  build: GOOS=linux GOARCH=amd64 go build -o dist/myapp ./cmd/myapp
+  artifact: dist/myapp
+  exec: [myapp, --port, "8080"]
+  user: myapp
+  port: 8080
+  healthcheck:
+    path: /up
+```
+
+Releases, rollback, status and env work as they do for containers; there is no
+zero-downtime switch or TLS. See [docs/native.md](docs/native.md).
+
 ## Verb Cheatsheet
 
 ```text
@@ -377,6 +408,7 @@ in their environment.
 
 Common issues and fixes: [docs/troubleshooting.md](docs/troubleshooting.md).
 Team and multi-machine setup: [docs/deploying.md](docs/deploying.md).
+Deploying without Docker: [docs/native.md](docs/native.md).
 
 ## Status
 

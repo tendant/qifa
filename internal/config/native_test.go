@@ -51,10 +51,11 @@ func TestNativeConfigLoadsWithDefaults(t *testing.T) {
 
 func TestNativeConfigRejects(t *testing.T) {
 	cases := map[string]struct{ edit, want string }{
-		"image":    {"image: x/app\n", "config.image is not used"},
-		"builder":  {"builder:\n  context: .\n", "config.builder"},
-		"proxy":    {"proxy:\n  host: a.example.com\n", "config.proxy"},
-		"registry": {"registry:\n  server: r\n  username: u\n  password_env: P\n", "config.registry"},
+		"image":     {"image: x/app\n", "config.image is not used"},
+		"builder":   {"builder:\n  context: .\n", "config.builder"},
+		"proxy":     {"proxy:\n  host: a.example.com\n", "config.proxy"},
+		"registry":  {"registry:\n  server: r\n  username: u\n  password_env: P\n", "config.registry"},
+		"accessory": {"accessories:\n  redis:\n    image: redis:7\n    host: h\n", "config.accessories"},
 	}
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {

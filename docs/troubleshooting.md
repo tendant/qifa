@@ -315,3 +315,22 @@ ssh:
 This makes qifa accept any key the host presents — fine for
 self-hosting on your own machine, **not** acceptable for production
 targets reachable over the public internet.
+
+## Native deploys (`native:` configs)
+
+`qifa doctor` runs the deploy preflight and lists every problem per host. The
+messages below are what a deploy prints when one of them stops it. Nothing has
+changed on any host at that point.
+
+| Message | Cause and fix |
+| --- | --- |
+| `/opt/qifa/<svc> is missing or not writable by deploy` | Setup has not run on that host: `qifa native setup --ssh-user root`. |
+| `deploy may not run sudo -n systemctl restart ...` | The sudoers rule is missing (setup not run, or run with another `--deploy-user`). Re-run setup. |
+| `unit ... differs from the config` | `exec`, `user`, `restart` or the roles changed since setup. Re-run setup; deploys cannot change units. |
+| `systemctl cannot reach systemd ... install dbus` | As non-root, `systemctl` goes through D-Bus. `apt install dbus` (or the distro's equivalent). |
+| `host is amd64 but the release is built for arm64` | Cross-compile for the server (`GOOS=linux GOARCH=amd64`), and set `native.arch` so it is caught before upload. |
+| `release vX is live but this build of it has different contents` | The same version was rebuilt with different bytes (a non-reproducible build). Deploy it under a new `--version`. |
+| `... did not become healthy within 30s` followed by `restored releases/...` | The new release failed; the previous one is running again. The unit's journal is in the error. `qifa logs` shows more. |
+| `first deploy ... failed; there is no previous release to restore` | Nothing to fall back to; the unit is stopped so it does not restart forever. Fix and deploy again. |
+| `current release X never passed its health check` (warning) | A deploy was interrupted after switching releases. The next deploy fixes it, or `qifa rollback`. |
+| `qifa <cmd> works with containers and is not available ...` | A Docker-only command run against a native config. |
