@@ -724,3 +724,24 @@ func (t *tailBuffer) String() string {
 	defer t.mu.Unlock()
 	return string(t.buf)
 }
+
+// Quote quotes value for a POSIX shell command line.
+func Quote(value string) string { return shellQuote(value) }
+
+// Sudo runs argv as root on host via `sudo -n`. -n makes a missing sudoers
+// rule fail at once with sudo's own message instead of hanging on a password
+// prompt nobody will see. Each argument is quoted, so argv is never
+// reinterpreted by the remote shell; sudoers rules match it word for word.
+func (c *Client) Sudo(ctx context.Context, host string, argv ...string) (string, error) {
+	return c.Run(ctx, host, SudoCommand(argv...))
+}
+
+// SudoCommand renders the command line Sudo runs, for callers that stream it
+// or embed it in a larger script.
+func SudoCommand(argv ...string) string {
+	quoted := make([]string, len(argv))
+	for i, a := range argv {
+		quoted[i] = shellQuote(a)
+	}
+	return "sudo -n -- " + strings.Join(quoted, " ")
+}

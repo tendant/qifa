@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -24,6 +23,7 @@ import (
 	"github.com/tendant/qifa/internal/secrets"
 	"github.com/tendant/qifa/internal/ssh"
 	"github.com/tendant/qifa/internal/state"
+	"github.com/tendant/qifa/internal/version"
 )
 
 type Deployer struct {
@@ -1962,35 +1962,10 @@ func orderedRoles(servers map[string]config.Server) []string {
 	return roles
 }
 
-// resolveVersion decides what to tag this build. The version is the deploy's
-// identity — it names the image, the container, and the rollback target — so
-// it must not quietly depend on which machine ran the deploy.
-//
-// In order: an explicit version (--version / QIFA_VERSION), then the git
-// commit of the config's checkout, then a timestamp when there is no git at
-// all. A dirty checkout is refused rather than shipped under its commit's
-// name, because that tag would describe bytes nobody else can reproduce.
+// resolveVersion is version.Resolve; kept as a name so the Docker path reads
+// as it did before the logic moved to be shared with the native backend.
 func resolveVersion(explicit string, allowDirty bool) (string, error) {
-	if explicit != "" {
-		return explicit, nil
-	}
-	if env := strings.TrimSpace(os.Getenv("QIFA_VERSION")); env != "" {
-		return env, nil
-	}
-	out, err := exec.Command("git", "rev-parse", "--short", "HEAD").Output()
-	if err != nil {
-		// No git here — a tarball deploy, or a config outside any repo.
-		return time.Now().UTC().Format("20060102-150405"), nil
-	}
-	version := strings.TrimSpace(string(out))
-	dirty, err := exec.Command("git", "status", "--porcelain").Output()
-	if err != nil || len(strings.TrimSpace(string(dirty))) == 0 {
-		return version, nil
-	}
-	if allowDirty {
-		return version + "-dirty", nil
-	}
-	return "", fmt.Errorf("the checkout has uncommitted changes, so version %s would not describe what is deployed: commit them, or pass --version <v> or --allow-dirty", version)
+	return version.Resolve(explicit, allowDirty)
 }
 
 func deploymentID(version string) string {

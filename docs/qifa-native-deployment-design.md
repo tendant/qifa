@@ -16,7 +16,7 @@
 
 ## 2. Non-goals
 
-- Zero-downtime deployment, blue-green switching or traffic routing (see §15 for a later path).
+- Zero-downtime deployment, blue-green switching or traffic routing (see §16 for a later path).
 - TLS termination and domain routing. Without kamal-proxy, the operator brings their own (Caddy, nginx) or binds the app port directly.
 - Non-Linux platforms or init systems other than systemd.
 - Container image building for the native backend.
@@ -79,7 +79,7 @@ servers:
 
 native:
   build: make build                     # run on the deployer, in the config dir; optional
-  artifact: dist/myapp                  # file or directory, relative to the config dir
+  artifact: dist                        # file or directory, relative to the config dir
   exec: [bin/myapp, --port, "8080"]     # argv; exec[0] resolved under current/; no shell
   user: myapp                           # service account (created by `qifa native setup`)
   arch: amd64                           # optional; verified against the artifact and host
@@ -104,6 +104,8 @@ hooks:
 ssh:
   user: deploy
 ```
+
+A directory artifact's contents become the release root (`dist/bin/myapp` above runs as `bin/myapp`). A single-file artifact lands at the release root under its own name (`artifact: dist/myapp` runs as `exec: [myapp]`).
 
 Validation in native mode:
 
@@ -238,7 +240,7 @@ Two privilege tiers.
 
 **Every deploy: the shared `deploy` user** from `docs/deploying.md`, with only the narrow sudo above. Root SSH is never required.
 
-`internal/ssh` has no sudo support today (DESIGN.md says it does, but `ssh.go` has none). Phase 1 adds `Client.Sudo(ctx, host, argv...)`, which runs `sudo -n -- <quoted argv>`. With `-n`, a missing sudoers rule fails immediately with a clear error instead of hanging on a password prompt. `qifa doctor` in native mode checks `sudo -n -l` for each required rule, `systemctl --version`, the unit's presence, directory ownership, and that `uname -m` matches `native.arch`.
+`internal/ssh` has no sudo support today (DESIGN.md says it does, but `ssh.go` has none). Phase 1 adds `Client.Sudo(ctx, host, argv...)`, which runs `sudo -n -- <quoted argv>`. With `-n`, a missing sudoers rule fails immediately with a clear error instead of hanging on a password prompt. Every deploy runs the same checks read-only on every host before changing any (preflight), and `qifa doctor` in native mode will report them: `sudo -n -l` for each required rule; that the deploy user's `systemctl` can reach systemd (as non-root it goes through D-Bus, so a host without `dbus` fails every health check: found by the e2e test, since minimal images omit it), `systemctl --version`, the unit's presence, directory ownership, and that `uname -m` matches `native.arch`.
 
 **Alternative, documented but not the default:** systemd user units for the deploy user (`loginctl enable-linger deploy`, units in `~/.config/systemd/user`). This needs no sudo at all after setup, but the app runs as the deploy user rather than its own account, and `EnvironmentFile` must be readable by that user.
 
@@ -292,18 +294,39 @@ Code layout: `internal/native/` with `native.go` (Backend), `release.go` (stagin
 
 **Phase 3: docs.** README section, `docs/deploying.md` native notes (env-on-restart semantics, sudoers, arch), troubleshooting entries.
 
-## 15. Later: native app behind kamal-proxy
+## 15. Native and Docker apps on the same host
+
+The mode is per service (per config file), so one host can run Docker apps and native apps side by side. They share nothing qifa manages:
+
+| | Docker app | Native app |
+| --- | --- | --- |
+| What is deployed | containers labelled `qifa.service=<svc>` | `/opt/qifa/<svc>/current` |
+| Process supervision | `docker run --restart unless-stopped` | `qifa-<svc>.service` |
+| Deploy lock | `/tmp/qifa-lock-<svc>` | `/tmp/qifa-lock-<svc>` |
+
+What to watch:
+
+- **Service names must be unique per host across modes.** Both modes take the same lock path, and a shared name makes `qifa status` ambiguous. A config cannot see other configs, so `qifa native setup` warns when the host already has containers labelled with the same service name.
+- **Ports.** A native app binds host ports directly. If kamal-proxy runs on the host, it owns 80/443.
+- **The deploy user** needs the `docker` group for the Docker apps and the per-service sudoers rule for each native app; one shared `deploy` user serves both.
+- Mixing modes within one service (a Docker web role and a native worker) is not supported; split it into two services.
+
+A mixed host already runs kamal-proxy, which makes §16 cheap exactly where it is most useful.
+
+## 16. Later: native app behind kamal-proxy
 
 If the host can run one container, kamal-proxy can front a native process: the target is the host's address on the Docker bridge (e.g. `172.17.0.1:<port>`) instead of a container IP. That restores TLS (`internal/cert`), domain routing, maintenance mode, and zero-downtime switching. Zero downtime works by alternating two ports per release (start the new release on the idle port, health check, `kamal-proxy deploy --target`, stop the old one). This needs a templated unit (`qifa-myapp@<port>.service`), so it is deliberately out of scope for v1, but nothing in the v1 layout prevents it.
 
-## 16. Design decisions
+## 17. Design decisions
 
 1. **`native:` block selects the mode**: it fits the existing schema and strict key checking without changing what `builder:` means.
-2. **Downtime accepted in v1**: a simple `systemctl restart`; zero downtime is the §15 follow-up.
+2. **Downtime accepted in v1**: a simple `systemctl restart`; zero downtime is the §16 follow-up.
 3. **systemd only.**
 4. **SSH, no agent**: qifa stays client-driven and the deployer stateless.
 5. **Immutable releases + `current` link + `.qifa-ok` marker**: the host filesystem is the source of truth, as Docker labels are in Docker mode.
 6. **Reuse, don't abstract**: lock, hooks, state, secrets, version and SSH are shared; the Docker deployer is untouched except for the dispatch interface.
 7. **Narrow, explicit privilege**: one-time `native setup` owns the unit and sudoers; deploys can only start, stop or restart their own unit (`sudo -n`, exact allowlist, no wildcards, no file writes as root).
+
+**Verification:** `test/e2e/native-e2e.sh` runs the acceptance criterion against a Debian container with systemd as PID 1, sshd, sudo and no Docker: refusal before setup, idempotent setup, two deploys, an identical rebuild reused, a crashing release rolled back with its journal attached, env values with quotes, backslashes, `$`, `%` and newlines delivered byte-for-byte, the shared directory writable, and the privilege boundaries (deploy user limited to three `systemctl` verbs on its own unit; service account unable to read the env file or write its release).
 
 **Acceptance criterion:** On a Linux server with no Docker installed, after `qifa native setup`, `qifa deploy` ships a non-Docker application under systemd, `qifa status` / `qifa logs` report it, and a subsequent deploy whose health check fails leaves the previous release running, without the deploy user having unrestricted root.

@@ -34,6 +34,9 @@ type Config struct {
 	Backup      *Backup              `yaml:"backup"`
 	Restore     *Restore             `yaml:"restore"`
 	Files       []FileMapping        `yaml:"files"`
+	// Native, when present, deploys the app as a systemd service from a
+	// release directory instead of as a container. See native.go.
+	Native *Native `yaml:"native"`
 }
 
 // FileMapping pushes a local file to a host path. Used to manage app config
@@ -149,6 +152,9 @@ type Server struct {
 	// port range published (e.g. WebRTC media) — passed through to
 	// docker's own `-p` range syntax as one entry rather than one per port.
 	ExtraPorts []string `yaml:"extra_ports"`
+	// Exec overrides native.exec for this role (native mode only), so one
+	// artifact can run as several services — a web server and a worker.
+	Exec []string `yaml:"exec"`
 }
 
 // Proxy is the per-app routing config registered with kamal-proxy at deploy
@@ -423,6 +429,10 @@ func (c *Config) Validate() error {
 	if c.Service == "" {
 		return errors.New("config.service is required")
 	}
+	if c.Native != nil {
+		// Native mode has its own rules: no image, no proxy, no containers.
+		return c.validateNative()
+	}
 	if c.Image == "" {
 		return errors.New("config.image is required")
 	}
@@ -430,6 +440,9 @@ func (c *Config) Validate() error {
 		return errors.New("config.servers is required")
 	}
 	for role, server := range c.Servers {
+		if len(server.Exec) > 0 {
+			return fmt.Errorf("config.servers.%s.exec applies only with config.native; use cmd for a container", role)
+		}
 		if len(server.Hosts) == 0 {
 			return fmt.Errorf("config.servers.%s.hosts is required", role)
 		}
@@ -557,6 +570,7 @@ func (c *Config) validateProxyTLS() error {
 }
 
 func applyDefaults(cfg *Config) {
+	applyNativeDefaults(cfg)
 	if cfg.Builder != nil {
 		if cfg.Builder.Dockerfile == "" {
 			cfg.Builder.Dockerfile = "Dockerfile"

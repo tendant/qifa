@@ -18,6 +18,22 @@ import (
 //  3. secret_command: stdout of a user-provided shell command, parsed as
 //     KEY=VALUE lines (dotenv format). Use to integrate SOPS, Vault, etc.
 func Render(clear map[string]string, secretKeys []string, secretCommand string) ([]byte, error) {
+	values, err := Collect(clear, secretKeys, secretCommand)
+	if err != nil {
+		return nil, err
+	}
+	var buf bytes.Buffer
+	for _, key := range SortedKeys(values) {
+		fmt.Fprintf(&buf, "%s=%s\n", key, envFileEscape(values[key]))
+	}
+	return buf.Bytes(), nil
+}
+
+// Collect merges the three env sources (same priority as Render) without
+// committing to a file format. The Docker path writes them for --env-file;
+// the native path writes them for systemd's EnvironmentFile=, which quotes
+// and escapes differently.
+func Collect(clear map[string]string, secretKeys []string, secretCommand string) (map[string]string, error) {
 	values := map[string]string{}
 	for key, value := range clear {
 		values[key] = value
@@ -38,18 +54,18 @@ func Render(clear map[string]string, secretKeys []string, secretCommand string) 
 			values[k] = v
 		}
 	}
+	return values, nil
+}
 
+// SortedKeys returns the keys of values in a stable order, so rendered files
+// are byte-identical for identical env and can be compared.
+func SortedKeys(values map[string]string) []string {
 	keys := make([]string, 0, len(values))
 	for key := range values {
 		keys = append(keys, key)
 	}
 	sort.Strings(keys)
-
-	var buf bytes.Buffer
-	for _, key := range keys {
-		fmt.Fprintf(&buf, "%s=%s\n", key, envFileEscape(values[key]))
-	}
-	return buf.Bytes(), nil
+	return keys
 }
 
 func runSecretCommand(command string) (map[string]string, error) {

@@ -353,7 +353,7 @@ func serveRenewed(ctx context.Context, stdout, stderr io.Writer, configFile, app
 			others = append(others, h)
 			continue
 		}
-		errs = append(errs, withRuntime(ctx, stdout, stderr, configFile, func(rt *runtime) error {
+		errs = append(errs, withRuntime(ctx, stdout, stderr, configFile, "cert", func(rt *runtime) error {
 			n, err := rt.deployer.ReregisterProxy(ctx)
 			if err == nil && n == 0 {
 				fmt.Fprintf(stdout, "renewed %s, but no running container to re-register; the next deploy or start serves it\n", h)

@@ -1,4 +1,4 @@
-.PHONY: build install uninstall test test-e2e ci
+.PHONY: build install uninstall test test-e2e test-e2e-native ci
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
@@ -34,5 +34,10 @@ test:
 
 test-e2e:
 	bash scripts/test-zot-e2e.sh
+
+# Native (systemd, no Docker on the target) deploys against a throwaway
+# systemd host container. Needs Docker locally, privileged containers allowed.
+test-e2e-native:
+	test/e2e/native-e2e.sh
 
 ci: test test-e2e

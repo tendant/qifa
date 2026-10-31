@@ -14,6 +14,7 @@ import (
 
 	"github.com/tendant/qifa/internal/config"
 	"github.com/tendant/qifa/internal/deploy"
+	"github.com/tendant/qifa/internal/native"
 	"github.com/tendant/qifa/internal/state"
 )
 
@@ -132,43 +133,43 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 				return fmt.Errorf("unknown flag %q", rest[i])
 			}
 		}
-		return withRuntime(ctx, stdout, stderr, configFile, func(rt *runtime) error {
-			rt.deployer.PinVersion(version, allowDirty)
+		return withBackend(ctx, stdout, stderr, configFile, func(b backend) error {
+			b.PinVersion(version, allowDirty)
 			if dryRun {
-				return rt.deployer.Plan(ctx, stdout)
+				return b.Plan(ctx, stdout)
 			}
-			return rt.deployer.Deploy(ctx)
+			return b.Deploy(ctx)
 		})
 	case "rollback":
 		version := ""
 		if len(args) > 1 {
 			version = args[1]
 		}
-		return withRuntime(ctx, stdout, stderr, configFile, func(rt *runtime) error {
-			return rt.deployer.Rollback(ctx, version)
+		return withBackend(ctx, stdout, stderr, configFile, func(b backend) error {
+			return b.Rollback(ctx, version)
 		})
 	case "stop":
-		return withRuntime(ctx, stdout, stderr, configFile, func(rt *runtime) error {
-			return rt.deployer.Stop(ctx)
+		return withBackend(ctx, stdout, stderr, configFile, func(b backend) error {
+			return b.Stop(ctx)
 		})
 	case "start":
-		return withRuntime(ctx, stdout, stderr, configFile, func(rt *runtime) error {
-			return rt.deployer.Start(ctx)
+		return withBackend(ctx, stdout, stderr, configFile, func(b backend) error {
+			return b.Start(ctx)
 		})
 	case "restart":
-		return withRuntime(ctx, stdout, stderr, configFile, func(rt *runtime) error {
-			return rt.deployer.Restart(ctx)
+		return withBackend(ctx, stdout, stderr, configFile, func(b backend) error {
+			return b.Restart(ctx)
 		})
 	case "remove":
-		return withRuntime(ctx, stdout, stderr, configFile, func(rt *runtime) error {
-			return rt.deployer.Remove(ctx)
+		return withBackend(ctx, stdout, stderr, configFile, func(b backend) error {
+			return b.Remove(ctx)
 		})
 	case "prune":
-		return withRuntime(ctx, stdout, stderr, configFile, func(rt *runtime) error {
+		return withRuntime(ctx, stdout, stderr, configFile, args[0], func(rt *runtime) error {
 			return rt.deployer.Prune(ctx)
 		})
 	case "backup":
-		return withRuntime(ctx, stdout, stderr, configFile, func(rt *runtime) error {
+		return withRuntime(ctx, stdout, stderr, configFile, args[0], func(rt *runtime) error {
 			return rt.deployer.Backup(ctx)
 		})
 	case "restore":
@@ -187,22 +188,22 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		if err != nil {
 			return err
 		}
-		return withRuntime(ctx, stdout, stderr, configFile, func(rt *runtime) error {
+		return withRuntime(ctx, stdout, stderr, configFile, args[0], func(rt *runtime) error {
 			return rt.deployer.Restore(ctx, localPath)
 		})
 	case "sweep":
-		return withRuntime(ctx, stdout, stderr, configFile, func(rt *runtime) error {
+		return withRuntime(ctx, stdout, stderr, configFile, args[0], func(rt *runtime) error {
 			return rt.deployer.SweepStaleContainers(ctx)
 		})
 	case "env":
 		if len(args) < 2 || args[1] != "diff" {
 			return errors.New("usage: qifa env diff")
 		}
-		return withRuntime(ctx, stdout, stderr, configFile, func(rt *runtime) error {
-			return rt.deployer.EnvDiff(ctx, stdout)
+		return withBackend(ctx, stdout, stderr, configFile, func(b backend) error {
+			return b.EnvDiff(ctx, stdout)
 		})
 	case "sync":
-		return withRuntime(ctx, stdout, stderr, configFile, func(rt *runtime) error {
+		return withRuntime(ctx, stdout, stderr, configFile, args[0], func(rt *runtime) error {
 			return rt.deployer.SyncFiles(ctx)
 		})
 	case "proxy":
@@ -211,7 +212,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		}
 		verb := args[1]
 		rest := args[2:]
-		return withRuntime(ctx, stdout, stderr, configFile, func(rt *runtime) error {
+		return withRuntime(ctx, stdout, stderr, configFile, args[0], func(rt *runtime) error {
 			switch verb {
 			case "boot":
 				return rt.deployer.ProxyBoot(ctx)
@@ -263,12 +264,12 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		}
 		switch args[1] {
 		case "status":
-			return withRuntime(ctx, stdout, stderr, configFile, func(rt *runtime) error {
-				return rt.deployer.LockStatus(ctx, stdout)
+			return withBackend(ctx, stdout, stderr, configFile, func(b backend) error {
+				return b.LockStatus(ctx, stdout)
 			})
 		case "release":
-			return withRuntime(ctx, stdout, stderr, configFile, func(rt *runtime) error {
-				return rt.deployer.LockRelease(ctx)
+			return withBackend(ctx, stdout, stderr, configFile, func(b backend) error {
+				return b.LockRelease(ctx)
 			})
 		default:
 			return errors.New("usage: qifa lock <status|release>")
@@ -280,16 +281,16 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 				dryRun = true
 			}
 		}
-		return withRuntime(ctx, stdout, stderr, configFile, func(rt *runtime) error {
-			return rt.deployer.Reconcile(ctx, stdout, dryRun)
+		return withBackend(ctx, stdout, stderr, configFile, func(b backend) error {
+			return b.Reconcile(ctx, stdout, dryRun)
 		})
 	case "doctor":
-		return withRuntime(ctx, stdout, stderr, configFile, func(rt *runtime) error {
-			return rt.deployer.Doctor(ctx, stdout)
+		return withBackend(ctx, stdout, stderr, configFile, func(b backend) error {
+			return b.Doctor(ctx, stdout)
 		})
 	case "status":
-		return withRuntime(ctx, stdout, stderr, configFile, func(rt *runtime) error {
-			return rt.deployer.Status(ctx, stdout)
+		return withBackend(ctx, stdout, stderr, configFile, func(b backend) error {
+			return b.Status(ctx, stdout)
 		})
 	case "logs":
 		lines := 200
@@ -313,8 +314,8 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 				return fmt.Errorf("unknown flag %q", rest[i])
 			}
 		}
-		return withRuntime(ctx, stdout, stderr, configFile, func(rt *runtime) error {
-			return rt.deployer.Logs(ctx, lines, follow, stdout)
+		return withBackend(ctx, stdout, stderr, configFile, func(b backend) error {
+			return b.Logs(ctx, lines, follow, stdout)
 		})
 	case "app":
 		if len(args) < 2 {
@@ -326,11 +327,11 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 				return errors.New("usage: qifa app exec <command>")
 			}
 			command := strings.Join(args[2:], " ")
-			return withRuntime(ctx, stdout, stderr, configFile, func(rt *runtime) error {
+			return withRuntime(ctx, stdout, stderr, configFile, args[0], func(rt *runtime) error {
 				return rt.deployer.Exec(ctx, command, stdout)
 			})
 		case "containers":
-			return withRuntime(ctx, stdout, stderr, configFile, func(rt *runtime) error {
+			return withRuntime(ctx, stdout, stderr, configFile, args[0], func(rt *runtime) error {
 				return rt.deployer.ListContainers(ctx, stdout)
 			})
 		case "maintenance":
@@ -359,11 +360,11 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 					return fmt.Errorf("unknown flag %q", rest[i])
 				}
 			}
-			return withRuntime(ctx, stdout, stderr, configFile, func(rt *runtime) error {
+			return withRuntime(ctx, stdout, stderr, configFile, args[0], func(rt *runtime) error {
 				return rt.deployer.Maintenance(ctx, message, drainTimeout)
 			})
 		case "live":
-			return withRuntime(ctx, stdout, stderr, configFile, func(rt *runtime) error {
+			return withRuntime(ctx, stdout, stderr, configFile, args[0], func(rt *runtime) error {
 				return rt.deployer.Live(ctx)
 			})
 		default:
@@ -375,7 +376,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		}
 		verb := args[1]
 		name := args[2]
-		return withRuntime(ctx, stdout, stderr, configFile, func(rt *runtime) error {
+		return withRuntime(ctx, stdout, stderr, configFile, args[0], func(rt *runtime) error {
 			switch verb {
 			case "boot":
 				return rt.deployer.AccessoryBoot(ctx, name)
@@ -400,6 +401,8 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		})
 	case "cert":
 		return runCert(ctx, args[1:], stdout, stderr, configFile)
+	case "native":
+		return runNative(ctx, args[1:], stdout, stderr, configFile)
 	default:
 		printUsage(stdout)
 		return fmt.Errorf("unknown command %q", args[0])
@@ -431,18 +434,76 @@ func useConfigDir(configFile string) (string, error) {
 	return abs, nil
 }
 
-func withRuntime(ctx context.Context, stdout, stderr io.Writer, configFile string, fn func(*runtime) error) error {
+// backend is the set of commands both deploy modes provide. Everything else
+// is Docker-only and goes through withRuntime.
+type backend interface {
+	PinVersion(version string, allowDirty bool)
+	Plan(ctx context.Context, out io.Writer) error
+	Deploy(ctx context.Context) error
+	Rollback(ctx context.Context, version string) error
+	Stop(ctx context.Context) error
+	Start(ctx context.Context) error
+	Restart(ctx context.Context) error
+	Remove(ctx context.Context) error
+	Status(ctx context.Context, out io.Writer) error
+	Logs(ctx context.Context, lines int, follow bool, out io.Writer) error
+	EnvDiff(ctx context.Context, out io.Writer) error
+	Reconcile(ctx context.Context, out io.Writer, dryRun bool) error
+	Doctor(ctx context.Context, out io.Writer) error
+	LockStatus(ctx context.Context, out io.Writer) error
+	LockRelease(ctx context.Context) error
+}
+
+var (
+	_ backend = (*deploy.Deployer)(nil)
+	_ backend = (*native.Deployer)(nil)
+)
+
+func loadConfig(configFile string) (*config.Config, *state.Store, error) {
 	configFile, err := useConfigDir(configFile)
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
 	cfg, err := config.Load(configFile)
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
 	store, err := state.NewStore(".qifa/state.jsonl")
 	if err != nil {
+		return nil, nil, err
+	}
+	return cfg, store, nil
+}
+
+// withBackend runs a command both modes support, against whichever mode the
+// config selects.
+func withBackend(ctx context.Context, stdout, stderr io.Writer, configFile string, fn func(backend) error) error {
+	cfg, store, err := loadConfig(configFile)
+	if err != nil {
 		return err
+	}
+	if cfg.IsNative() {
+		n, err := native.New(cfg, store, stdout, stderr)
+		if err != nil {
+			return err
+		}
+		return fn(n)
+	}
+	d, err := deploy.New(cfg, store, stdout, stderr)
+	if err != nil {
+		return err
+	}
+	return fn(d)
+}
+
+// withRuntime runs a Docker-only command.
+func withRuntime(ctx context.Context, stdout, stderr io.Writer, configFile, command string, fn func(*runtime) error) error {
+	cfg, store, err := loadConfig(configFile)
+	if err != nil {
+		return err
+	}
+	if cfg.IsNative() {
+		return fmt.Errorf("qifa %s works with containers and is not available when the config has native:", command)
 	}
 	d, err := deploy.New(cfg, store, stdout, stderr)
 	if err != nil {
@@ -482,4 +543,5 @@ func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "  app live")
 	fmt.Fprintln(w, "  accessory <boot|stop|start|restart|remove|logs|exec> <name> [args...]")
 	fmt.Fprintln(w, "  cert <issue|renew|list|remove> [args...]")
+	fmt.Fprintln(w, "  native setup [--ssh-user <user>] [--deploy-user <user>]")
 }
