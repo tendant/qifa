@@ -109,10 +109,11 @@ proxy_boot:
 proxy:
   host: localhost
   app_port: 3000
-  healthcheck:
-    path: /up
-    interval: 2s
-    timeout: 5s
+
+healthcheck:
+  path: /up
+  interval: 2s
+  timeout: 5s
 
 registry:
   server: $REGISTRY_HOST
@@ -146,10 +147,11 @@ servers:
 proxy:
   host: localhost
   app_port: 3000
-  healthcheck:
-    path: /up
-    interval: 2s
-    timeout: 5s
+
+healthcheck:
+  path: /up
+  interval: 2s
+  timeout: 5s
 
 registry:
   server: $REGISTRY_HOST

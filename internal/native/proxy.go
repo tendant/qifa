@@ -11,7 +11,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/tendant/qifa/internal/config"
 	"github.com/tendant/qifa/internal/proxy"
 )
 
@@ -51,15 +50,13 @@ func (d *Deployer) routedOn(host string) bool {
 // health-checks the target itself before routing to it, using the app's own
 // health check path; each check gets 5s, the deploy timeout bounds them all.
 func (d *Deployer) routeProxy() *proxy.KamalProxy {
-	app := d.cfg.Proxy
-	hc := d.cfg.Native.Healthcheck
-	app.Healthcheck = config.Healthcheck{Path: hc.Path, Interval: hc.Interval, Timeout: 5 * time.Second, Port: hc.Port}
-	return proxy.NewNative(d.ssh, app)
+	return proxy.NewNative(d.ssh, d.cfg.ProxyRoute())
 }
 
 func (d *Deployer) registerRoute(ctx context.Context, host string) error {
-	target := proxy.Target{Service: d.cfg.Service, Host: "127.0.0.1", Port: d.cfg.Native.Port}
-	d.log.Printf("%s: routing %s to 127.0.0.1:%d", host, strings.Join(d.routeNames(), ", "), d.cfg.Native.Port)
+	port := d.cfg.AppPort(d.cfg.NativeProxyRole())
+	target := proxy.Target{Service: d.cfg.Service, Host: "127.0.0.1", Port: port}
+	d.log.Printf("%s: routing %s to 127.0.0.1:%d", host, strings.Join(d.routeNames(), ", "), port)
 	if err := d.routeProxy().Deploy(ctx, host, target); err != nil {
 		return fmt.Errorf("%s: the new release is running, but kamal-proxy did not accept the route: %w", host, err)
 	}

@@ -121,10 +121,12 @@ proxy_boot:
 proxy:
   host: app.example.com
   app_port: 3000
-  healthcheck:
-    path: /up
-    interval: 2s
-    timeout: 5s
+
+healthcheck:              # both modes; see README "Keys shared by both modes"
+  path: /up
+  interval: 2s
+  timeout: 5s             # one attempt
+  deploy_timeout: 30s     # the whole wait
 
 registry:
   server: registry.example.com
@@ -145,7 +147,7 @@ builder:
   platform: linux/amd64
 
 prune:
-  retain_containers: 5  # default; how many stopped containers to keep per role
+  retain: 5  # default; how many stopped containers (or native releases) to keep
 
 rollout:
   batch_size: 1   # default; hosts per batch in a role's rollout (0 = all at once)
@@ -334,7 +336,7 @@ active set. Removing or losing the file does not break any other command.
    13. For proxy: stop (don't remove) the previous container so rollback can
        find it later
 7. Run `post_deploy` hook
-8. Auto-prune: keep last `prune.retain_containers` stopped containers per role,
+8. Auto-prune: keep last `prune.retain` stopped containers per role,
    prune dangling service images
 
 ### Reconcile Flow
@@ -377,7 +379,7 @@ something old.
 3. Re-run the deploy flow with that version's image.
 
 Stopped labeled containers from prior deploys are preserved as rollback
-candidates (subject to `prune.retain_containers`); only the auto-prune step
+candidates (subject to `prune.retain`); only the auto-prune step
 removes them, never the per-deploy cleanup.
 
 ### Stop / Start / Restart

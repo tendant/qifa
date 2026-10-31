@@ -6,7 +6,6 @@ import (
 	"path"
 	"regexp"
 	"strings"
-	"time"
 )
 
 // Native deploys the app as a systemd service running a release directory on
@@ -20,19 +19,23 @@ type Native struct {
 	Artifact string `yaml:"artifact"`
 	// Exec is the argv of the service. Exec[0] is resolved under the release
 	// (current/) when relative. Never passed through a shell.
-	Exec []string `yaml:"exec"`
+	// Deprecated: use servers.<role>.cmd.
+	Exec []string `yaml:"exec,omitempty"`
 	// User is the account the service runs as, created by `qifa native setup`.
 	User string `yaml:"user"`
 	// Arch, when set (amd64, arm64, ...), is checked against the artifact and
 	// each host before anything is uploaded.
 	Arch string `yaml:"arch"`
 	// Port the app listens on. Needed only for the HTTP health check.
-	Port        int         `yaml:"port"`
-	Healthcheck Healthcheck `yaml:"healthcheck"`
+	// Deprecated: use app_port on the role (servers.<role>.app_port).
+	Port int `yaml:"port,omitempty"`
+	// Deprecated: use the top-level healthcheck.
+	Healthcheck Healthcheck `yaml:"healthcheck,omitempty"`
 	// Dir is the install root on the host. Default /opt/qifa/<service>.
 	Dir string `yaml:"dir"`
 	// Retain is how many releases to keep on each host.
-	Retain int `yaml:"retain"`
+	// Deprecated: use prune.retain.
+	Retain int `yaml:"retain,omitempty"`
 	// Restart is the systemd Restart= policy.
 	Restart string `yaml:"restart"`
 	// SharedDirs are directories under shared/ linked into every release, for
@@ -67,7 +70,11 @@ func (c *Config) NativeUnitName(role string) string {
 
 // NativeExec returns the argv for a role: its own exec, or native.exec.
 func (c *Config) NativeExec(role string) []string {
-	if s, ok := c.Servers[role]; ok && len(s.Exec) > 0 {
+	s := c.Servers[role]
+	if args, err := s.Cmd.Args(); err == nil && len(args) > 0 {
+		return args
+	}
+	if len(s.Exec) > 0 {
 		return s.Exec
 	}
 	return c.Native.Exec
@@ -82,17 +89,8 @@ func applyNativeDefaults(cfg *Config) {
 		n.Dir = "/opt/qifa/" + cfg.Service
 	}
 	n.Dir = strings.TrimRight(n.Dir, "/")
-	if n.Retain == 0 {
-		n.Retain = NativeDefaultRetain
-	}
 	if n.Restart == "" {
 		n.Restart = NativeDefaultRestart
-	}
-	if n.Healthcheck.Interval == 0 {
-		n.Healthcheck.Interval = 2 * time.Second
-	}
-	if n.Healthcheck.Timeout == 0 {
-		n.Healthcheck.Timeout = 30 * time.Second
 	}
 	if cfg.ProxyBoot.Version == "" {
 		cfg.ProxyBoot.Version = NativeProxyVersion
@@ -124,8 +122,6 @@ func (c *Config) validateNative() error {
 		{c.PullPolicy == PullAlways, "pull_policy"},
 		{c.Builder != nil, "builder (use native.build)"},
 		{c.Registry.Server != "", "registry"},
-		{c.Proxy.AppPort != 0, "proxy.app_port (the target is native.port)"},
-		{c.Proxy.Healthcheck.Path != "" || c.Proxy.Healthcheck.Port != 0, "proxy.healthcheck (kamal-proxy uses native.healthcheck)"},
 		{c.ProxyBoot.Image != "" || c.ProxyBoot.Network != "" || c.ProxyBoot.StateVolume != "" || c.ProxyBoot.AppsConfigDir != "", "proxy_boot image, network, state_volume and apps_config_dir (a native proxy is not a container)"},
 		{len(c.ProxyBoot.BindIPs) > 0, "proxy_boot.bind_ips (a native proxy listens on all interfaces)"},
 		{c.Backup != nil, "backup"},
@@ -150,10 +146,10 @@ func (c *Config) validateNative() error {
 			return fmt.Errorf("config.servers.%s.hosts is required", role)
 		}
 		switch {
-		case s.Cmd != "":
-			return fmt.Errorf("config.servers.%s.cmd is for containers; use exec with config.native", role)
-		case s.Port != 0 || s.AppPort != 0 || len(s.ExtraPorts) > 0:
-			return fmt.Errorf("config.servers.%s: port, app_port and extra_ports are for containers; use native.port", role)
+		case s.Port != 0 || len(s.ExtraPorts) > 0:
+			return fmt.Errorf("config.servers.%s: port and extra_ports publish container ports; a native app listens on its app_port directly", role)
+		case s.AppPort < 0 || s.AppPort > 65535:
+			return fmt.Errorf("config.servers.%s.app_port %d is out of range", role, s.AppPort)
 		case len(s.Volumes) > 0:
 			return fmt.Errorf("config.servers.%s.volumes is for containers; use native.shared_dirs", role)
 		case s.Privileged:
@@ -161,15 +157,20 @@ func (c *Config) validateNative() error {
 		case s.Proxy != nil && *s.Proxy:
 			return fmt.Errorf("config.servers.%s.proxy: native mode does not register with kamal-proxy", role)
 		}
-		if err := validateExec(fmt.Sprintf("config.servers.%s.exec", role), s.Exec, true); err != nil {
+		field := fmt.Sprintf("config.servers.%s.cmd", role)
+		args, err := s.Cmd.Args()
+		if err != nil {
+			return fmt.Errorf("%s: %w", field, err)
+		}
+		if len(args) == 0 {
+			args = c.NativeExec(role)
+		}
+		if err := validateExec(field, args, false); err != nil {
 			return err
 		}
 	}
 	if strings.TrimSpace(n.Artifact) == "" {
 		return errors.New("config.native.artifact is required (the file or directory to ship)")
-	}
-	if err := validateExec("config.native.exec", n.Exec, false); err != nil {
-		return err
 	}
 	if !nativeUserRe.MatchString(n.User) {
 		return fmt.Errorf("config.native.user %q: a service account name is required (lowercase, e.g. %q)", n.User, c.Service)
@@ -180,22 +181,23 @@ func (c *Config) validateNative() error {
 	if n.Arch != "" && !knownArch(n.Arch) {
 		return fmt.Errorf("config.native.arch %q: use one of amd64, arm64, arm, 386, riscv64", n.Arch)
 	}
-	if n.Port < 0 || n.Port > 65535 {
-		return fmt.Errorf("config.native.port %d is out of range", n.Port)
-	}
-	if n.Healthcheck.Path != "" {
-		if n.Port == 0 && n.Healthcheck.Port == 0 {
-			return errors.New("config.native.healthcheck.path needs config.native.port (or healthcheck.port)")
+	if hc := c.Health(); hc.Path != "" {
+		hasPort := hc.Port != 0
+		for role := range c.Servers {
+			hasPort = hasPort || c.AppPort(role) > 0
 		}
-		if !strings.HasPrefix(n.Healthcheck.Path, "/") || strings.ContainsAny(n.Healthcheck.Path, " '\"\\`$") {
-			return fmt.Errorf("config.native.healthcheck.path %q must start with / and contain no quotes or spaces", n.Healthcheck.Path)
+		if !hasPort {
+			return errors.New("config.healthcheck.path needs a port to probe: set app_port on the role (or healthcheck.port)")
+		}
+		if !strings.HasPrefix(hc.Path, "/") || strings.ContainsAny(hc.Path, " '\"\\`$") {
+			return fmt.Errorf("config.healthcheck.path %q must start with / and contain no quotes or spaces", hc.Path)
 		}
 	}
 	if !nativeDirRe.MatchString(n.Dir) || strings.Contains(n.Dir, "..") || n.Dir == "/" {
 		return fmt.Errorf("config.native.dir %q must be an absolute path without spaces or '..'", n.Dir)
 	}
-	if n.Retain < 2 {
-		return errors.New("config.native.retain must be at least 2 (the live release and one to roll back to)")
+	if c.Retain() < 2 {
+		return errors.New("config.prune.retain must be at least 2 in native mode (the live release and one to roll back to)")
 	}
 	switch n.Restart {
 	case "no", "always", "on-success", "on-failure", "on-abnormal", "on-abort", "on-watchdog":
@@ -239,7 +241,6 @@ func (c *Config) NativeProxyRole() string {
 }
 
 func (c *Config) validateNativeProxy() error {
-	n := c.Native
 	if !c.NativeProxied() {
 		if c.Proxy.SSL || c.Proxy.TLS != nil {
 			return errors.New("config.proxy.ssl needs config.proxy.host (or hosts) to route a native app")
@@ -249,11 +250,11 @@ func (c *Config) validateNativeProxy() error {
 	if c.NativeProxyRole() == "" {
 		return errors.New("config.proxy: a native app with several roles is routed to its web role; name one role web")
 	}
-	if n.Port == 0 {
-		return errors.New("config.proxy needs config.native.port: kamal-proxy forwards to 127.0.0.1:<port>")
+	if c.AppPort(c.NativeProxyRole()) == 0 {
+		return fmt.Errorf("config.proxy needs the %s role's app_port: kamal-proxy forwards to 127.0.0.1:<app_port>", c.NativeProxyRole())
 	}
-	if n.Healthcheck.Path == "" {
-		return errors.New("config.proxy needs config.native.healthcheck.path: kamal-proxy checks it before routing")
+	if c.Health().Path == "" {
+		return errors.New("config.proxy needs config.healthcheck.path: kamal-proxy checks it before routing")
 	}
 	return c.validateProxyTLS()
 }

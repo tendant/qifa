@@ -1081,7 +1081,7 @@ func (e *integrationEnv) config(t *testing.T, host, source, image string, regist
 			},
 			"worker": {
 				Hosts: []string{fmt.Sprintf("127.0.0.1:%d", e.port)},
-				Cmd:   "./worker",
+				Cmd:   config.Command{Shell: "./worker"},
 			},
 		},
 		Proxy: config.Proxy{

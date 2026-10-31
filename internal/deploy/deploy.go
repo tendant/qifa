@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -65,7 +66,7 @@ func New(cfg *config.Config, store *state.Store, stdout, stderr io.Writer) (*Dep
 		localDocker:  docker.NewLocal(),
 		remoteDocker: docker.NewRemote(sshClient, stdout),
 		ssh:          sshClient,
-		proxy:        proxy.New(sshClient, cfg.Proxy, cfg.ProxyBoot),
+		proxy:        proxy.New(sshClient, cfg.ProxyRoute(), cfg.ProxyBoot),
 		stdout:       stdout,
 	}, nil
 }
@@ -184,7 +185,7 @@ func proxyURL(host string, ssl bool, httpPort, httpsPort int) string {
 }
 
 func (d *Deployer) Prune(ctx context.Context) error {
-	retain := d.cfg.Prune.RetainContainers
+	retain := d.cfg.Retain()
 	if retain <= 0 {
 		retain = 5
 	}
@@ -393,7 +394,7 @@ func (d *Deployer) deployHost(ctx context.Context, deployment state.Deployment, 
 	if err := d.remoteDocker.StopAndRemove(ctx, host, containerName); err != nil {
 		return err
 	}
-	if err := d.remoteDocker.RunContainer(ctx, host, containerName, imageRef, remoteEnv, server.Cmd, containerNetwork, labels, server.Volumes, publishedPort, containerPort, server.Privileged, server.ExtraPorts, networkAliases); err != nil {
+	if err := d.remoteDocker.RunContainer(ctx, host, containerName, imageRef, remoteEnv, server.Cmd.ShellString(), containerNetwork, labels, server.Volumes, publishedPort, containerPort, server.Privileged, server.ExtraPorts, networkAliases); err != nil {
 		_ = d.remoteDocker.StopAndRemove(ctx, host, containerName)
 		return err
 	}
@@ -416,7 +417,7 @@ func (d *Deployer) deployHost(ctx context.Context, deployment state.Deployment, 
 	// probe fails a deploy of a container that is working. Honoured here as
 	// well as in the proxy registration, so the setting means the same thing
 	// wherever the check happens.
-	if p := d.cfg.Proxy.Healthcheck.Port; p > 0 {
+	if p := d.cfg.Health().Port; p > 0 {
 		healthPort = p
 	}
 	if useProxy || (server.Port == 0 && appPort > 0) {
@@ -427,7 +428,7 @@ func (d *Deployer) deployHost(ctx context.Context, deployment state.Deployment, 
 			return d.withContainerDiagnostics(ctx, host, containerName, err)
 		}
 		healthcheckHost = containerIP
-	} else if d.cfg.Proxy.Healthcheck.Port == 0 {
+	} else if d.cfg.Health().Port == 0 {
 		healthPort = server.Port
 	}
 	if err := d.healthCheck(ctx, host, healthcheckHost, healthPort, containerName, useProxy); err != nil {
@@ -1478,7 +1479,7 @@ func (d *Deployer) Plan(ctx context.Context, out io.Writer) error {
 		}
 	}
 
-	retain := d.cfg.Prune.RetainContainers
+	retain := d.cfg.Retain()
 	if retain <= 0 {
 		retain = 5
 	}
@@ -1691,7 +1692,8 @@ func (d *Deployer) healthCheck(ctx context.Context, host, targetHost string, tar
 		}
 		return nil
 	}
-	path := d.cfg.Proxy.Healthcheck.Path
+	hc := d.cfg.Health()
+	path := hc.Path
 	if path == "" {
 		if useProxy {
 			path = "/up"
@@ -1704,11 +1706,9 @@ func (d *Deployer) healthCheck(ctx context.Context, host, targetHost string, tar
 	// them, a hung container can leave curl waiting at curl's defaults (5
 	// minute connect timeout, no overall cap), which makes a deploy look
 	// indefinitely stuck instead of failing fast.
-	timeout := int(d.cfg.Proxy.Healthcheck.Timeout.Seconds())
-	if timeout <= 0 {
-		timeout = 5
-	}
-	command := healthcheckCommand(targetHost, targetPort, path, timeout, int(d.cfg.Proxy.Healthcheck.Interval.Seconds()))
+	timeout := max(int(hc.Timeout.Seconds()), 1)
+	interval := int(hc.Interval.Seconds())
+	command := healthcheckCommand(targetHost, targetPort, path, timeout, interval, healthAttempts(hc))
 	_, err := d.ssh.Run(ctx, host, command)
 	if err != nil {
 		return d.withContainerDiagnostics(ctx, host, containerName, err)
@@ -1722,14 +1722,28 @@ func (d *Deployer) healthCheck(ctx context.Context, host, targetHost string, tar
 // failure then reads "curl: not found" five times over — which says nothing
 // about the app it was meant to be checking. busybox wget is present almost
 // everywhere curl is not, so try both and say so plainly when neither exists.
-func healthcheckCommand(host string, port int, path string, timeout, interval int) string {
+// healthAttempts is how many probes fit in deploy_timeout: each takes up to
+// timeout, with interval between them. The defaults (30s, 5s, 2s) make five.
+func healthAttempts(hc config.Healthcheck) int {
+	per := hc.Timeout + hc.Interval
+	if per <= 0 {
+		return 5
+	}
+	return max(1, int((hc.DeployTimeout+per-1)/per))
+}
+
+func healthcheckCommand(host string, port int, path string, timeout, interval, attempts int) string {
 	url := fmt.Sprintf("http://%s:%d%s", host, port, path)
 	probe := fmt.Sprintf(
 		"if command -v curl >/dev/null 2>&1; then curl -fsS --connect-timeout %d --max-time %d %q; "+
 			"elif command -v wget >/dev/null 2>&1; then wget -q -T %d -O /dev/null %q; "+
 			"else echo 'healthcheck needs curl or wget, and this host has neither' >&2; exit 127; fi",
 		timeout, timeout, url, timeout, url)
-	return fmt.Sprintf("for i in 1 2 3 4 5; do %s && exit 0; sleep %d; done; exit 1", probe, interval)
+	seq := make([]string, attempts)
+	for i := range seq {
+		seq[i] = strconv.Itoa(i + 1)
+	}
+	return fmt.Sprintf("for i in %s; do %s && exit 0; sleep %d; done; exit 1", strings.Join(seq, " "), probe, interval)
 }
 
 func (d *Deployer) failDeployment(deployment state.Deployment, cause error) error {
@@ -1881,16 +1895,7 @@ func (d *Deployer) findRunningContainerInfo(ctx context.Context, host, role stri
 }
 
 func (d *Deployer) appPort(role string, server config.Server) int {
-	if server.AppPort > 0 {
-		return server.AppPort
-	}
-	if server.Port > 0 {
-		return server.Port
-	}
-	if role != "web" {
-		return 0
-	}
-	return d.cfg.Proxy.AppPort
+	return d.cfg.AppPort(role)
 }
 
 func orderedRoles(servers map[string]config.Server) []string {

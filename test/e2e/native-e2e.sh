@@ -67,6 +67,14 @@ service: nativeapp
 servers:
   web:
     hosts: ["127.0.0.1:$port"]
+    cmd: [app]
+    app_port: 8080
+healthcheck:
+  path: /up
+  deploy_timeout: 10s
+  interval: 1s
+prune:
+  retain: 3
 ssh:
   user: deploy
   key: $work/id
@@ -76,16 +84,9 @@ env:
     MSG: "say \"hi\" \\\\ \$HOME \`x\` 100% 'q'\nline2"
 native:
   artifact: dist/app
-  exec: [app]
   user: nativeapp
   arch: $goarch
-  port: 8080
-  healthcheck:
-    path: /up
-    timeout: 10s
-    interval: 1s
   shared_dirs: [storage]
-  retain: 3
 proxy:
   host: app.test
   ssl: true

@@ -89,8 +89,9 @@ proxy_boot:
 proxy:
   host: app.example.com
   app_port: 3000
-  healthcheck:
-    path: /up
+
+healthcheck:
+  path: /up
 
 registry:
   server: registry.example.com
@@ -181,9 +182,8 @@ servers:
     hosts: [10.0.0.11]
     app_port: 8080      # no port: -> nothing published on the host
 
-proxy:
-  healthcheck:
-    path: /healthz      # read even with no proxy route registered
+healthcheck:
+  path: /healthz        # read even with no proxy route registered
 
 accessories:
   ocr:
@@ -219,6 +219,11 @@ service: myapp
 servers:
   web:
     hosts: [10.0.0.11]
+    cmd: [myapp, --port, "8080"]
+    app_port: 8080
+
+healthcheck:
+  path: /up
 
 ssh:
   user: deploy
@@ -226,11 +231,7 @@ ssh:
 native:
   build: GOOS=linux GOARCH=amd64 go build -o dist/myapp ./cmd/myapp
   artifact: dist/myapp
-  exec: [myapp, --port, "8080"]
   user: myapp
-  port: 8080
-  healthcheck:
-    path: /up
 ```
 
 Releases, rollback, status and env work as they do for containers. For HTTPS
@@ -238,6 +239,26 @@ and domains, kamal-proxy runs natively too (`qifa proxy boot --ssh-user root`,
 then a `proxy:` block). Deploys restart the process; there is no
 zero-downtime switch. See
 [docs/native.md](docs/native.md).
+
+### Keys shared by both modes
+
+These settings mean the same thing for containers and native apps, and live
+in one place. The older keys still load, with a warning naming the new one;
+setting both is an error.
+
+| Setting | Key | Replaced |
+| --- | --- | --- |
+| Health check | `healthcheck: {path, port, interval, timeout, deploy_timeout}` | `proxy.healthcheck`, `native.healthcheck` |
+| App port | `servers.<role>.app_port` (or `proxy.app_port` for the routed role) | `native.port` |
+| Versions kept | `prune.retain` | `prune.retain_containers`, `native.retain` |
+| Command | `servers.<role>.cmd`: a string or a list | `servers.<role>.exec`, `native.exec` |
+
+`healthcheck.timeout` bounds one attempt (default 5s) and
+`healthcheck.deploy_timeout` the whole wait for a new container or release
+(default 30s); with a proxy, `deploy_timeout` is also kamal-proxy's unless
+`proxy.deploy_timeout` overrides it. A native `cmd` given as a string is split
+into words without a shell; one that needs a shell (`$`, pipes, globs) is
+refused, so write it as a list.
 
 ## Verb Cheatsheet
 
@@ -254,7 +275,7 @@ qifa start                       # docker start the most recent labeled containe
 qifa restart                     # stop then start (re-registers with proxy)
 qifa remove                      # full teardown + deregister proxy
 
-qifa prune                       # keep last N stopped (config: prune.retain_containers)
+qifa prune                       # keep last N stopped (config: prune.retain)
 qifa sweep                       # remove orphan running containers (also runs at deploy start)
 qifa env diff                    # compare config env vs. what the running containers got
 qifa lock <status|release>       # show or forcibly clear deploy lock
@@ -333,7 +354,7 @@ labels at `docker run` time. All discovery (which container is active, what
 was the previous version, what's stale) is answered by `docker ps` filtered
 by those labels — Docker is the source of truth, not an on-disk index.
 Stopped versions are kept around as rollback candidates (subject to
-`prune.retain_containers`, default 5). `qifa rollback <version>` re-runs the
+`prune.retain`, default 5). `qifa rollback <version>` re-runs the
 container with that label. `.qifa/state.jsonl` is an append-only audit log
 only — every command works without it.
 

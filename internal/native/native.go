@@ -97,18 +97,18 @@ func (d *Deployer) unitsOn(host string) []string {
 	return units
 }
 
-// healthURL is the HTTP check for a role. Only the web role (or the only
-// role) serves HTTP on native.port; other roles are checked for liveness.
+// healthURL is the HTTP check for a role: any role with an app_port, when a
+// healthcheck.path is set. Other roles are checked for staying active.
 func (d *Deployer) healthURL(role string) string {
-	n := d.cfg.Native
-	if n.Healthcheck.Path == "" || (role != "web" && len(d.cfg.Servers) > 1) {
+	hc := d.cfg.Health()
+	port := d.cfg.AppPort(role)
+	if hc.Path == "" || port == 0 {
 		return ""
 	}
-	port := n.Port
-	if n.Healthcheck.Port != 0 {
-		port = n.Healthcheck.Port
+	if hc.Port != 0 {
+		port = hc.Port
 	}
-	return fmt.Sprintf("http://127.0.0.1:%d%s", port, n.Healthcheck.Path)
+	return fmt.Sprintf("http://127.0.0.1:%d%s", port, hc.Path)
 }
 
 // Deploy builds, ships and activates a release on every host. On a host whose
@@ -365,7 +365,7 @@ func (d *Deployer) deployHost(ctx context.Context, deployment state.Deployment, 
 
 // restartAndCheck restarts every unit on host and waits for each to pass.
 func (d *Deployer) restartAndCheck(ctx context.Context, host string) error {
-	hc := d.cfg.Native.Healthcheck
+	hc := d.cfg.Health()
 	for _, role := range d.rolesOn(host) {
 		unit := d.cfg.NativeUnitName(role)
 		d.log.Printf("%s: restarting %s", host, unit)
@@ -381,9 +381,9 @@ func (d *Deployer) restartAndCheck(ctx context.Context, host string) error {
 			what = url
 		}
 		d.log.Printf("%s: waiting for %s (%s)", host, unit, what)
-		script := healthScript(unit, url, int(hc.Timeout.Seconds()), int(hc.Interval.Seconds()))
+		script := healthScript(unit, url, int(hc.DeployTimeout.Seconds()), int(hc.Interval.Seconds()), int(hc.Timeout.Seconds()))
 		if _, err := d.ssh.Run(ctx, host, script); err != nil {
-			return d.withDiagnostics(ctx, host, unit, fmt.Errorf("%s: %s did not become healthy within %s: %w", host, unit, hc.Timeout, err))
+			return d.withDiagnostics(ctx, host, unit, fmt.Errorf("%s: %s did not become healthy within %s: %w", host, unit, hc.DeployTimeout, err))
 		}
 	}
 	return nil
@@ -454,7 +454,7 @@ func (d *Deployer) Plan(ctx context.Context, out io.Writer) error {
 		check := firstNonEmpty(d.healthURL(role), "unit active")
 		fmt.Fprintf(out, "  Role %s: %s on %v\n", role, d.cfg.NativeUnitName(role), d.cfg.Servers[role].Hosts)
 		fmt.Fprintf(out, "    ExecStart=%s\n", ExecStart(n.Dir, d.cfg.NativeExec(role)))
-		fmt.Fprintf(out, "    health:  %s (timeout %s)\n", check, n.Healthcheck.Timeout)
+		fmt.Fprintf(out, "    health:  %s (within %s)\n", check, d.cfg.Health().DeployTimeout)
 	}
 	fmt.Fprintln(out, "  On failure: restore the previous release and restart")
 	return nil

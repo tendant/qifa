@@ -128,7 +128,7 @@ func (d *Deployer) prune(ctx context.Context, host string) error {
 	if err != nil {
 		return err
 	}
-	del := pruneSet(inv, d.cfg.Native.Retain)
+	del := pruneSet(inv, d.cfg.Retain())
 	if len(del) == 0 {
 		return nil
 	}

@@ -37,6 +37,11 @@ type Config struct {
 	// Native, when present, deploys the app as a systemd service from a
 	// release directory instead of as a container. See native.go.
 	Native *Native `yaml:"native"`
+	// Healthcheck is how a new container or release proves it is up, in
+	// both modes (it replaced proxy.healthcheck and native.healthcheck).
+	Healthcheck Healthcheck `yaml:"healthcheck"`
+	// Warnings are deprecations noticed while loading, for the CLI to print.
+	Warnings []string `yaml:"-"`
 }
 
 // FileMapping pushes a local file to a host path. Used to manage app config
@@ -114,7 +119,11 @@ type Backup struct {
 }
 
 type Prune struct {
-	RetainContainers int `yaml:"retain_containers"`
+	// Retain is how many previous versions to keep per host: stopped
+	// containers, or native releases.
+	Retain int `yaml:"retain"`
+	// Deprecated: use Retain.
+	RetainContainers int `yaml:"retain_containers,omitempty"`
 }
 
 type Rollout struct {
@@ -129,7 +138,7 @@ type Server struct {
 	Hosts   []string `yaml:"hosts"`
 	Port    int      `yaml:"port"`
 	AppPort int      `yaml:"app_port"`
-	Cmd     string   `yaml:"cmd"`
+	Cmd     Command  `yaml:"cmd,omitempty"`
 	Proxy   *bool    `yaml:"proxy"`
 	// Volumes are docker -v mounts in the form host_path:container_path[:options].
 	// Host paths are created with mkdir -p before docker run.
@@ -152,19 +161,19 @@ type Server struct {
 	// port range published (e.g. WebRTC media) — passed through to
 	// docker's own `-p` range syntax as one entry rather than one per port.
 	ExtraPorts []string `yaml:"extra_ports"`
-	// Exec overrides native.exec for this role (native mode only), so one
-	// artifact can run as several services — a web server and a worker.
-	Exec []string `yaml:"exec"`
+	// Deprecated: use Cmd (native mode's list form).
+	Exec []string `yaml:"exec,omitempty"`
 }
 
 // Proxy is the per-app routing config registered with kamal-proxy at deploy
 // time. It does NOT control how the proxy container itself runs — that's
 // owned by ProxyBoot and the `qifa proxy` verbs.
 type Proxy struct {
-	Host            string        `yaml:"host"`
-	Hosts           []string      `yaml:"hosts"`
-	AppPort         int           `yaml:"app_port"`
-	Healthcheck     Healthcheck   `yaml:"healthcheck"`
+	Host    string   `yaml:"host"`
+	Hosts   []string `yaml:"hosts"`
+	AppPort int      `yaml:"app_port"`
+	// Deprecated: use the top-level healthcheck.
+	Healthcheck     Healthcheck   `yaml:"healthcheck,omitempty"`
 	DeployTimeout   time.Duration `yaml:"deploy_timeout"`
 	DrainTimeout    time.Duration `yaml:"drain_timeout"`
 	TargetTimeout   time.Duration `yaml:"target_timeout"`
@@ -238,6 +247,9 @@ type Healthcheck struct {
 	Path     string        `yaml:"path"`
 	Interval time.Duration `yaml:"interval"`
 	Timeout  time.Duration `yaml:"timeout"`
+	// DeployTimeout bounds the whole wait for a new container or release to
+	// pass, attempt after attempt.
+	DeployTimeout time.Duration `yaml:"deploy_timeout"`
 
 	// Port to probe, when it is not the port traffic goes to. Zero means the
 	// target port, which is right for almost everything.
@@ -421,6 +433,9 @@ func Load(path string) (*Config, error) {
 	if err := dec.Decode(&cfg); err != nil && !errors.Is(err, io.EOF) {
 		return nil, fmt.Errorf("parse config: %w", err)
 	}
+	if err := migrate(&cfg); err != nil {
+		return nil, err
+	}
 	applyDefaults(&cfg)
 	if err := cfg.Validate(); err != nil {
 		return nil, err
@@ -444,7 +459,7 @@ func (c *Config) Validate() error {
 	}
 	for role, server := range c.Servers {
 		if len(server.Exec) > 0 {
-			return fmt.Errorf("config.servers.%s.exec applies only with config.native; use cmd for a container", role)
+			return fmt.Errorf("config.servers.%s.exec applies only with config.native; use cmd", role)
 		}
 		if len(server.Hosts) == 0 {
 			return fmt.Errorf("config.servers.%s.hosts is required", role)
@@ -589,12 +604,6 @@ func applyDefaults(cfg *Config) {
 			cfg.Builder.Context = "."
 		}
 	}
-	if cfg.Proxy.Healthcheck.Interval == 0 {
-		cfg.Proxy.Healthcheck.Interval = 2 * time.Second
-	}
-	if cfg.Proxy.Healthcheck.Timeout == 0 {
-		cfg.Proxy.Healthcheck.Timeout = 5 * time.Second
-	}
 	if cfg.ProxyBoot.HTTPPort == 0 {
 		cfg.ProxyBoot.HTTPPort = 80
 	}
@@ -624,15 +633,12 @@ func applyDefaults(cfg *Config) {
 	if cfg.PullPolicy == "" {
 		cfg.PullPolicy = PullMissing
 	}
-	if cfg.Prune.RetainContainers == 0 {
-		cfg.Prune.RetainContainers = 5
+	if cfg.Prune.Retain == 0 && cfg.Prune.RetainContainers == 0 && (cfg.Native == nil || cfg.Native.Retain == 0) {
+		cfg.Prune.Retain = DefaultRetain
 	}
 	if cfg.Rollout.BatchSize == nil {
 		one := 1
 		cfg.Rollout.BatchSize = &one
-	}
-	if cfg.Proxy.DeployTimeout == 0 {
-		cfg.Proxy.DeployTimeout = 30 * time.Second
 	}
 	if cfg.Proxy.DrainTimeout == 0 {
 		cfg.Proxy.DrainTimeout = 30 * time.Second

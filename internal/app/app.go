@@ -10,6 +10,7 @@ import (
 	"runtime/debug"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/tendant/qifa/internal/config"
@@ -65,7 +66,28 @@ func versionString() string {
 	return fmt.Sprintf("qifa %s (commit %s, built %s)", v, c, d)
 }
 
+// warnOut receives config deprecation warnings; Run points it at its stderr.
+var (
+	warnOut  io.Writer = os.Stderr
+	warnMu   sync.Mutex
+	warnSeen = map[string]bool{}
+)
+
+// warnConfig prints each deprecation in cfg once per process, however many
+// times a command loads the config.
+func warnConfig(cfg *config.Config) {
+	warnMu.Lock()
+	defer warnMu.Unlock()
+	for _, w := range cfg.Warnings {
+		if !warnSeen[w] {
+			warnSeen[w] = true
+			fmt.Fprintln(warnOut, "warning: "+w)
+		}
+	}
+}
+
 func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+	warnOut = stderr
 	configFile := "qifa.yaml"
 	filtered := args[:0:0]
 	for i := 0; i < len(args); i++ {
@@ -96,6 +118,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		if err != nil {
 			return err
 		}
+		warnConfig(cfg)
 		data, err := cfg.Marshal()
 		if err != nil {
 			return err
@@ -476,6 +499,7 @@ func loadConfig(configFile string) (*config.Config, *state.Store, error) {
 	if err != nil {
 		return nil, nil, err
 	}
+	warnConfig(cfg)
 	store, err := state.NewStore(".qifa/state.jsonl")
 	if err != nil {
 		return nil, nil, err

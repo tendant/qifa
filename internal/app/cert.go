@@ -263,6 +263,9 @@ func runCertRenew(ctx context.Context, args []string, stdout, stderr io.Writer, 
 		return err
 	}
 	cfg, err := config.Load(configFile)
+	if err == nil {
+		warnConfig(cfg)
+	}
 	if err != nil {
 		return err
 	}
@@ -451,6 +454,9 @@ func newCertManager(out io.Writer, configFile, legoImage string) (*cert.Manager,
 		return nil, err
 	}
 	cfg, err := config.Load(configFile)
+	if err == nil {
+		warnConfig(cfg)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("qifa cert needs a config file (tried %s): %w", configFile, err)
 	}

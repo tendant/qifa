@@ -29,9 +29,18 @@ service: myapp
 servers:
   web:
     hosts: [10.0.0.11]
+    cmd: [bin/myapp, --port, "8080"]   # a list, or a string split into words (no shell)
+    app_port: 8080
   worker:                        # optional: more roles from the same artifact
     hosts: [10.0.0.11]
-    exec: [bin/myapp, work]
+    cmd: bin/myapp work
+
+healthcheck:
+  path: /up                      # HTTP check on roles with an app_port; others must stay active
+  deploy_timeout: 30s            # the whole wait for a release
+
+prune:
+  retain: 5
 
 ssh:
   user: deploy
@@ -44,28 +53,27 @@ env:
 native:
   build: GOOS=linux GOARCH=amd64 go build -trimpath -o dist/bin/myapp ./cmd/myapp
   artifact: dist                 # a file or a directory
-  exec: [bin/myapp, --port, "8080"]
   user: myapp                    # the account the app runs as
   arch: amd64                    # optional: checked against the binary and each host
-  port: 8080
-  healthcheck:
-    path: /up                    # without it, the check is "the unit stays active"
-    timeout: 30s
   shared_dirs: [storage]         # persistent across releases
-  retain: 5
 ```
+
+`cmd`, `app_port`, `healthcheck` and `prune.retain` are the same keys a
+Docker config uses (README, "Keys shared by both modes"). Configs written with
+the earlier native-only keys (`native.exec`, `native.port`,
+`native.healthcheck`, `native.retain`) still load, with a warning.
 
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `build` | none | Shell command run on your machine, in the config's directory, before upload. `QIFA_VERSION` is set. |
 | `artifact` | required | What to ship. A directory's contents become the release root; a single file lands at the root under its own name. |
-| `exec` | required | The command as a list: no shell, no quoting surprises. `exec[0]` is relative to the release unless absolute. A role's `exec` overrides it. |
+| `servers.<role>.cmd` | required | The command, as a list or a string split into words; no shell either way. The first word is relative to the release unless absolute. |
 | `user` | required | Service account, created by `qifa native setup`. Not root. |
 | `arch` | none | `amd64`, `arm64`, `arm`, `386` or `riscv64`. ELF binaries are checked before upload, so a Mac-built arm64 binary is caught before it reaches an amd64 server. |
-| `port`, `healthcheck` | interval 2s, timeout 30s | HTTP check on `127.0.0.1:<port><path>`, for the `web` role (or the only role). Other roles are checked for staying active. |
+| `servers.<role>.app_port`, `healthcheck` | interval 2s, timeout 5s per attempt, deploy_timeout 30s | HTTP check on `127.0.0.1:<app_port><path>` for every role with an `app_port`; other roles must stay active. |
 | `shared_dirs` | none | Directories under `shared/` linked into every release, for data that must outlive it. The only place the app can write besides `/tmp`. |
 | `dir` | `/opt/qifa/<service>` | Install root on the server. |
-| `retain` | 5 | Releases kept per host. The live release and the rollback target are always kept. |
+| `prune.retain` | 5 | Releases kept per host (at least 2). The live release and the rollback target are always kept. |
 | `restart` | `on-failure` | systemd `Restart=`. |
 
 Container settings (`image`, `builder`, `registry`, `proxy`, `proxy_boot`,
@@ -137,11 +145,15 @@ kamal-proxy, the proxy qifa uses for Docker apps, also runs as a plain systemd
 service, so the server still needs no Docker. Give the app a `proxy:` block:
 
 ```yaml
-native:
-  # ...as above; port and healthcheck.path are required with a proxy
-  port: 8080
-  healthcheck:
-    path: /up
+# ...as above; the routed role's app_port and healthcheck.path are required
+# with a proxy
+servers:
+  web:
+    hosts: [10.0.0.11]
+    cmd: [bin/myapp, --port, "8080"]
+    app_port: 8080
+healthcheck:
+  path: /up
 
 proxy:
   host: app.example.com          # or hosts: [...], path_prefixes: [...]

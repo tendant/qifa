@@ -97,7 +97,6 @@ func TestParseEnvRoundTrip(t *testing.T) {
 	}
 }
 
-
 func TestPhase2ScriptsParse(t *testing.T) {
 	for name, s := range map[string]string{
 		"inventory": inventoryScript("/opt/qifa/app", []string{"qifa-app.service"}, "http://127.0.0.1:8080/up"),

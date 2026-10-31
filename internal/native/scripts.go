@@ -100,15 +100,18 @@ func markOKScript(dir, id string) string {
 // Without a URL, the unit must be seen active on two checks an interval apart:
 // a process that crashes on startup is "active" for an instant before systemd
 // notices, and one look would pass it.
-func healthScript(unit, url string, timeoutSec, intervalSec int) string {
+func healthScript(unit, url string, timeoutSec, intervalSec, attemptSec int) string {
 	if intervalSec < 1 {
 		intervalSec = 1
 	}
+	if attemptSec < 1 {
+		attemptSec = 5
+	}
 	probe := "ok=$((ok+1)); [ \"$ok\" -ge 2 ] && exit 0"
 	if url != "" {
-		probe = fmt.Sprintf("if command -v curl >/dev/null 2>&1; then curl -fsS -o /dev/null --connect-timeout 5 --max-time 5 %[1]s && exit 0; "+
-			"elif command -v wget >/dev/null 2>&1; then wget -q -T 5 -O /dev/null %[1]s && exit 0; "+
-			"else echo 'health check needs curl or wget on the host' >&2; exit 127; fi", q(url))
+		probe = fmt.Sprintf("if command -v curl >/dev/null 2>&1; then curl -fsS -o /dev/null --connect-timeout %[2]d --max-time %[2]d %[1]s && exit 0; "+
+			"elif command -v wget >/dev/null 2>&1; then wget -q -T %[2]d -O /dev/null %[1]s && exit 0; "+
+			"else echo 'health check needs curl or wget on the host' >&2; exit 127; fi", q(url), attemptSec)
 	}
 	return fmt.Sprintf(`unit=%s
 end=$(( $(date +%%s) + %d ))

@@ -175,8 +175,8 @@ func TestScriptsParse(t *testing.T) {
 		"activate":    activateScript("/opt/qifa/app", "abc123"),
 		"revert":      revertScript("/opt/qifa/app", "releases/old"),
 		"markok":      markOKScript("/opt/qifa/app", "abc123"),
-		"health-http": healthScript("qifa-app.service", "http://127.0.0.1:8080/up", 30, 2),
-		"health":      healthScript("qifa-app.service", "", 30, 2),
+		"health-http": healthScript("qifa-app.service", "http://127.0.0.1:8080/up", 30, 2, 5),
+		"health":      healthScript("qifa-app.service", "", 30, 2, 5),
 		"preflight":   preflightScript("/opt/qifa/app", []string{"qifa-app.service"}, true),
 		"diagnostics": diagnosticsScript("qifa-app.service"),
 	}
@@ -364,7 +364,6 @@ func TestPackWritesATempFileMatchingItsChecksum(t *testing.T) {
 		t.Fatal("packing a missing artifact succeeded")
 	}
 }
-
 
 // app exec loads the env file in the deploy user's shell and hands it on
 // through sudo -E: the values never reach a command line.

@@ -34,11 +34,11 @@ func TestLoadConfig(t *testing.T) {
 	if cfg.Builder.IsRemote() || cfg.Builder.IsPerTarget() {
 		t.Fatalf("expected local build, got host=%q", cfg.Builder.Host)
 	}
-	if cfg.Prune.RetainContainers != 5 {
-		t.Fatalf("unexpected retain_containers default: %d", cfg.Prune.RetainContainers)
+	if cfg.Retain() != 5 {
+		t.Fatalf("unexpected retain default: %d", cfg.Retain())
 	}
-	if cfg.Proxy.Healthcheck.Interval != 2*time.Second {
-		t.Fatalf("unexpected healthcheck interval default: %v", cfg.Proxy.Healthcheck.Interval)
+	if cfg.Health().Interval != 2*time.Second {
+		t.Fatalf("unexpected healthcheck interval default: %v", cfg.Health().Interval)
 	}
 	if cfg.SSH.StrictHostKeyChecking != nil {
 		t.Fatalf("expected nil strict host key setting by default, got %#v", cfg.SSH.StrictHostKeyChecking)
