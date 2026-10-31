@@ -103,6 +103,14 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		}
 	}
 	args = filtered
+	// Resolve the config path once, against the shell's directory. Loading
+	// a config moves the process into the config's directory, and several
+	// commands load it more than once (to learn the mode, then for real); a
+	// relative -c path resolved a second time would point inside the config
+	// directory and fail, e.g. `qifa -c deploy/qifa.yaml proxy boot`.
+	if abs, err := filepath.Abs(configFile); err == nil {
+		configFile = abs
+	}
 
 	if len(args) == 0 {
 		printUsage(stdout)
