@@ -218,7 +218,7 @@ func TestBootCommandUsesConfiguredPorts(t *testing.T) {
 			HTTPPort:      8080,
 			HTTPSPort:     8443,
 			Image:         "basecamp/kamal-proxy",
-			Version:       "v0.9.2",
+			Version:       "v0.10.2",
 			Network:       "kamal",
 			StateVolume:   "kamal-proxy-config",
 			AppsConfigDir: ".kamal/proxy/apps-config",
@@ -236,7 +236,7 @@ func TestBootCommandUsesConfiguredPorts(t *testing.T) {
 		`--volume "$HOME"/'.kamal/proxy/apps-config:/home/kamal-proxy/.apps-config'`,
 		"--log-opt max-size=10m",
 		"kamal-proxy run",
-		"basecamp/kamal-proxy:v0.9.2",
+		"basecamp/kamal-proxy:v0.10.2",
 	} {
 		if !strings.Contains(command, fragment) {
 			t.Fatalf("missing fragment %q in %q", fragment, command)

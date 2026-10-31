@@ -609,7 +609,7 @@ func applyDefaults(cfg *Config) {
 			cfg.ProxyBoot.Image = "basecamp/kamal-proxy"
 		}
 		if cfg.ProxyBoot.Version == "" {
-			cfg.ProxyBoot.Version = "v0.9.2"
+			cfg.ProxyBoot.Version = DefaultProxyVersion
 		}
 		if cfg.ProxyBoot.Network == "" {
 			cfg.ProxyBoot.Network = "kamal"

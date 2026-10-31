@@ -235,7 +235,8 @@ native:
 
 Releases, rollback, status and env work as they do for containers. For HTTPS
 and domains, kamal-proxy runs natively too (`qifa proxy boot --ssh-user root`,
-then a `proxy:` block). There is no zero-downtime switch yet. See
+then a `proxy:` block). Deploys restart the process; there is no
+zero-downtime switch. See
 [docs/native.md](docs/native.md).
 
 ## Verb Cheatsheet

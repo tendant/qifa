@@ -99,9 +99,13 @@ func applyNativeDefaults(cfg *Config) {
 	}
 }
 
-// NativeProxyVersion is the kamal-proxy a native proxy runs by default. It
-// is built from source (kamal-proxy publishes no binaries), so it is pinned.
-const NativeProxyVersion = "v0.10.2"
+// DefaultProxyVersion is the kamal-proxy qifa runs by default, as a
+// container or (built from source, since kamal-proxy publishes no binaries)
+// as a native service. Native needs v0.10+ (KAMAL_PROXY_SOCKET, list --json).
+const DefaultProxyVersion = "v0.10.2"
+
+// NativeProxyVersion is the native proxy's default; the same as the container's.
+const NativeProxyVersion = DefaultProxyVersion
 
 func (c *Config) validateNative() error {
 	n := c.Native

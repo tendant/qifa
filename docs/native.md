@@ -10,8 +10,8 @@ Use it for a single static binary (Go, Rust, Zig), or a directory with its
 runtime already on the server (a JVM jar, a Python venv you build for the
 target). There is no image or registry. For HTTPS on a domain, qifa can run
 kamal-proxy as a systemd service in front of the app ([below](#https-and-domains-kamal-proxy)).
-There is no zero-downtime switch yet: a deploy restarts the process, and the
-app is down for as long as it takes to start.
+Deploys restart the process: the app is down for as long as it takes to start
+(zero-downtime switching is not planned for native apps).
 
 ## Requirements on the server
 
