@@ -94,9 +94,7 @@ fi
 	for _, unit := range units {
 		fmt.Fprintf(&b, "systemctl enable --quiet %s\n", q(unit))
 	}
-	// sudoers.d skips file names containing '.', so the service name's dots
-	// cannot appear in it.
-	sudoersFile := "/etc/sudoers.d/qifa-" + strings.ReplaceAll(d.cfg.Service, ".", "_")
+	sudoersFile := d.sudoersFile()
 	fmt.Fprintf(&b, "sudoers=%s\ntmp=$(mktemp)\nprintf '%%s' %s > \"$tmp\"\n", q(sudoersFile), q(RenderSudoers(deployUser, systemctl, units)))
 	b.WriteString(`if ! visudo -cqf "$tmp"; then rm -f "$tmp"; echo "generated sudoers rule failed visudo -c" >&2; exit 1; fi
 chmod 0440 "$tmp"
@@ -112,4 +110,10 @@ fi
 func sha256Hex(s string) string {
 	sum := sha256.Sum256([]byte(s))
 	return hex.EncodeToString(sum[:])
+}
+
+// sudoersFile is the setup's sudoers drop-in. sudoers.d skips file names
+// containing '.', so the service name's dots cannot appear in it.
+func (d *Deployer) sudoersFile() string {
+	return "/etc/sudoers.d/qifa-" + strings.ReplaceAll(d.cfg.Service, ".", "_")
 }

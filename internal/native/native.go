@@ -30,9 +30,6 @@ import (
 	"github.com/tendant/qifa/internal/version"
 )
 
-// ErrNotYet marks commands planned for a later phase of native support.
-var ErrNotYet = errors.New("not yet supported for native deploys")
-
 type Deployer struct {
 	cfg    *config.Config
 	store  *state.Store
@@ -254,44 +251,65 @@ func (d *Deployer) artifactArch(pkg *Package) (string, error) {
 func (d *Deployer) preflight(ctx context.Context, hosts []string, artifactArch string) error {
 	var problems []string
 	for _, host := range hosts {
-		units := d.unitsOn(host)
-		out, err := d.ssh.Run(ctx, host, preflightScript(d.cfg.Native.Dir, units))
+		p, warnings, err := d.checkHost(ctx, host, artifactArch)
 		if err != nil {
 			return fmt.Errorf("preflight on %s: %w", host, err)
 		}
-		kv := parseKV(out)
-		if kv["systemd"] != "yes" {
-			problems = append(problems, fmt.Sprintf("%s: systemd is not available", host))
-			continue
+		for _, w := range warnings {
+			d.log.Printf("warning: %s: %s", host, w)
 		}
-		if kv["bus"] != "ok" {
-			problems = append(problems, fmt.Sprintf("%s: systemctl cannot reach systemd as %s (no D-Bus system bus?) — install dbus", host, d.sshUser()))
-		}
-		if kv["dir"] != "ok" {
-			problems = append(problems, fmt.Sprintf("%s: %s is missing or not writable by %s — run `qifa native setup`", host, d.cfg.Native.Dir, d.sshUser()))
-		}
-		hostArch := UnameArch(kv["arch"])
-		if want := firstNonEmpty(d.cfg.Native.Arch, artifactArch); want != "" && hostArch != want {
-			problems = append(problems, fmt.Sprintf("%s: host is %s but the release is built for %s", host, hostArch, want))
-		}
-		for _, role := range d.rolesOn(host) {
-			unit := d.cfg.NativeUnitName(role)
-			if kv["sudo:"+unit] != "ok" {
-				problems = append(problems, fmt.Sprintf("%s: %s may not run `sudo -n systemctl restart %s` — run `qifa native setup`", host, d.sshUser(), unit))
-			}
-			switch sum := kv["unitsum:"+unit]; sum {
-			case "":
-				problems = append(problems, fmt.Sprintf("%s: unit %s is not installed — run `qifa native setup`", host, unit))
-			case sha256Hex(RenderUnit(unitParams(d.cfg, role))):
-			default:
-				problems = append(problems, fmt.Sprintf("%s: unit %s differs from the config (exec, user or restart changed) — run `qifa native setup`", host, unit))
-			}
+		for _, line := range p {
+			problems = append(problems, host+": "+line)
 		}
 	}
 	if len(problems) > 0 {
 		return fmt.Errorf("hosts are not ready; nothing was changed:\n  %s", strings.Join(problems, "\n  "))
 	}
 	return nil
+}
+
+// checkHost runs the read-only preflight on one host. Problems block a
+// deploy; warnings describe a state worth knowing about (an interrupted
+// earlier deploy) that the deploy itself will repair.
+func (d *Deployer) checkHost(ctx context.Context, host, artifactArch string) (problems, warnings []string, err error) {
+	out, err := d.ssh.Run(ctx, host, preflightScript(d.cfg.Native.Dir, d.unitsOn(host)))
+	if err != nil {
+		return nil, nil, err
+	}
+	kv := parseKV(out)
+	if kv["systemd"] != "yes" {
+		return []string{"systemd is not available"}, nil, nil
+	}
+	if kv["bus"] != "ok" {
+		problems = append(problems, fmt.Sprintf("systemctl cannot reach systemd as %s (no D-Bus system bus?) — install dbus", d.sshUser()))
+	}
+	if kv["dir"] != "ok" {
+		problems = append(problems, fmt.Sprintf("%s is missing or not writable by %s — run `qifa native setup`", d.cfg.Native.Dir, d.sshUser()))
+	}
+	hostArch := UnameArch(kv["arch"])
+	if want := firstNonEmpty(d.cfg.Native.Arch, artifactArch); want != "" && hostArch != want {
+		problems = append(problems, fmt.Sprintf("host is %s but the release is built for %s", hostArch, want))
+	}
+	for _, role := range d.rolesOn(host) {
+		unit := d.cfg.NativeUnitName(role)
+		if kv["sudo:"+unit] != "ok" {
+			problems = append(problems, fmt.Sprintf("%s may not run `sudo -n systemctl restart %s` — run `qifa native setup`", d.sshUser(), unit))
+		}
+		switch sum := kv["unitsum:"+unit]; sum {
+		case "":
+			problems = append(problems, fmt.Sprintf("unit %s is not installed — run `qifa native setup`", unit))
+		case sha256Hex(RenderUnit(unitParams(d.cfg, role))):
+		default:
+			problems = append(problems, fmt.Sprintf("unit %s differs from the config (exec, user or restart changed) — run `qifa native setup`", unit))
+		}
+	}
+	if kv["currentok"] == "no" {
+		warnings = append(warnings, fmt.Sprintf("current release %s never passed its health check (an interrupted deploy?)", strings.TrimPrefix(kv["current"], "releases/")))
+	}
+	if kv["tmp"] == "yes" {
+		warnings = append(warnings, "a half-staged release was left behind; it is removed on the next deploy")
+	}
+	return problems, warnings, nil
 }
 
 func (d *Deployer) sshUser() string {
@@ -383,6 +401,9 @@ func (d *Deployer) deployHost(ctx context.Context, deployment state.Deployment, 
 	}
 	event("deployed", id)
 	d.log.Printf("%s: release %s is live", host, id)
+	if err := d.prune(ctx, host); err != nil {
+		d.log.Printf("warning: %s: pruning old releases: %v", host, err)
+	}
 	return nil
 }
 
@@ -530,16 +551,6 @@ func (d *Deployer) LockStatus(ctx context.Context, out io.Writer) error {
 func (d *Deployer) LockRelease(ctx context.Context) error {
 	return lock.New(d.ssh, d.cfg.Service, d.hosts()).ForceRelease(ctx)
 }
-
-// Phase 2 (docs/qifa-native-deployment-design.md §14).
-func (d *Deployer) Rollback(context.Context, string) error           { return notYet("rollback") }
-func (d *Deployer) Remove(context.Context) error                     { return notYet("remove") }
-func (d *Deployer) Status(context.Context, io.Writer) error          { return notYet("status") }
-func (d *Deployer) EnvDiff(context.Context, io.Writer) error         { return notYet("env diff") }
-func (d *Deployer) Reconcile(context.Context, io.Writer, bool) error { return notYet("reconcile") }
-func (d *Deployer) Doctor(context.Context, io.Writer) error          { return notYet("doctor") }
-
-func notYet(cmd string) error { return fmt.Errorf("qifa %s: %w", cmd, ErrNotYet) }
 
 func (d *Deployer) fail(deployment state.Deployment, cause error) error {
 	_ = d.updateStatus(deployment, state.StatusFailed)

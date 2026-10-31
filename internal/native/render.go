@@ -40,7 +40,12 @@ func RenderUnit(p UnitParams) string {
 	fmt.Fprintf(&b, "[Unit]\n")
 	fmt.Fprintf(&b, "Description=qifa: %s (%s)\n", p.Service, p.Role)
 	fmt.Fprintf(&b, "After=network-online.target\n")
-	fmt.Fprintf(&b, "Wants=network-online.target\n\n")
+	fmt.Fprintf(&b, "Wants=network-online.target\n")
+	// No start rate limit. The default (5 starts in 10s) is spent by a
+	// crashing release under Restart=, and then systemd refuses to start the
+	// previous release qifa restores: the rollback fails and nothing runs.
+	// RestartSec paces restarts; the health check decides what is healthy.
+	fmt.Fprintf(&b, "StartLimitIntervalSec=0\n\n")
 	fmt.Fprintf(&b, "[Service]\n")
 	fmt.Fprintf(&b, "Type=exec\n")
 	fmt.Fprintf(&b, "User=%s\n", p.User)

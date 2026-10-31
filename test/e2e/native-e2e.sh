@@ -47,6 +47,7 @@ on_host 'systemctl is-active --quiet ssh' || fail "sshd did not start"
 goarch=$(on_host 'uname -m' | sed 's/x86_64/amd64/; s/aarch64/arm64/')
 (cd "$root" && go build -o "$work/qifa" ./cmd/qifa)
 build_app() {
+  rm -f "$work/app/dist/app"
   (cd "$root" && GOOS=linux GOARCH="$goarch" CGO_ENABLED=0 go build -trimpath -ldflags "-X main.version=$1" -o "$work/app/dist/app" ./test/e2e/native-app)
 }
 
@@ -73,6 +74,7 @@ native:
     timeout: 10s
     interval: 1s
   shared_dirs: [storage]
+  retain: 3
 EOF
 qifa() { "$work/qifa" -c "$work/app/qifa.yaml" "$@"; }
 app_get() { on_host "curl -fsS http://127.0.0.1:8080$1"; }
@@ -132,5 +134,64 @@ qifa logs -n 20 | grep -q "native-app v2" || fail "logs do not show the app"
 qifa lock status | grep -q free || fail "lock left held"
 if qifa proxy details >"$work/out" 2>&1; then fail "proxy command ran in native mode"; fi
 grep -q "not available when the config has native" "$work/out" || { cat "$work/out"; fail "unclear Docker-only error"; }
+
+step "status shows live, known-good and rollback target"
+qifa status >"$work/out"
+grep -q "current  v2$" "$work/out" || { cat "$work/out"; fail "status current"; }
+grep -q "releases v3 v2\* v1\*" "$work/out" || { cat "$work/out"; fail "status releases"; }
+grep -q "rollback v1" "$work/out" || { cat "$work/out"; fail "status rollback target"; }
+grep -q "health   up" "$work/out" || { cat "$work/out"; fail "status health"; }
+
+step "env diff: in sync, then drift by key name only"
+qifa env diff | grep -q "in sync (1 keys)" || fail "env diff not in sync"
+sed 's/MSG: .*/MSG: "changed-secret"/' "$work/app/qifa.yaml" > "$work/app/qifa-changed.yaml"
+"$work/qifa" -c "$work/app/qifa-changed.yaml" env diff >"$work/out"
+grep -q "~ MSG  (value differs)" "$work/out" || { cat "$work/out"; fail "env drift not reported"; }
+grep -q "changed-secret\|say" "$work/out" && fail "env diff printed a value"
+
+step "doctor"
+qifa doctor | grep -q ": ok" || fail "doctor not ok"
+
+step "rollback (no version) goes to the most recently healthy: v1"
+qifa rollback
+expect_eq "$(app_get /version)" v1 "version after rollback"
+step "rollback v2 by name"
+qifa rollback v2
+expect_eq "$(app_get /version)" v2 "version after rollback v2"
+step "rollback to never-healthy, crashing v3 is reverted"
+if qifa rollback v3 >"$work/out" 2>&1; then cat "$work/out"; fail "rollback to crashing v3 succeeded"; fi
+expect_eq "$(app_get /version)" v2 "version after failed rollback"
+step "rollback to a missing version changes nothing"
+if qifa rollback nope >"$work/out" 2>&1; then fail "rollback to missing version succeeded"; fi
+grep -q "nothing was changed" "$work/out" || { cat "$work/out"; fail "missing-version message"; }
+
+step "reconcile"
+QIFA_VERSION=v2 qifa reconcile | grep -q "in sync" || fail "reconcile not in sync at v2"
+QIFA_VERSION=v9 qifa reconcile -n | grep -q "live release is v2, config is v9" || fail "reconcile drift not reported"
+
+step "interrupted deploy is reported"
+on_host "su deploy -c 'cd /opt/qifa/nativeapp && ln -sfn releases/v3 current'"
+qifa status | grep -q "never passed a health check" || fail "interrupted state not reported by status"
+QIFA_VERSION=v2 qifa reconcile -n | grep -q "live release is v3" || fail "reconcile missed interrupted state"
+qifa rollback v2
+expect_eq "$(app_get /version)" v2 "recovered from interrupted state"
+
+step "retention: retain 3 keeps the live and rollback releases"
+build_app v5; qifa deploy --version v5 >/dev/null
+build_app v6; qifa deploy --version v6 >/dev/null
+releases=$(on_host 'ls /opt/qifa/nativeapp/releases | sort | tr "\n" " "')
+expect_eq "$releases" "v3 v5 v6 " "releases after pruning"
+
+step "remove: plain remove points at native remove; teardown keeps data; purge deletes it"
+if qifa remove >"$work/out" 2>&1; then fail "qifa remove succeeded without root"; fi
+grep -q "qifa native remove" "$work/out" || { cat "$work/out"; fail "remove hint"; }
+qifa native remove --ssh-user root
+on_host '[ ! -e /etc/systemd/system/qifa-nativeapp.service ] && [ ! -e /etc/sudoers.d/qifa-nativeapp ]' || fail "units or sudoers left"
+on_host '[ -d /opt/qifa/nativeapp/shared/storage ]' || fail "plain remove deleted data"
+on_host 'curl -fsS http://127.0.0.1:8080/up' 2>/dev/null && fail "app still running after remove"
+echo wrong | qifa native remove --ssh-user root --purge >"$work/out" 2>&1 && fail "purge without confirmation"
+on_host '[ -d /opt/qifa/nativeapp ]' || fail "unconfirmed purge deleted data"
+echo nativeapp | qifa native remove --ssh-user root --purge
+on_host '[ ! -e /opt/qifa/nativeapp ] && ! id nativeapp 2>/dev/null' || fail "purge left data or user"
 
 printf '\nPASS: native e2e\n'

@@ -544,4 +544,5 @@ func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "  accessory <boot|stop|start|restart|remove|logs|exec> <name> [args...]")
 	fmt.Fprintln(w, "  cert <issue|renew|list|remove> [args...]")
 	fmt.Fprintln(w, "  native setup [--ssh-user <user>] [--deploy-user <user>]")
+	fmt.Fprintln(w, "  native remove [--ssh-user <user>] [--purge [--yes]]")
 }

@@ -1,6 +1,6 @@
 # Qifa Native Deployment — Design
 
-**Status:** Proposed (reconciled with the codebase at `382a687`)  
+**Status:** Implemented: phases 1 and 2 on branch `native-deploy`; phase 3 (user docs) in progress  
 **Scope:** Linux hosts, native application deployment without Docker  
 **Principle:** Keep Qifa simple: build → SSH upload → activate release → systemd restart → health check → rollback on failure.
 
@@ -192,6 +192,7 @@ A link switch and a restart are not one atomic transaction. `qifa status` and th
 Description=qifa: myapp (web)
 After=network-online.target
 Wants=network-online.target
+StartLimitIntervalSec=0
 
 [Service]
 Type=exec
@@ -211,6 +212,7 @@ WantedBy=multi-user.target
 
 - `ExecStart` is rendered from the `exec` argv using systemd's quoting rules (each argument double-quoted with `\` and `"` escaped; `%` doubled to `%%`; `$` doubled to `$$`). It is never passed through a shell.
 - Only `qifa native setup` installs or changes the unit. `deploy` re-renders it and compares it with the installed copy; on a difference it stops before touching any host and asks for `qifa native setup` to be rerun. The deploy user must never be able to write unit files: a unit can say `User=root`, so that permission would be root access by another name.
+- `StartLimitIntervalSec=0` disables systemd's start rate limit. With the default (5 starts in 10s), a crashing release under `Restart=on-failure` spends the budget while qifa waits on its health check, and systemd then refuses to start the previous release qifa restores (`start-limit-hit`): the automatic rollback fails and nothing runs. Found by the e2e test. `RestartSec=3` still paces restarts, and the health check decides what is healthy.
 - `WorkingDirectory` and `ExecStart` go through `current`, so the unit itself does not change between releases.
 
 ## 9. Environment and secrets
@@ -255,7 +257,8 @@ Two privilege tiers.
 | `status` | Audit log history plus, per host: `current` version, unit state, health, available releases (`*` marks known-good) |
 | `logs [-f] [-n N]` | `journalctl -u <unit> [-f] -n N` |
 | `app exec <cmd>` | Not provided in v1: running as the service account would need a broad sudo rule. Use `ssh` |
-| `remove [--purge]` | Stop, disable, delete the unit; `--purge` also deletes `/opt/qifa/<service>` including `shared/`, after an interactive confirmation |
+| `remove` | Refuses, pointing at `native remove`: deleting units and sudoers needs root, which deploys never have |
+| `native remove [--ssh-user root] [--purge [--yes]]` | As root: stop and disable the units, delete them and the sudoers rule. `--purge` also deletes `/opt/qifa/<service>` (releases and `shared/`) and the service account, after the operator types the service name (or `--yes`) |
 | `env diff` | §9 |
 | `lock status` / `lock release` | Unchanged |
 | `native setup` | §10 (new) |
@@ -288,9 +291,13 @@ Code layout: `internal/native/` with `native.go` (Backend), `release.go` (stagin
 
 ## 14. Implementation phases
 
-**Phase 1: deploy end to end.** Config block and validation; `internal/version` extraction; `ssh.Sudo`; `internal/native` release staging, link switch, systemd unit and env file; `qifa native setup`; Backend interface and dispatch in `internal/app`; `deploy` with health check and auto-rollback (rollback-on-failure is in phase 1 because a deploy without it is not safe to ship).
+**Phase 1: deploy end to end (done).** Config block and validation; `internal/version` extraction; `ssh.Sudo`; `internal/native` release staging, link switch, systemd unit and env file; `qifa native setup`; Backend interface and dispatch in `internal/app`; `deploy` with health check and auto-rollback (rollback-on-failure is in phase 1 because a deploy without it is not safe to ship).
 
-**Phase 2: operations.** `rollback [version]`, `status`, `logs`, `stop/start/restart`, `remove`, `env diff`, `reconcile`, `doctor` native checks, retention pruning, interrupted-deploy detection.
+**Phase 2: operations (done).** `rollback [version]`, `status`, `logs`, `stop/start/restart`, `native remove`, `env diff`, `reconcile`, `doctor` native checks, retention pruning, interrupted-deploy detection. Details as built:
+
+- Rollback without a version picks the release whose `.qifa-ok` is newest and is not live: the most recently *healthy* release, not the most recently staged. `.qifa-ok` is touched on every deploy or rollback that passes. A named version must exist on every host; one that never passed is allowed with a warning. A rollback that fails its health check is reverted like a failed deploy.
+- Pruning runs after each successful host deploy: keep the newest `retain` releases by staging time, plus always the live release and the automatic rollback target, however old.
+- Interrupted deploys (a `current` release without `.qifa-ok`, or leftover `*.tmp`) are reported by `status`, flagged by `reconcile`, and warned about at the start of the next deploy.
 
 **Phase 3: docs.** README section, `docs/deploying.md` native notes (env-on-restart semantics, sudoers, arch), troubleshooting entries.
 

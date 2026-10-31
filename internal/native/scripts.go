@@ -144,6 +144,9 @@ func preflightScript(dir string, units []string) string {
 		fmt.Fprintf(&b, "if sudo -n -l systemctl restart %[1]s >/dev/null 2>&1; then echo sudo:%[2]s=ok; else echo sudo:%[2]s=no; fi\n", q(u), u)
 		fmt.Fprintf(&b, "echo unitsum:%s=$(sha256sum /etc/systemd/system/%s 2>/dev/null | cut -d' ' -f1)\n", u, q(u))
 	}
+	fmt.Fprintf(&b, "cur=$(readlink %s/current 2>/dev/null || true)\necho current=$cur\n", q(dir))
+	fmt.Fprintf(&b, "if [ -n \"$cur\" ] && [ ! -f %s/\"$cur\"/.qifa-ok ]; then echo currentok=no; fi\n", q(dir))
+	fmt.Fprintf(&b, "for f in %s/releases/*.tmp; do [ -e \"$f\" ] && echo tmp=yes && break; done\n", q(dir))
 	// The health check runs `systemctl is-active` as the deploy user, which
 	// goes through D-Bus; a host without dbus fails it for every unit, and
 	// the deploy would read that as an unhealthy app.
@@ -159,4 +162,79 @@ func parseKV(out string) map[string]string {
 		}
 	}
 	return m
+}
+
+// inventoryScript reports a host's releases and units, one fact per line:
+//
+//	current=releases/<id>
+//	release=<id> <staged epoch> <healthy epoch, 0 if never>
+//	tmp=<name>
+//	unit=<name> <state>
+//	health=up|down        (only with url)
+//
+// The healthy time is the .qifa-ok mtime, refreshed on every deploy or
+// rollback that passes, so "newest healthy" means "most recently live".
+func inventoryScript(dir string, units []string, url string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "cd %s 2>/dev/null || exit 0\n", q(dir))
+	b.WriteString(`echo "current=$(readlink current 2>/dev/null || true)"
+for d in releases/*/; do
+  d=${d%/}; id=${d#releases/}
+  case "$id" in *.tmp) echo "tmp=$id"; continue;; esac
+  [ -d "$d" ] || continue
+  st=$(stat -c %Y "$d/.qifa-checksum" 2>/dev/null || echo 0)
+  ok=$(stat -c %Y "$d/.qifa-ok" 2>/dev/null || echo 0)
+  echo "release=$id $st $ok"
+done
+`)
+	for _, u := range units {
+		fmt.Fprintf(&b, "echo \"unit=%s $(systemctl is-active %s 2>/dev/null)\"\n", u, q(u))
+	}
+	if url != "" {
+		fmt.Fprintf(&b, "if curl -fsS -o /dev/null --max-time 3 %s 2>/dev/null; then echo health=up; else echo health=down; fi\n", q(url))
+	}
+	return b.String()
+}
+
+// switchScript points `current` at an existing release without touching the
+// env file (a rollback runs the old code with today's env, as in Docker mode),
+// printing the previous target.
+func switchScript(dir, id string) string {
+	return fmt.Sprintf(`set -eu
+cd %s
+[ -d %s ] || { echo "release %s is not on this host" >&2; exit 2; }
+prev=$(readlink current 2>/dev/null || true)
+rm -f etc/env.prev
+ln -sfn %s current.tmp
+mv -T current.tmp current
+printf '%%s' "$prev"
+`, q(dir), q("releases/"+id), id, q("releases/"+id))
+}
+
+func removeReleasesScript(dir string, ids []string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "set -eu\ncd %s/releases\n", q(dir))
+	for _, id := range ids {
+		fmt.Fprintf(&b, "rm -rf -- %s\n", q(id))
+	}
+	return b.String()
+}
+
+// teardownScript runs as root: it undoes setup. With purge, the install
+// directory (releases and shared data) and the service account go too.
+func teardownScript(dir, user, sudoersFile string, units []string, purge bool) string {
+	var b strings.Builder
+	b.WriteString("set -eu\n")
+	for _, u := range units {
+		fmt.Fprintf(&b, "systemctl disable --now %[1]s >/dev/null 2>&1 || true\nif [ -e /etc/systemd/system/%[1]s ]; then rm -f /etc/systemd/system/%[1]s; echo \"removed unit %[2]s\"; fi\n", q(u), u)
+	}
+	b.WriteString("systemctl daemon-reload\n")
+	fmt.Fprintf(&b, "if [ -e %[1]s ]; then rm -f %[1]s; echo \"removed %[2]s\"; fi\n", q(sudoersFile), sudoersFile)
+	if purge {
+		fmt.Fprintf(&b, "if [ -e %[1]s ]; then rm -rf -- %[1]s; echo \"deleted %[2]s\"; fi\n", q(dir), dir)
+		fmt.Fprintf(&b, "if id %[1]s >/dev/null 2>&1; then userdel %[1]s; echo \"deleted user %[2]s\"; fi\n", q(user), user)
+	} else {
+		fmt.Fprintf(&b, "echo \"kept %s (releases and shared data); --purge deletes it\"\n", dir)
+	}
+	return b.String()
 }
