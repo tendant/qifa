@@ -1,138 +1,193 @@
 # Qifa Native Deployment — Design
 
-**Status:** Proposed  
-**Scope:** Single Linux host, native application deployment without Docker  
+**Status:** Proposed (reconciled with the codebase at `382a687`)  
+**Scope:** Linux hosts, native application deployment without Docker  
 **Principle:** Keep Qifa simple: build → SSH upload → activate release → systemd restart → health check → rollback on failure.
 
 ## 1. Goals
 
-- Extend Qifa with a `native` deployment option while preserving existing Docker behavior.
-- Deploy executable binaries or application directories to one Linux server over SSH.
+- Extend Qifa with a `native` deployment mode while preserving existing Docker behavior byte-for-byte.
+- Deploy executable binaries or application directories to Linux servers over SSH.
 - Use systemd for process supervision, restart and logs.
 - Support repeatable releases, manual rollback and automatic rollback on failed deployment.
-- Reuse existing Qifa configuration, SSH, secrets and command patterns where practical.
+- Reuse existing Qifa configuration, SSH, lock, secrets, hooks, versioning and audit-log code.
+- Keep the deployer stateless, as today: what is deployed is answered by the hosts, not by the machine running qifa.
 - Avoid a resident Qifa agent, central database, artifact registry or large refactor.
 
 ## 2. Non-goals
 
-- Zero-downtime deployment, blue-green switching or traffic routing.
-- Multi-host orchestration, load balancing or rolling updates.
+- Zero-downtime deployment, blue-green switching or traffic routing (see §15 for a later path).
+- TLS termination and domain routing. Without kamal-proxy, the operator brings their own (Caddy, nginx) or binds the app port directly.
 - Non-Linux platforms or init systems other than systemd.
 - Container image building for the native backend.
 - Language-specific packaging or dependency installation.
 
+Multi-host is **not** a non-goal: `servers.<role>.hosts` and `rollout.batch_size` already sequence hosts, and the native path reuses that loop per host. Each host is still an independent single-host deploy; there is no load balancing across them.
+
 ## 3. Architecture
 
 ```text
-                         Qifa CLI
-              deploy / rollback / status / logs
+                         qifa CLI (internal/app)
+              deploy / rollback / status / logs / restart ...
                             |
-                 Backend selection
-                    /           \
-             Docker (existing)   Native (new)
-                                     |
-                              SSH transport
-                                     |
-                              Linux server
-                                     |
-                        releases + current link
-                                     |
-                                  systemd
+                  config has `native:` block?
+                    /                     \
+         internal/deploy (existing)    internal/native (new)
+                    \                     /
+       shared: internal/ssh, internal/lock, internal/hooks,
+               internal/state, internal/secrets, version resolution
+                                  |
+                             Linux server
+                                  |
+                      releases/ + current link
+                                  |
+                               systemd
 ```
 
-Native deployment is a new path behind backend selection, not a new standalone CLI. Prefer minimal dispatch and reuse of existing utilities over introducing a generic deployment framework prematurely.
+`deploy.Deployer` (`internal/deploy/deploy.go`) has no backend interface today. The seam is the CLI dispatch in `internal/app/app.go`: extract a small interface covering the commands both modes support, and construct either the Docker deployer or the native one.
 
-## 4. Proposed configuration
+```go
+type Backend interface {
+    Deploy(ctx) error
+    Rollback(ctx, version string) error
+    Stop(ctx) error
+    Start(ctx) error
+    Restart(ctx) error
+    Remove(ctx) error
+    Status(ctx, out) error
+    Logs(ctx, lines int, follow bool, out) error
+    Plan(ctx, out) error          // deploy --dry-run
+    LockStatus(ctx, out) error
+    LockRelease(ctx) error
+    PinVersion(version string, allowDirty bool)
+}
+```
 
-> Illustrative schema; reconcile with Qifa's existing YAML and CLI before implementation.
+Docker-only commands (`proxy *`, `app maintenance|live|containers`, `sweep`, `prune`, `backup`, `restore`, `cert`) fail fast in native mode with a message naming the mode. The Docker deployer is not modified beyond satisfying the interface.
+
+## 4. Configuration
+
+The existing `builder:` block means a Docker build (`host`, `context`, `dockerfile`, `platform`, `repo`), `image` is required (`config.go`), and the loader rejects unknown keys. Native mode therefore gets its own top-level block rather than overloading `builder:` or adding a `deploy.type` switch. **The presence of `native:` selects native mode.**
 
 ```yaml
 service: myapp
 
-deploy:
-  type: native # docker (existing/default) | native
-
 servers:
   web:
     hosts:
-      - server.example.com
-
-builder:
-  command: make build
-  artifact: dist/myapp
+      - 10.0.0.11
 
 native:
-  command: ./myapp
-  user: myapp
-  port: 8080
+  build: make build                     # run on the deployer, in the config dir; optional
+  artifact: dist/myapp                  # file or directory, relative to the config dir
+  exec: [bin/myapp, --port, "8080"]     # argv; exec[0] resolved under current/; no shell
+  user: myapp                           # service account (created by `qifa native setup`)
+  arch: amd64                           # optional; verified against the artifact and host
+  port: 8080                            # only needed for the HTTP health check
   healthcheck:
-    path: /healthz
+    path: /up
+    interval: 2s
+    timeout: 30s
+  retain: 5
+  restart: on-failure
+  shared_dirs: [storage, log]           # symlinked from shared/ into each release
+
+env:
+  clear:
+    APP_ENV: production
+  secret_command: sops --decrypt secrets.production.enc.env
+
+hooks:
+  pre_build: ./scripts/pre_build.sh
+  post_deploy: ./scripts/post_deploy.sh
+
+ssh:
+  user: deploy
 ```
 
-Suggested defaults:
+Validation in native mode:
+
+- `native.artifact` and `native.exec` are required; `exec` must be a non-empty list and `exec[0]` a relative path (no `..`) unless absolute.
+- Forbidden alongside `native:`: `image`, `source`, `pull_policy`, `registry`, `builder`, `proxy`, `proxy_boot`, `backup`, `restore`. `image` is no longer required in this mode.
+- `servers.<role>.cmd`, `port`, `app_port`, `volumes`, `privileged`, `extra_ports` are container concepts and are rejected. A role may set `exec` to override `native.exec` (e.g. a worker role from the same artifact).
+- `accessories` remain Docker containers. They are allowed only if the accessory host has Docker; `qifa doctor` checks this. A fully Docker-free host simply has no accessories.
+- `port` is required only if `healthcheck.path` is set. Without it, the check is `systemctl is-active` after a settle period (process liveness, not readiness).
+
+Defaults:
 
 | Property | Default |
 | --- | --- |
-| Runtime | systemd |
 | Install directory | `/opt/qifa/<service>` |
 | Working directory | `/opt/qifa/<service>/current` |
+| Unit name | `qifa-<service>.service` (`qifa-<service>-<role>.service` when there are several roles) |
+| Env file | `/opt/qifa/<service>/etc/env` |
 | Release retention | 5 |
 | Restart policy | `on-failure` |
-| Health-check timeout | 30 seconds |
-| Transport | SSH |
-| Rollback on failed deployment | enabled |
+| Health-check timeout | 30s |
+| Rollback on failed deploy | always |
 
-`builder.artifact` may be a single executable or directory. The build is a user-supplied command, so Qifa remains language-agnostic. For v1, assume the artifact is built for the target Linux OS/architecture and has its runtime dependencies available. Reject ambiguous or missing artifacts.
+## 5. Versions and release IDs
 
-A service with no HTTP health endpoint can use `systemctl is-active` as a minimal check; this tests process activity, not application readiness. Do not require `port` if no HTTP health check is configured.
+The release ID is the existing qifa version, from the same resolution logic the Docker path uses: `--version` / `QIFA_VERSION` if given, otherwise the short SHA of the config's checkout, and a dirty tree is refused unless `--allow-dirty` (which appends `-dirty`). This keeps the guarantee from `docs/deploying.md` that two people deploying the same commit ship the same thing, and it means `qifa rollback <version>` means the same thing in both modes.
 
-## 5. Target filesystem
+Release IDs are validated as `[A-Za-z0-9._-]+` before use as a directory name. Redeploying an existing version reuses its directory only if the uploaded checksum matches; a mismatch is an error (the version names different bytes).
+
+## 6. Target filesystem
 
 ```text
-/opt/qifa/myapp/
+/opt/qifa/myapp/                      owner: deploy, mode 0755
 ├── releases/
-│   ├── abc123/
-│   │   └── myapp
-│   └── def456/
-│       └── myapp
-├── current -> releases/def456
-├── shared/
-└── .deploy.lock
+│   ├── a1b2c3d/                      owner: deploy, mode 0755 (read-only to myapp)
+│   │   ├── bin/myapp
+│   │   ├── storage -> ../../shared/storage
+│   │   ├── .qifa-checksum
+│   │   └── .qifa-ok                  written after a successful health check
+│   └── e4f5a6b/
+├── current -> releases/e4f5a6b
+├── etc/                              owner: deploy, mode 0700
+│   ├── env                           mode 0600; read by systemd (root), not by myapp
+│   └── qifa-myapp.service            the rendered unit, for drift detection only
+└── shared/                           owner: myapp, never pruned
+    └── storage/
 
-/etc/qifa/myapp.env
 /etc/systemd/system/qifa-myapp.service
 ```
 
-- Releases are immutable after staging and validation.
-- `current` points to the selected release; persistent data lives under `shared/` or another external location.
-- Secrets are not stored in release archives or source-controlled metadata.
-- The previous release is captured before activation, for rollback.
-- Release IDs should be unique and safe as directory names (e.g., commit SHA plus build identifier or artifact digest prefix).
+- Releases are immutable after staging. They are owned by the deploy user and not writable by the service account.
+- `shared/` holds persistent data and is never touched by pruning or `remove` (without `--purge`).
+- **`.qifa-ok` is the known-good record.** It is written only after a release passes its health check. Rollback targets the newest release that has `.qifa-ok` and is not `current`. This is the minimal metadata needed to recover after an interrupted deploy, with no database.
+- The deploy lock is the existing `internal/lock` (`/tmp/qifa-lock-<service>`, created atomically with `mkdir`), so `qifa lock status` and `qifa lock release` work unchanged in both modes.
 
-## 6. Deployment lifecycle
+## 7. Deployment lifecycle
 
-1. **Validate** configuration, host, artifact path, and required privileges.
-2. **Build** locally using the configured command.
-3. **Package and transfer** the artifact to a temporary directory on the target; verify its checksum, then move into `releases/<id>`.
-4. **Acquire a host-side deployment lock** before changing live state; reject concurrent activation/rollback operations.
-5. **Record the previous release** from the existing `current` symlink. Verify the new release has a valid entry point and permissions.
-6. **Activate** using a temporary symlink followed by atomic rename on the same filesystem. Do not replace a live release directory in place.
-7. **Restart** `qifa-myapp.service` using systemd. A short outage is acceptable.
-8. **Verify** `systemctl is-active` and, if configured, poll the HTTP health endpoint until the timeout.
-9. **Commit** success and prune older releases, retaining the active and previous releases.
-10. **On failure after activation**, restore the prior `current` link, restart the service, and verify recovery. Return an explicit error if rollback also fails.
+1. **Validate** config; resolve the version (§5).
+2. **pre_build hook**, then **build** by running `native.build` on the deployer, in the config directory.
+3. **Check the artifact**: it must exist. For ELF executables, compare the architecture with `native.arch` / the host's `uname -m` and fail before upload on a mismatch. This catches the macOS-arm64-to-amd64 case (`exec format error`) that `builder.platform` handles in Docker mode.
+4. **Acquire the lock** on every target host (`internal/lock`).
+5. Per role, per host, in `rollout.batch_size` batches:
+   1. **Stage**: upload a tar.gz of the artifact (a single file is packed too) to `releases/<id>.tmp/`, verify its sha256, extract, create the `shared_dirs` links, `chmod -R a+rX,go-w`, then `mv releases/<id>.tmp releases/<id>`. `ssh.Upload` writes with `umask 077`, so the explicit chmod is required or the service account cannot read its own release.
+   2. **Render env** to `etc/env` (see §9). This needs no sudo: the file is the deploy user's, mode 0600, and systemd reads `EnvironmentFile` as root, so the service account never sees it.
+   3. **Record the previous release** by reading the `current` link.
+   4. **Activate**: `ln -sfn releases/<id> current.tmp && mv -T current.tmp current` (atomic rename on the same filesystem).
+   5. **Restart** the unit (`sudo systemctl restart`). There is a short outage.
+   6. **Verify**: `systemctl is-active`, then poll `http://127.0.0.1:<port><path>` with the existing `healthcheckCommand` until the timeout.
+   7. **Commit**: `touch releases/<id>/.qifa-ok`, and append a `deployed` event to `.qifa/state.jsonl`.
+   8. **On failure after activation**: point `current` back at the previous release, restart, verify, and return the original error together with any rollback error. Attach `journalctl -u <unit> -n 50` to the error, as `withContainerDiagnostics` does for Docker.
+6. On a host failure, skip the remaining batches (same as Docker mode).
+7. **post_deploy hook**; **prune** releases beyond `retain`, never removing `current` or the newest `.qifa-ok` release.
+8. **Release the lock** (deferred, as in Docker mode).
 
-A failed first deployment has no prior release: leave the failed service stopped or failed, report the problem, and retain diagnostics. Staging failures must not affect the running release.
+A failed first deploy has no rollback target: the unit is left failed, the journal tail is reported, and the release directory is kept for inspection.
 
 ### Interrupted deploys
 
-A symlink switch and a systemd restart are not a single atomic transaction. On a subsequent command, inspect `current`, the service state and available releases; show an actionable warning when the active process cannot be confirmed healthy. Keep recovery simple rather than building a database-backed state machine. A small deployment metadata file may be introduced only if needed to identify the previous known-good release across process crashes.
+A link switch and a restart are not one atomic transaction. `qifa status` and the start of every deploy detect these states: `current` points at a release without `.qifa-ok`, the unit is not active, or `releases/*.tmp` directories exist. They are reported with the remedy (`qifa rollback`, or simply redeploy). Leftover `*.tmp` directories are removed at the start of the next deploy, under the lock.
 
-## 7. systemd unit
+## 8. systemd unit
 
 ```ini
 [Unit]
-Description=Qifa managed myapp
+Description=qifa: myapp (web)
 After=network-online.target
 Wants=network-online.target
 
@@ -140,101 +195,115 @@ Wants=network-online.target
 Type=exec
 User=myapp
 WorkingDirectory=/opt/qifa/myapp/current
-ExecStart=/opt/qifa/myapp/current/myapp
-EnvironmentFile=-/etc/qifa/myapp.env
+ExecStart=/opt/qifa/myapp/current/bin/myapp --port 8080
+EnvironmentFile=-/opt/qifa/myapp/etc/env
 Restart=on-failure
 RestartSec=3
 NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/opt/qifa/myapp/shared
 
 [Install]
 WantedBy=multi-user.target
 ```
 
-The unit is provisioned once, or updated only when service configuration changes. Reload the systemd daemon when the unit changes. The example assumes `native.command` resolves to a valid executable path; arguments and quoting must be rendered safely, not concatenated into shell commands. Application execution should not depend on a shell unless explicitly requested.
+- `ExecStart` is rendered from the `exec` argv using systemd's quoting rules (each argument double-quoted with `\` and `"` escaped; `%` doubled to `%%`; `$` doubled to `$$`). It is never passed through a shell.
+- Only `qifa native setup` installs or changes the unit. `deploy` re-renders it and compares it with the installed copy; on a difference it stops before touching any host and asks for `qifa native setup` to be rerun. The deploy user must never be able to write unit files: a unit can say `User=root`, so that permission would be root access by another name.
+- `WorkingDirectory` and `ExecStart` go through `current`, so the unit itself does not change between releases.
 
-## 8. CLI behavior
+## 9. Environment and secrets
 
-Retain Qifa's existing command names where possible:
+`secrets.Render` is reused to collect `env.clear`, `env.secret` and `env.secret_command`. Its output format is the format `docker --env-file` expects (values taken literally, only `\n` escaped). That format does **not** survive systemd's `EnvironmentFile=` parser, which strips quotes and interprets backslashes. A native renderer writes each value as `KEY="…"` with `\`, `"` and newlines escaped per systemd's rules, so any byte sequence round-trips. A unit test feeds adversarial values through `systemd-analyze`-equivalent parsing.
 
-```bash
-qifa deploy
-qifa rollback
-qifa status
-qifa logs -f
-qifa restart
-qifa remove
-```
+- `qifa env diff` in native mode compares the rendered env with `etc/env`, printing key names only, as today.
+- Semantic difference from Docker mode: `systemctl restart` re-reads `EnvironmentFile`, whereas `qifa restart` of a container keeps its original env. Only `deploy` writes the env file, so in practice both modes apply new env only on deploy. `docs/deploying.md` should say this.
 
-Native mapping:
+## 10. Privilege and provisioning
 
-| Operation | Native behavior |
+Two privilege tiers.
+
+**One time, as a sudo-capable user: `qifa native setup`.** This command is idempotent and prints what it changes:
+
+- creates the service account `native.user` (system user, no login shell);
+- creates `/opt/qifa/<service>/{releases,shared,etc}` with the ownership shown in §6;
+- writes the unit and runs `systemctl daemon-reload` and `systemctl enable`;
+- installs `/etc/sudoers.d/qifa-<service>` granting the deploy user exactly:
+  ```text
+  deploy ALL=(root) NOPASSWD: /usr/bin/systemctl restart qifa-myapp.service, \
+                              /usr/bin/systemctl start qifa-myapp.service,   \
+                              /usr/bin/systemctl stop qifa-myapp.service
+  ```
+  One line per unit, with literal paths and **no wildcards**: a `*` in sudoers arguments also matches spaces and extra arguments, which would widen the grant. Setup writes the exact unit names for every role.
+  The deploy user is added to the `systemd-journal` group, so `journalctl` and `systemctl status` need no sudo.
+
+**Every deploy: the shared `deploy` user** from `docs/deploying.md`, with only the narrow sudo above. Root SSH is never required.
+
+`internal/ssh` has no sudo support today (DESIGN.md says it does, but `ssh.go` has none). Phase 1 adds `Client.Sudo(ctx, host, argv...)`, which runs `sudo -n -- <quoted argv>`. With `-n`, a missing sudoers rule fails immediately with a clear error instead of hanging on a password prompt. `qifa doctor` in native mode checks `sudo -n -l` for each required rule, `systemctl --version`, the unit's presence, directory ownership, and that `uname -m` matches `native.arch`.
+
+**Alternative, documented but not the default:** systemd user units for the deploy user (`loginctl enable-linger deploy`, units in `~/.config/systemd/user`). This needs no sudo at all after setup, but the app runs as the deploy user rather than its own account, and `EnvironmentFile` must be readable by that user.
+
+## 11. CLI mapping
+
+| Command | Native behavior |
 | --- | --- |
-| Deploy | Build, stage, switch link, restart, check health |
-| Rollback | Select prior release, switch link, restart, verify |
-| Status | Show host, release ID, systemd state, optional health |
-| Logs | `journalctl -u qifa-myapp.service` |
-| Restart | `systemctl restart qifa-myapp.service` |
-| Remove | Explicitly stop/disable service; destructive file deletion requires clear confirmation |
+| `deploy [-n] [--version] [--allow-dirty]` | §7; `-n` prints build, upload, link switch and unit diff |
+| `reconcile [-n]` | Converge if `current` ≠ version or the unit is inactive; report (not fix) unit drift |
+| `rollback [version]` | Newest `.qifa-ok` release ≠ `current`, or the named version, which must exist on every host; switch, restart, verify |
+| `stop` / `start` / `restart` | `sudo systemctl stop/start/restart <unit>` |
+| `status` | Audit log history plus, per host: `current` version, unit state, health, available releases (`*` marks known-good) |
+| `logs [-f] [-n N]` | `journalctl -u <unit> [-f] -n N` |
+| `app exec <cmd>` | Not provided in v1: running as the service account would need a broad sudo rule. Use `ssh` |
+| `remove [--purge]` | Stop, disable, delete the unit; `--purge` also deletes `/opt/qifa/<service>` including `shared/`, after an interactive confirmation |
+| `env diff` | §9 |
+| `lock status` / `lock release` | Unchanged |
+| `native setup` | §10 (new) |
+| `doctor` | Native checks (§10) instead of Docker and registry checks |
+| `proxy *`, `app maintenance/live/containers`, `sweep`, `prune`, `backup`, `restore`, `cert` | Error: "not available with `native:`" |
 
-For v1, keep backend-specific logic under `internal/deploy/native/` (or the closest existing package convention), for example `backend.go`, `release.go`, `systemd.go`. Avoid requiring Docker backend changes beyond routing and genuinely shared helpers.
+Code layout: `internal/native/` with `native.go` (Backend), `release.go` (staging, link switch, retention, `.qifa-ok`), `systemd.go` (unit rendering, ExecStart quoting), `envfile.go` (systemd env rendering), `setup.go`. The shared pieces stay where they are: `ssh` (+ `Sudo`), `lock`, `hooks`, `state`, `secrets.Render`, plus version resolution, which moves from `internal/deploy` to a small `internal/version` so both modes import it.
 
-## 9. Security and provisioning
-
-- Provision a dedicated unprivileged service account, installation directories and systemd unit.
-- Separate one-time privileged setup from ordinary deployments. Define narrow `sudo` permissions where systemd operations require elevation; do not require unrestricted root SSH.
-- Make release directories non-writable by the running application account where practical.
-- Restrict secret environment files (e.g., root-owned with permissions compatible with systemd loading).
-- Reuse Qifa's existing secret-command/SOPS approach; never print decrypted secrets in logs.
-- Escape/validate service names, paths and arguments; avoid assembling untrusted values into remote shell strings.
-- Use SSH host-key verification and artifact integrity checks.
-- Never delete `shared/` or external persistent data during release cleanup.
-
-## 10. Failure cases
+## 12. Failure cases
 
 | Failure | Expected result |
 | --- | --- |
-| Build or upload fails | Existing release continues running |
-| Checksum or staging validation fails | Existing release untouched |
-| systemd restart fails | Restore previous release and restart |
-| Health check times out | Restore previous release and verify health |
-| Rollback restart fails | Surface both errors; preserve release files and logs |
-| Deployment command is interrupted | Next command inspects current link and service state |
-| Concurrent deployment | Reject or wait on host-side lock |
-| First deploy fails | Report failure; no rollback target |
+| Build fails, artifact missing, arch mismatch | Nothing on any host changes |
+| Upload or checksum fails | `releases/<id>.tmp` left behind and cleaned next deploy; `current` untouched |
+| Missing sudoers rule | `sudo -n` fails immediately; error names the rule; `doctor` would have caught it |
+| systemd restart fails | Restore previous `current`, restart, verify; report the journal tail |
+| Health check times out | Same as above |
+| Rollback restart also fails | Report both errors; keep all release dirs; `current` points at previous |
+| Command interrupted mid-switch | Next `status`/`deploy` reports a non-`.qifa-ok` current or inactive unit |
+| Concurrent deploy | Second one fails immediately, naming the lock holder (existing behavior) |
+| First deploy fails | Unit left failed; journal tail reported; no rollback target |
+| Host fails in a multi-host rollout | Remaining batches skipped; already-deployed hosts keep the new release |
 
-## 11. Testing
+## 13. Testing
 
-- Unit tests for config defaults, validation, release IDs, symlink operations and retention.
-- Integration tests on a disposable systemd-enabled Linux VM/container environment with SSH.
-- Happy path: initial deploy, second deploy, status, logs, restart and manual rollback.
-- Fault injection: invalid artifact, SSH failure, missing executable, service startup failure, health timeout, interrupted activation and rollback failure.
-- Verify that native changes do not alter existing Docker deployment behavior.
-- Confirm permissions, secret redaction, lock behavior and persistent data preservation.
+- Unit: config validation (native vs. Docker exclusivity, unknown keys), release-ID validation, ExecStart quoting, systemd env-file escaping round-trip, retention selection (never prunes `current` or newest `.qifa-ok`), ELF architecture detection.
+- Integration, extending `internal/deploy/integration_test.go`'s harness with a systemd-enabled SSH container (e.g. `jrei/systemd-ubuntu` with sshd): first deploy, second deploy, failing health check → auto-rollback, manual rollback, rollback by version, restart, logs, interrupted deploy (kill qifa after link switch), concurrent deploy lock, `setup` idempotency, a missing sudo rule.
+- The `local` host transport makes a no-SSH smoke test possible on a Linux dev box.
+- Regression: the existing Docker test suite passes unchanged.
 
-## 12. Implementation phases
+## 14. Implementation phases
 
-**Phase 1 — Minimal native deployment:** Backend selection, local build, SSH upload, immutable releases, systemd unit setup, activation and restart.
+**Phase 1: deploy end to end.** Config block and validation; `internal/version` extraction; `ssh.Sudo`; `internal/native` release staging, link switch, systemd unit and env file; `qifa native setup`; Backend interface and dispatch in `internal/app`; `deploy` with health check and auto-rollback (rollback-on-failure is in phase 1 because a deploy without it is not safe to ship).
 
-**Phase 2 — Reliability:** Health checks, automatic/manual rollback, locking, safe cleanup and interruption diagnostics.
+**Phase 2: operations.** `rollback [version]`, `status`, `logs`, `stop/start/restart`, `remove`, `env diff`, `reconcile`, `doctor` native checks, retention pruning, interrupted-deploy detection.
 
-**Phase 3 — Operations:** Status, logs, restart, removal and documentation. Reuse existing commands when available.
+**Phase 3: docs.** README section, `docs/deploying.md` native notes (env-on-restart semantics, sudoers, arch), troubleshooting entries.
 
-## 13. Design decisions
+## 15. Later: native app behind kamal-proxy
 
-1. **Single host only:** no fleet scheduling or proxy coordination.
-2. **Downtime accepted:** use a simple `systemctl restart` rather than blue-green.
-3. **systemd only:** rely on the standard Linux service manager.
-4. **SSH, no agent:** Qifa remains client-driven.
-5. **Immutable releases:** simple rollback through release pointers.
-6. **No mandatory database or registry:** host filesystem and systemd provide sufficient state.
-7. **No premature abstraction:** keep the Docker implementation stable; extract common code only where justified.
+If the host can run one container, kamal-proxy can front a native process: the target is the host's address on the Docker bridge (e.g. `172.17.0.1:<port>`) instead of a container IP. That restores TLS (`internal/cert`), domain routing, maintenance mode, and zero-downtime switching. Zero downtime works by alternating two ports per release (start the new release on the idle port, health check, `kamal-proxy deploy --target`, stop the old one). This needs a templated unit (`qifa-myapp@<port>.service`), so it is deliberately out of scope for v1, but nothing in the v1 layout prevents it.
 
-## 14. Open implementation questions
+## 16. Design decisions
 
-- What are Qifa's exact current YAML fields, command names and SSH abstractions? Match them before finalizing the schema.
-- Should first-time provisioning be an explicit `qifa setup` step or part of `deploy` with narrow elevation?
-- How should artifact directories and executable paths be mapped without requiring shell execution?
-- What is the safest host-side locking mechanism compatible with Qifa's existing SSH command execution?
-- What minimal persistent metadata is necessary to recover a known-good previous release after an interrupted deployment?
+1. **`native:` block selects the mode**: it fits the existing schema and strict key checking without changing what `builder:` means.
+2. **Downtime accepted in v1**: a simple `systemctl restart`; zero downtime is the §15 follow-up.
+3. **systemd only.**
+4. **SSH, no agent**: qifa stays client-driven and the deployer stateless.
+5. **Immutable releases + `current` link + `.qifa-ok` marker**: the host filesystem is the source of truth, as Docker labels are in Docker mode.
+6. **Reuse, don't abstract**: lock, hooks, state, secrets, version and SSH are shared; the Docker deployer is untouched except for the dispatch interface.
+7. **Narrow, explicit privilege**: one-time `native setup` owns the unit and sudoers; deploys can only start, stop or restart their own unit (`sudo -n`, exact allowlist, no wildcards, no file writes as root).
 
-**Acceptance criterion:** On a freshly provisioned single Linux server, Qifa can deploy a non-Docker application, restart it under systemd, report its status/logs, and restore the previous working version when a subsequent deployment fails—without introducing zero-downtime infrastructure.
+**Acceptance criterion:** On a Linux server with no Docker installed, after `qifa native setup`, `qifa deploy` ships a non-Docker application under systemd, `qifa status` / `qifa logs` report it, and a subsequent deploy whose health check fails leaves the previous release running, without the deploy user having unrestricted root.
