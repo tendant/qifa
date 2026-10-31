@@ -71,7 +71,16 @@ func (d *Deployer) findDrift(ctx context.Context, version string) ([]Drift, erro
 		useProxy := serverUsesProxy(role, server)
 
 		for _, host := range server.Hosts {
+			wanted := wanted
 			state, err := d.remoteDocker.ContainerState(ctx, host, wanted)
+			// A same-version redeploy may have left the version serving under
+			// its alternate name; that is the same declared state.
+			if err != nil || !strings.HasPrefix(strings.TrimSpace(state), "running") {
+				alt := alternateName(wanted)
+				if altState, altErr := d.remoteDocker.ContainerState(ctx, host, alt); altErr == nil && strings.HasPrefix(strings.TrimSpace(altState), "running") {
+					wanted, state, err = alt, altState, nil
+				}
+			}
 			switch {
 			case err != nil:
 				// Distinguish "no such container" from an unreachable host:

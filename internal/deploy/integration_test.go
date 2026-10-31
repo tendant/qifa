@@ -1278,6 +1278,15 @@ case "$cmd" in
     fi
     name="$1"
     case "$fmt" in
+      *State.Status*)
+        # As docker does: a missing container is an error, not empty output.
+        if [ ! -f "$state/containers/$name" ]; then
+          echo "Error: No such object: $name" >&2
+          exit 1
+        fi
+        st="$(awk -F= '/^state=/{print $2}' "$state/containers/$name")"
+        printf '%%s exit=0 error=\n' "$st"
+        ;;
       *RepoDigests*)
         # shasum is the portable spelling; macOS has no sha256sum by default.
         digest="$(printf '%%s' "$name" | { sha256sum 2>/dev/null || shasum -a 256; } | cut -c1-64)"
@@ -1299,6 +1308,18 @@ case "$cmd" in
     shift
     if [ "$name" = "kamal-proxy" ] && [ "${1:-}" = "kamal-proxy" ]; then
       echo "$*" >> "$state/proxy_calls.log"
+      # list --json answers with the last route deployed, as the real
+      # proxy would, so reconcile can compare it with the containers.
+      if [ "${2:-}" = "list" ] && [ "${3:-}" = "--json" ]; then
+        last="$(grep '^kamal-proxy deploy ' "$state/proxy_calls.log" | tail -1 || true)"
+        svc="$(printf '%%s' "$last" | awk '{print $3}')"
+        target="$(printf '%%s' "$last" | sed -n 's/.*--target \([^ ]*\).*/\1/p')"
+        if [ -n "$svc" ]; then
+          printf '{"%%s": {"hosts": ["app.example.test"], "path_prefixes": ["/"], "tls": false, "targets": ["%%s"], "read_targets": [], "state": "running"}}\n' "$svc" "$target"
+        else
+          echo '{}'
+        fi
+      fi
       exit 0
     fi
     if [ "$1" = "sh" ] && [ "$2" = "-lc" ]; then
@@ -1582,5 +1603,137 @@ func TestReregisterProxyRedeploysRoutesWithoutStartingContainers(t *testing.T) {
 		if strings.Contains(dockerCalls, rejected) {
 			t.Fatalf("re-registering must not touch containers, got docker call %q in %q", rejected, dockerCalls)
 		}
+	}
+}
+
+// Redeploying the live version on a proxied role must not leave the proxy
+// without a container: the replacement starts beside the old one under the
+// alternate name, the proxy switches to it, and only then does the old one
+// go. The next redeploy of that version alternates back.
+func TestDeployerSameVersionRedeployOverlapsOnProxiedRole(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	env := newIntegrationEnv(t)
+	cfg := env.config(t, config.BuilderHostPerTarget, "local", "testapp", config.Registry{})
+	delete(cfg.Servers, "worker")
+	cfg.Accessories = nil
+	server := cfg.Servers["web"]
+	server.Port = 0 // proxied: nothing published, nothing contested
+	cfg.Servers["web"] = server
+
+	store, err := state.NewStore(filepath.Join(env.root, ".qifa", "state.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	deployer, err := New(cfg, store, &stdout, &stderr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deployer.PinVersion("v1", false)
+	if err := deployer.ProxyBoot(ctx); err != nil {
+		t.Fatalf("proxy boot: %v", err)
+	}
+
+	callsLog := filepath.Join(env.stateDir, "docker_calls.log")
+	containers := filepath.Join(env.stateDir, "containers")
+	deploy := func(n int) []string {
+		t.Helper()
+		_ = os.Remove(callsLog)
+		if err := deployer.Deploy(ctx); err != nil {
+			t.Fatalf("deploy %d failed: %v\nstdout:\n%s\nstderr:\n%s\ndocker calls:\n%s", n, err, stdout.String(), stderr.String(), readIfExists(callsLog))
+		}
+		return strings.Split(readIfExists(callsLog), "\n")
+	}
+	// index of the first call matching verb and ending in exactly name.
+	index := func(calls []string, verb, name string) int {
+		for i, c := range calls {
+			f := strings.Fields(c)
+			if len(f) >= 2 && f[0] == verb && f[len(f)-1] == name {
+				return i
+			}
+			if verb == "run" && f != nil && f[0] == "run" && strings.Contains(c, "--name "+name+" ") {
+				return i
+			}
+		}
+		return -1
+	}
+	running := func(name string) bool {
+		data, err := os.ReadFile(filepath.Join(containers, name))
+		return err == nil && strings.Contains(string(data), "state=running")
+	}
+	lastTarget := func() string {
+		calls := strings.Split(readIfExists(filepath.Join(env.stateDir, "proxy_calls.log")), "\n")
+		for i := len(calls) - 1; i >= 0; i-- {
+			if f := strings.Fields(calls[i]); len(f) > 2 && f[1] == "deploy" {
+				for j, a := range f {
+					if a == "--target" && j+1 < len(f) {
+						return f[j+1]
+					}
+				}
+			}
+		}
+		return ""
+	}
+
+	deploy(1)
+	if !running("testapp-web-v1") || lastTarget() != "testapp-web-v1:3000" {
+		t.Fatalf("first deploy: running=%v target=%s", running("testapp-web-v1"), lastTarget())
+	}
+
+	calls := deploy(2)
+	runAlt := index(calls, "run", "testapp-web-v1-r")
+	if runAlt < 0 {
+		t.Fatalf("second deploy did not start testapp-web-v1-r:\n%s", strings.Join(calls, "\n"))
+	}
+	for _, verb := range []string{"stop", "rm"} {
+		if i := index(calls, verb, "testapp-web-v1"); i >= 0 && i < runAlt {
+			t.Fatalf("the live container was %sped before its replacement ran:\n%s", verb, strings.Join(calls, "\n"))
+		}
+	}
+	if lastTarget() != "testapp-web-v1-r:3000" {
+		t.Fatalf("proxy target after second deploy = %s", lastTarget())
+	}
+	if !running("testapp-web-v1-r") {
+		t.Fatal("testapp-web-v1-r not running")
+	}
+	if _, err := os.Stat(filepath.Join(containers, "testapp-web-v1")); err == nil {
+		t.Fatal("the replaced same-version container was kept; it should be removed")
+	}
+
+	// The alternate name is the same declared state: nothing to converge.
+	var out bytes.Buffer
+	if err := deployer.Reconcile(ctx, &out, true); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if !strings.Contains(out.String(), "in sync") {
+		t.Fatalf("reconcile after a same-version redeploy reports drift:\n%s", out.String())
+	}
+
+	calls = deploy(3)
+	runCanonical := index(calls, "run", "testapp-web-v1")
+	if runCanonical < 0 {
+		t.Fatalf("third deploy did not alternate back to testapp-web-v1:\n%s", strings.Join(calls, "\n"))
+	}
+	if i := index(calls, "stop", "testapp-web-v1-r"); i >= 0 && i < runCanonical {
+		t.Fatalf("the live -r container was stopped before its replacement ran:\n%s", strings.Join(calls, "\n"))
+	}
+	if lastTarget() != "testapp-web-v1:3000" || !running("testapp-web-v1") {
+		t.Fatalf("third deploy: target=%s running=%v", lastTarget(), running("testapp-web-v1"))
+	}
+	if _, err := os.Stat(filepath.Join(containers, "testapp-web-v1-r")); err == nil {
+		t.Fatal("testapp-web-v1-r kept after the third deploy")
+	}
+}
+
+// A version may itself end in "-r"; its container must never be confused
+// with another version's alternate name.
+func TestAlternateNameOnlyAppends(t *testing.T) {
+	if got := alternateName("app-web-v1"); got != "app-web-v1-r" {
+		t.Fatalf("alternateName = %s", got)
+	}
+	if got := alternateName("app-web-v1-r"); got != "app-web-v1-r-r" {
+		t.Fatalf("alternateName of a version ending in -r = %s", got)
 	}
 }

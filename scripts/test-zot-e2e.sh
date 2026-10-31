@@ -187,8 +187,8 @@ EOF
 # role moves between versions, on deploy and on rollback. One client sends
 # requests back to back for the whole operation; each response records the
 # version that answered, so the check also proves the switch happened under
-# load rather than before or after it. Versions must differ: redeploying the
-# same version replaces the container by name, which is not zero-downtime.
+# load rather than before or after it. A redeploy of the live version is
+# covered too: its replacement runs beside it under an alternate name.
 LOAD_LOG="$RUN_ROOT/load.log"
 LOAD_STOP="$RUN_ROOT/load.stop"
 
@@ -228,8 +228,10 @@ load_check() {
     echo "FAIL: only $total requests during $what; the check proves nothing" >&2
     exit 1
   fi
-  if [[ "$seen" != "$from $to" ]]; then
-    echo "FAIL: during $what expected versions \"$from $to\", saw \"$seen\"" >&2
+  local want="$from $to"
+  [[ "$from" == "$to" ]] && want="$from"
+  if [[ "$seen" != "$want" ]]; then
+    echo "FAIL: during $what expected versions \"$want\", saw \"$seen\"" >&2
     exit 1
   fi
 }
@@ -250,6 +252,13 @@ load_check() {
   set_app_version zd1
   "$BIN_DIR/qifa" rollback zd1
   load_check zd2 zd1 "rollback"
+
+  # The live version again: replaced beside itself, not in place.
+  load_start
+  "$BIN_DIR/qifa" deploy --version zd1
+  load_check zd1 zd1 "same-version redeploy"
+  docker --host "$DOCKER_HOST" ps --format '{{.Names}}' | grep -qx 'demo-web-web-zd1-r' \
+    || { echo "FAIL: same-version redeploy did not run as demo-web-web-zd1-r" >&2; exit 1; }
 )
 
 (

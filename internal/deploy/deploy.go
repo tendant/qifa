@@ -303,7 +303,6 @@ func (d *Deployer) runBatch(ctx context.Context, deployment state.Deployment, ro
 
 func (d *Deployer) deployHost(ctx context.Context, deployment state.Deployment, role, host string, server config.Server, imageRef string, envFile []byte, buildOnHost bool) error {
 	containerName := d.containerName(role, deployment.Version)
-	remoteEnv := fmt.Sprintf("/tmp/%s.env", containerName)
 	appPort := d.appPort(role, server)
 	useProxy := serverUsesProxy(role, server)
 
@@ -320,10 +319,26 @@ func (d *Deployer) deployHost(ctx context.Context, deployment state.Deployment, 
 			return err
 		}
 	}
-	previousContainer, err := d.findRunningContainer(ctx, host, role)
+	previous, err := d.findRunningContainerInfo(ctx, host, role)
 	if err != nil {
 		return err
 	}
+	previousContainer := previous.Name
+	// Redeploying the live version: the running container already holds this
+	// name, and replacing it in place leaves kamal-proxy nothing to route to
+	// between the old container going and the new one answering — a failed
+	// request or two. Where the two may overlap (a proxied role with no
+	// contested ports, see below), the new one takes the alternate name
+	// instead, runs beside the old one, and takes over when the proxy
+	// switches. Successive redeploys of one version alternate between the two
+	// names. The old container cannot be renamed out of the way: the proxy
+	// reaches it by name, so renaming it would break the route it is serving.
+	overlaps := useProxy && len(server.ExtraPorts) == 0
+	if overlaps && previousContainer == containerName {
+		containerName = alternateName(containerName)
+	}
+	sameVersion := previousContainer != "" && previous.Version == deployment.Version
+	remoteEnv := fmt.Sprintf("/tmp/%s.env", containerName)
 	if err := d.ssh.Upload(ctx, host, remoteEnv, envFile, 0o600); err != nil {
 		return err
 	}
@@ -378,9 +393,9 @@ func (d *Deployer) deployHost(ctx context.Context, deployment state.Deployment, 
 	// health-checks the new container before switching, and neither a port nor
 	// an alias is contested while it does. Its extra_ports still are.
 	//
-	// None of this bites when the version is unchanged: the container name is
-	// the same, so it is replaced rather than duplicated.
-	if previousContainer != "" && (!useProxy || len(server.ExtraPorts) > 0) {
+	// When the version is unchanged the old container goes here too, for the
+	// same reasons; only an overlapping role keeps it until the switch.
+	if previousContainer != "" && !overlaps {
 		reason := "it holds the service alias and would otherwise share it"
 		if !useProxy && server.Port > 0 || len(server.ExtraPorts) > 0 {
 			reason = "it holds a published host port"
@@ -485,10 +500,23 @@ func (d *Deployer) deployHost(ctx context.Context, deployment state.Deployment, 
 	if err := d.appendEvent(deployment.ID, host, role, "deployed", "host deployed successfully"); err != nil {
 		return err
 	}
+	if sameVersion && previousContainer != containerName {
+		// The same version again is not a rollback target distinct from the
+		// one now serving, so it goes rather than taking a retained slot.
+		return d.remoteDocker.StopAndRemove(ctx, host, previousContainer)
+	}
 	if err := d.cleanupPriorContainer(ctx, host, previousContainer, containerName); err != nil {
 		return err
 	}
 	return nil
+}
+
+// alternateName is the second name a version's container can have: taken by
+// a same-version redeploy while the canonical name is the one serving (see
+// deployHost). Always derived from the canonical name, never by stripping a
+// suffix, since a version may itself end in "-r".
+func alternateName(canonical string) string {
+	return canonical + "-r"
 }
 
 func serverUsesProxy(role string, server config.Server) bool {
@@ -1925,16 +1953,23 @@ func (d *Deployer) SweepStaleContainers(ctx context.Context) error {
 }
 
 func (d *Deployer) findRunningContainer(ctx context.Context, host, role string) (string, error) {
+	c, err := d.findRunningContainerInfo(ctx, host, role)
+	return c.Name, err
+}
+
+// findRunningContainerInfo is the role's running container on host, with its
+// labels; a zero value when none runs.
+func (d *Deployer) findRunningContainerInfo(ctx context.Context, host, role string) (docker.ContainerInfo, error) {
 	containers, err := d.remoteDocker.ListContainersByService(ctx, host, d.cfg.Service, role)
 	if err != nil {
-		return "", err
+		return docker.ContainerInfo{}, err
 	}
 	for _, c := range containers {
 		if c.State == "running" || c.State == "restarting" {
-			return c.Name, nil
+			return c, nil
 		}
 	}
-	return "", nil
+	return docker.ContainerInfo{}, nil
 }
 
 func (d *Deployer) appPort(role string, server config.Server) int {

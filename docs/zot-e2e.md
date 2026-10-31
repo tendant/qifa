@@ -15,8 +15,8 @@ This repo includes a Docker-based integration harness for real build, authentica
 - `qifa app exec`
 - worker redeploy and rollback flow
 - **zero downtime** through `kamal-proxy`: one client sends requests back to
-  back while the web role is deployed from `zd1` to `zd2` and rolled back to
-  `zd1`. Every request must succeed, there must be at least 20 of them, and
+  back while the web role is deployed from `zd1` to `zd2`, rolled back to
+  `zd1`, and redeployed at `zd1`. Every request must succeed, there must be at least 20 of them, and
   the responses must show the version change happening during the run. Each
   response carries the version that served it (`APP_VERSION`), which is how
   the check tells a switch under load from one before or after it
@@ -75,12 +75,15 @@ The harness now validates repeated web deploys without publishing app containers
 
 ## Zero downtime: what is and is not covered
 
-The check covers a proxied role moving between two different versions, on
-deploy and on rollback. It does not cover the cases that are not zero-downtime
-by design: roles without the proxy and roles with `extra_ports` stop the old
-container first. Redeploying the version that is already live is also not
-zero-downtime, because the container is replaced by name: under the same load,
-one request in a few hundred got a 502 from kamal-proxy.
+The check covers a proxied role moving between two versions on deploy and on
+rollback, and a redeploy of the version already live. That last one used to
+replace the container in place (one 502 in a few hundred requests); its
+replacement now runs beside it as `<service>-<role>-<version>-r` until the
+proxy switches, and the next redeploy of that version alternates back.
+
+Not covered, because they are not zero-downtime by design: roles without the
+proxy and roles with `extra_ports` stop the old container first, since a
+published port or the role's network alias cannot be shared.
 
 ## CI
 
