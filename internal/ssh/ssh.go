@@ -190,14 +190,27 @@ func (c *Client) Download(ctx context.Context, host, path string, dst io.Writer)
 }
 
 func (c *Client) Upload(ctx context.Context, host, path string, contents []byte, mode os.FileMode) error {
+	return c.UploadFrom(ctx, host, path, bytes.NewReader(contents), mode)
+}
+
+// UploadFrom streams r to path on host, so a large file never has to be held
+// in memory. The file is created under umask 077 and then given mode.
+func (c *Client) UploadFrom(ctx context.Context, host, path string, r io.Reader, mode os.FileMode) error {
 	if IsLocal(host) {
 		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 			return &RemoteError{Op: "upload", Host: LocalHost, Command: "mkdir -p " + filepath.Dir(path), ExitStatus: -1, Err: err}
 		}
-		if err := os.WriteFile(path, contents, mode.Perm()); err != nil {
+		f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode.Perm())
+		if err == nil {
+			_, err = io.Copy(f, r)
+			if cerr := f.Close(); err == nil {
+				err = cerr
+			}
+		}
+		if err != nil {
 			return &RemoteError{Op: "upload", Host: LocalHost, Command: "write " + path, ExitStatus: -1, Err: err}
 		}
-		// WriteFile only applies mode when it creates the file; an existing
+		// OpenFile only applies mode when it creates the file; an existing
 		// one keeps its old permissions, which matters for 0600 env files.
 		return os.Chmod(path, mode.Perm())
 	}
@@ -214,7 +227,7 @@ func (c *Client) Upload(ctx context.Context, host, path string, contents []byte,
 	}
 	defer sess.Close()
 
-	sess.Stdin = bytes.NewReader(contents)
+	sess.Stdin = r
 	done := make(chan error, 1)
 	go func() { done <- sess.Run(command) }()
 

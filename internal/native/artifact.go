@@ -2,7 +2,6 @@ package native
 
 import (
 	"archive/tar"
-	"bytes"
 	"compress/gzip"
 	"crypto/sha256"
 	"debug/elf"
@@ -19,9 +18,12 @@ import (
 	"time"
 )
 
-// Package is an artifact packed for upload.
+// Package is an artifact packed for upload, in a temporary file: a release
+// can be a large directory, and every host streams it from disk rather than
+// from memory. Remove deletes the file.
 type Package struct {
-	Data   []byte
+	Path   string
+	Size   int64
 	SHA256 string
 	// IsDir: a directory artifact's contents become the release root; a
 	// single file lands at the release root under its own Name.
@@ -34,16 +36,37 @@ type Package struct {
 // version reproducibly built elsewhere be recognised as the same release.
 var fixedTime = time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
 
-// Pack builds a deterministic tar.gz of the artifact.
-func Pack(artifact string) (*Package, error) {
+// Open opens the packed archive for reading.
+func (p *Package) Open() (*os.File, error) { return os.Open(p.Path) }
+
+// Remove deletes the temporary archive.
+func (p *Package) Remove() error { return os.Remove(p.Path) }
+
+// Pack builds a deterministic tar.gz of the artifact in a temporary file,
+// hashing it as it is written.
+func Pack(artifact string) (pkg *Package, err error) {
 	info, err := os.Lstat(artifact)
 	if err != nil {
 		return nil, fmt.Errorf("native.artifact: %w", err)
 	}
-	var buf bytes.Buffer
-	gz, _ := gzip.NewWriterLevel(&buf, gzip.BestCompression)
+	f, err := os.CreateTemp("", "qifa-release-*.tgz")
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if cerr := f.Close(); err == nil && cerr != nil {
+			err = cerr
+		}
+		if err != nil {
+			os.Remove(f.Name())
+			pkg = nil
+		}
+	}()
+	hash := sha256.New()
+	counter := &countingWriter{w: io.MultiWriter(f, hash)}
+	gz, _ := gzip.NewWriterLevel(counter, gzip.BestCompression)
 	tw := tar.NewWriter(gz)
-	pkg := &Package{IsDir: info.IsDir(), Name: filepath.Base(artifact)}
+	pkg = &Package{Path: f.Name(), IsDir: info.IsDir(), Name: filepath.Base(artifact)}
 
 	switch {
 	case info.Mode().IsRegular():
@@ -88,10 +111,20 @@ func Pack(artifact string) (*Package, error) {
 	if err := gz.Close(); err != nil {
 		return nil, err
 	}
-	pkg.Data = buf.Bytes()
-	sum := sha256.Sum256(pkg.Data)
-	pkg.SHA256 = hex.EncodeToString(sum[:])
+	pkg.Size = counter.n
+	pkg.SHA256 = hex.EncodeToString(hash.Sum(nil))
 	return pkg, nil
+}
+
+type countingWriter struct {
+	w io.Writer
+	n int64
+}
+
+func (c *countingWriter) Write(p []byte) (int, error) {
+	n, err := c.w.Write(p)
+	c.n += int64(n)
+	return n, err
 }
 
 func addEntry(tw *tar.Writer, src, name string, fi fs.FileInfo) error {

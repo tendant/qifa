@@ -8,6 +8,7 @@
 package native
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -158,11 +159,12 @@ func (d *Deployer) Deploy(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	defer pkg.Remove()
 	artifactArch, err := d.artifactArch(pkg)
 	if err != nil {
 		return err
 	}
-	d.log.Printf("release %s: %s (%d KiB, sha256 %s)", v, n.Artifact, len(pkg.Data)/1024, pkg.SHA256[:12])
+	d.log.Printf("release %s: %s (%d KiB, sha256 %s)", v, n.Artifact, pkg.Size/1024, pkg.SHA256[:12])
 
 	values, err := secrets.Collect(d.cfg.Env.Clear, d.cfg.Env.Secret, d.cfg.Env.SecretCommand)
 	if err != nil {
@@ -369,7 +371,13 @@ func (d *Deployer) deployHost(ctx context.Context, deployment state.Deployment, 
 	event("connecting", "")
 
 	d.log.Printf("%s: uploading release %s", host, id)
-	if err := d.ssh.Upload(ctx, host, uploadPath(n.Dir, id), pkg.Data, 0o600); err != nil {
+	archive, err := pkg.Open()
+	if err != nil {
+		return err
+	}
+	err = d.ssh.UploadFrom(ctx, host, uploadPath(n.Dir, id), archive, 0o600)
+	archive.Close()
+	if err != nil {
 		return fmt.Errorf("%s: upload: %w", host, err)
 	}
 	var execs []string
@@ -530,21 +538,102 @@ func (d *Deployer) eachUnit(ctx context.Context, verb string) error {
 	return nil
 }
 
-// Logs shows the journal of the first host's units.
+// Logs shows the journal of the service's units on every host. With more
+// than one host each line is prefixed with its host; following streams all
+// hosts at once.
 func (d *Deployer) Logs(ctx context.Context, lines int, follow bool, out io.Writer) error {
 	hosts := d.hosts()
-	cmd := []string{"journalctl", "--no-pager", "-n", fmt.Sprint(lines)}
-	for _, unit := range d.unitsOn(hosts[0]) {
-		cmd = append(cmd, "-u", unit)
+	command := func(host string) string {
+		cmd := []string{"journalctl", "--no-pager", "-n", fmt.Sprint(lines)}
+		for _, unit := range d.unitsOn(host) {
+			cmd = append(cmd, "-u", unit)
+		}
+		if follow {
+			cmd = append(cmd, "-f")
+		}
+		quoted := make([]string, len(cmd))
+		for i, c := range cmd {
+			quoted[i] = q(c)
+		}
+		return strings.Join(quoted, " ")
 	}
-	if follow {
-		cmd = append(cmd, "-f")
+	if len(hosts) == 1 {
+		return d.ssh.Stream(ctx, hosts[0], command(hosts[0]), out)
 	}
-	quoted := make([]string, len(cmd))
-	for i, c := range cmd {
-		quoted[i] = q(c)
+	var mu sync.Mutex
+	stream := func(host string) error {
+		w := &prefixWriter{prefix: host + " | ", out: out, mu: &mu}
+		err := d.ssh.Stream(ctx, host, command(host), w)
+		w.flush()
+		if err != nil {
+			return fmt.Errorf("%s: %w", host, err)
+		}
+		return nil
 	}
-	return d.ssh.Stream(ctx, hosts[0], strings.Join(quoted, " "), out)
+	if !follow {
+		for _, host := range hosts {
+			if err := stream(host); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	errs := make([]error, len(hosts))
+	var wg sync.WaitGroup
+	for i, host := range hosts {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			errs[i] = stream(host)
+		}()
+	}
+	wg.Wait()
+	return errors.Join(errs...)
+}
+
+// prefixWriter writes whole lines to out, each with prefix. Writers sharing
+// mu never interleave inside a line.
+type prefixWriter struct {
+	prefix string
+	out    io.Writer
+	mu     *sync.Mutex
+	buf    []byte
+}
+
+func (w *prefixWriter) Write(p []byte) (int, error) {
+	w.buf = append(w.buf, p...)
+	for {
+		i := bytes.IndexByte(w.buf, '\n')
+		if i < 0 {
+			return len(p), nil
+		}
+		w.emit(w.buf[:i+1])
+		w.buf = w.buf[i+1:]
+	}
+}
+
+func (w *prefixWriter) flush() {
+	if len(w.buf) > 0 {
+		w.emit(append(w.buf, '\n'))
+		w.buf = nil
+	}
+}
+
+func (w *prefixWriter) emit(line []byte) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	io.WriteString(w.out, w.prefix)
+	w.out.Write(line)
+}
+
+// Exec runs command on the first host of the first role, as the service
+// account, in the live release, with the app's environment: what the app
+// itself would see. The env file is valid shell (see RenderEnv), so the
+// deploy user loads it and sudo -E passes it on, and no value ever appears
+// on a command line. Needs the SETENV rule `qifa native setup` installs.
+func (d *Deployer) Exec(ctx context.Context, command string, out io.Writer) error {
+	host := d.cfg.Servers[orderedRoles(d.cfg.Servers)[0]].Hosts[0]
+	return d.ssh.Stream(ctx, host, execScript(d.cfg.Native.Dir, d.cfg.Native.User, command), out)
 }
 
 func (d *Deployer) LockStatus(ctx context.Context, out io.Writer) error {

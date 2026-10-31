@@ -244,3 +244,10 @@ func teardownScript(dir, user, sudoersFile string, units []string, purge bool) s
 	}
 	return b.String()
 }
+
+// execScript runs command as user in the live release with the app's env.
+func execScript(dir, user, command string) string {
+	inner := "cd " + q(dir+"/current") + " && " + command
+	return fmt.Sprintf(`if [ -f %[1]s ]; then set -a; . %[1]s; set +a; fi
+exec sudo -n -E -u %[2]s -- /bin/sh -c %[3]s`, q(dir+"/etc/env"), q(user), q(inner))
+}

@@ -122,7 +122,12 @@ func RenderEnv(values map[string]string) ([]byte, error) {
 // arguments also matches spaces and further arguments) and nothing that
 // writes files as root: a deploy user who could install a unit could write
 // User=root into it.
-func RenderSudoers(deployUser, systemctl string, units []string) string {
+//
+// The second rule lets the deploy user run commands as the service account,
+// with the environment it passes (SETENV), for `qifa app exec`. That grants
+// nothing new: the deploy user can already make the service account run
+// anything by deploying a release.
+func RenderSudoers(deployUser, serviceUser, systemctl string, units []string) string {
 	var cmds []string
 	for _, u := range units {
 		for _, verb := range []string{"start", "stop", "restart"} {
@@ -130,5 +135,6 @@ func RenderSudoers(deployUser, systemctl string, units []string) string {
 		}
 	}
 	return "# Managed by qifa native setup.\n" +
-		fmt.Sprintf("%s ALL=(root) NOPASSWD: %s\n", deployUser, strings.Join(cmds, ", "))
+		fmt.Sprintf("%s ALL=(root) NOPASSWD: %s\n", deployUser, strings.Join(cmds, ", ")) +
+		fmt.Sprintf("%s ALL=(%s) NOPASSWD:SETENV: ALL\n", deployUser, serviceUser)
 }

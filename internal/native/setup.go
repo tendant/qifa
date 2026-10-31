@@ -95,7 +95,7 @@ fi
 		fmt.Fprintf(&b, "systemctl enable --quiet %s\n", q(unit))
 	}
 	sudoersFile := d.sudoersFile()
-	fmt.Fprintf(&b, "sudoers=%s\ntmp=$(mktemp)\nprintf '%%s' %s > \"$tmp\"\n", q(sudoersFile), q(RenderSudoers(deployUser, systemctl, units)))
+	fmt.Fprintf(&b, "sudoers=%s\ntmp=$(mktemp)\nprintf '%%s' %s > \"$tmp\"\n", q(sudoersFile), q(RenderSudoers(deployUser, d.cfg.Native.User, systemctl, units)))
 	b.WriteString(`if ! visudo -cqf "$tmp"; then rm -f "$tmp"; echo "generated sudoers rule failed visudo -c" >&2; exit 1; fi
 chmod 0440 "$tmp"
 if cmp -s "$tmp" "$sudoers"; then rm -f "$tmp"; else mv -f "$tmp" "$sudoers"; echo "installed $sudoers"; fi

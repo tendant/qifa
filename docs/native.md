@@ -85,10 +85,14 @@ On every host it creates the service account, `/opt/qifa/<service>`, the
 systemd unit (`qifa-<service>.service`, or one per role), and a sudoers rule
 for the deploy user. It is safe to re-run; it prints only what it changed.
 
-The sudoers rule allows exactly `systemctl start|stop|restart` of this
-service's units, and nothing else. The deploy user cannot write unit files,
-reload systemd, or run anything else as root. A unit file can say
-`User=root`, so the ability to write one would be root access.
+The sudoers rule has two lines. As root, the deploy user may run exactly
+`systemctl start|stop|restart` of this service's units, and nothing else: it
+cannot write unit files, reload systemd, or run anything else as root. A unit
+file can say `User=root`, so the ability to write one would be root access.
+As the app's own account, the deploy user may run anything, with the
+environment it passes; that is what `qifa app exec` uses. It grants nothing
+new: the deploy user can already make that account run anything by deploying
+a release. Re-run setup after upgrading qifa to get this second line.
 
 Re-run setup whenever `exec`, `user`, `restart` or the roles change. Deploy
 compares the unit on each host with the config and refuses, naming the unit,
@@ -195,7 +199,8 @@ kamal-proxy container is running there.
 
 ```sh
 qifa status            # per host: live release, unit, health, releases, rollback target
-qifa logs -f           # journalctl for the units (first host)
+qifa logs -f           # journalctl for the units, every host (lines prefixed by host)
+qifa app exec 'bin/myapp migrate'   # as the app's account, in the live release, with its env
 qifa restart           # also stop / start
 qifa rollback          # the most recently healthy release that is not live
 qifa rollback v1.4.2   # or a named one, present on every host
@@ -210,7 +215,7 @@ warns when the live release never did, for example when a deploy was killed
 between switching `current` and finishing its check. `qifa deploy` or
 `qifa rollback` repairs that.
 
-Docker-only commands (`cert`, `app exec`, `accessory`, `prune`,
+Docker-only commands (`cert`, `accessory`, `prune`,
 `sweep`, `backup`, `restore`, `sync`) say so and do nothing.
 
 ## Removing

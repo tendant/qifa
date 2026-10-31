@@ -175,6 +175,14 @@ step "restart, logs, lock, Docker-only commands"
 qifa restart
 expect_eq "$(app_get /version)" v2 "version after restart"
 qifa logs -n 20 | grep -q "native-app v2" || fail "logs do not show the app"
+
+step "app exec: as the service account, in the live release, with the app's env"
+qifa app exec 'id -un; pwd -P; printf "%s" "$MSG"' > "$work/out"
+expect_eq "$(sed -n 1p "$work/out")" nativeapp "app exec user"
+expect_eq "$(sed -n 2p "$work/out")" /opt/qifa/nativeapp/releases/v2 "app exec directory"
+expect_eq "$(sed -n '3,$p' "$work/out")" "$expected" "app exec env"
+on_host "su deploy -c 'sudo -n -u nativeapp true'" || fail "deploy user may not run commands as the service account"
+on_host "su deploy -c 'sudo -n -u root true' 2>/dev/null" && fail "deploy user may run commands as root"
 qifa lock status | grep -q free || fail "lock left held"
 if qifa sweep >"$work/out" 2>&1; then fail "sweep ran in native mode"; fi
 grep -q "not available when the config has native" "$work/out" || { cat "$work/out"; fail "unclear Docker-only error"; }

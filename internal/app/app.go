@@ -332,8 +332,8 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 				return errors.New("usage: qifa app exec <command>")
 			}
 			command := strings.Join(args[2:], " ")
-			return withRuntime(ctx, stdout, stderr, configFile, args[0], func(rt *runtime) error {
-				return rt.deployer.Exec(ctx, command, stdout)
+			return withBackend(ctx, stdout, stderr, configFile, func(b backend) error {
+				return b.Exec(ctx, command, stdout)
 			})
 		case "containers":
 			return withRuntime(ctx, stdout, stderr, configFile, args[0], func(rt *runtime) error {
@@ -457,6 +457,7 @@ type backend interface {
 	Doctor(ctx context.Context, out io.Writer) error
 	LockStatus(ctx context.Context, out io.Writer) error
 	LockRelease(ctx context.Context) error
+	Exec(ctx context.Context, command string, out io.Writer) error
 	Maintenance(ctx context.Context, message string, drainTimeout time.Duration) error
 	Live(ctx context.Context) error
 }
