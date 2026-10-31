@@ -17,7 +17,7 @@
 ## 2. Non-goals
 
 - Zero-downtime deployment, blue-green switching or traffic routing (see §16 for a later path).
-- TLS termination and domain routing. Without kamal-proxy, the operator brings their own (Caddy, nginx) or binds the app port directly.
+- TLS termination and domain routing in v1. The operator brings their own (Caddy, nginx) or binds the app port directly; §16 plans kamal-proxy for this.
 - Non-Linux platforms or init systems other than systemd.
 - Container image building for the native backend.
 - Language-specific packaging or dependency installation.
@@ -318,16 +318,76 @@ What to watch:
 - **The deploy user** needs the `docker` group for the Docker apps and the per-service sudoers rule for each native app; one shared `deploy` user serves both.
 - Mixing modes within one service (a Docker web role and a native worker) is not supported; split it into two services.
 
-A mixed host already runs kamal-proxy, which makes §16 cheap exactly where it is most useful.
+A mixed host may already run the containerized kamal-proxy; §16 covers putting native apps behind it, or behind a native kamal-proxy on a Docker-free host.
 
-## 16. Later: native app behind kamal-proxy
+## 16. Next: native apps behind kamal-proxy
 
-If the host can run one container, kamal-proxy can front a native process: the target is the host's address on the Docker bridge (e.g. `172.17.0.1:<port>`) instead of a container IP. That restores TLS (`internal/cert`), domain routing, maintenance mode, and zero-downtime switching. Zero downtime works by alternating two ports per release (start the new release on the idle port, health check, `kamal-proxy deploy --target`, stop the old one). This needs a templated unit (`qifa-myapp@<port>.service`), so it is deliberately out of scope for v1, but nothing in the v1 layout prevents it.
+**Status:** proposed, not built.
+
+Native mode as built gives an app a process on a port. Compared with Docker apps it lacks HTTPS and domain routing (operators bring Caddy or nginx), zero-downtime deploys (`systemctl restart` means the app is down while it starts), and maintenance mode (`qifa app maintenance` / `app live` go through kamal-proxy). kamal-proxy provides all three, and qifa already drives it. It does not care what it forwards to: a Docker deploy registers `--target <container-ip>:<port>`, and a native deploy can register a port on the host.
+
+### 16.1 Where the proxy runs
+
+kamal-proxy is a single Go binary, and its Docker image only packages it. `test/e2e/deploy-host/Dockerfile` already builds it with `go install github.com/basecamp/kamal-proxy/cmd/kamal-proxy@v0.9.0` and runs it as a plain process. The long-running server is `kamal-proxy run`, and `kamal-proxy deploy|remove|stop|resume|list` from the same binary control it locally. That is the CLI qifa calls today through `docker exec`.
+
+| | A: proxy in a container (as today) | B: proxy as a systemd service |
+| --- | --- | --- |
+| Docker on the host | required | not needed |
+| Target address | Docker gateway, e.g. `172.18.0.1:8081` | `127.0.0.1:8081` |
+| App listens on | the gateway address, or `0.0.0.0` behind a firewall rule | `127.0.0.1` only |
+| Firewall | container-to-host traffic is blocked by some setups (ufw) | nothing to open |
+| Ports 80/443 | Docker publishes them | `AmbientCapabilities=CAP_NET_BIND_SERVICE`, own account, no root |
+| Fronting Docker apps too | yes (today's behaviour) | only Docker apps that publish their port on `127.0.0.1` |
+
+**Recommendation: B for native hosts.** It keeps the host Docker-free and never exposes an app port. A is right only for a mixed host that already runs the containerized proxy for Docker apps (§15). A host runs one proxy or the other; both cannot own 80/443.
+
+```text
+internet ──443──▶ kamal-proxy (qifa-proxy.service) ──▶ 127.0.0.1:8081 ──▶ myapp (qifa-myapp.service)
+```
+
+### 16.2 Native proxy (option B)
+
+- **Boot.** `qifa proxy boot` on a host whose `proxy_boot` sets `mode: native` (name to be settled) installs a pinned `kamal-proxy` binary under `/opt/qifa/proxy/bin`, a `kamal-proxy` system account, a state directory (`/var/lib/qifa-proxy`: routes and certificates, the counterpart of the `kamal-proxy-config` volume) and `qifa-proxy.service` running `kamal-proxy run --http-port 80 --https-port 443`. Like `native setup`, this is a root step, run once. `proxy upgrade` swaps the binary and restarts; routes survive because they live in the state directory.
+- **Command seam.** `internal/proxy` builds every command as `docker exec kamal-proxy kamal-proxy …` (`Deploy`, `Remove`, `Stop`, `Resume`, `Details`). That prefix becomes a per-host runner: the `docker exec` wrapper, or the binary path run directly. The flags `deployCommand` already builds (host, TLS, path prefixes, health check, timeouts) are unchanged.
+- **Access for the deploy user.** `deploy` and the other subcommands reach the running server over a local socket. Grant the deploy user access through group ownership of that socket (a `qifa-proxy` group), which is narrower than sudo and needs no sudoers rule.
+- **Certificates.** `tls.source: kamal` (kamal-proxy's own ACME, http-01) and `static` (files the operator places) work natively as they are. `tls.source: qifa` runs lego in a container writing into the proxy's Docker volume (`internal/cert`), so it needs a native path: the lego binary on the host, writing into the state directory. That is deferred until someone needs DNS-01 on a native host.
+- **Config.** A native app config regains `proxy:` (host, TLS, path prefixes, healthcheck), which §4 currently rejects next to `native:`. The app port comes from `native.port`, and `proxy.app_port` stays rejected so there is one source of truth for it.
+
+### 16.3 Level 1: route, with a restart
+
+Register the route once per deploy (`kamal-proxy deploy <svc> --target 127.0.0.1:<port>`) and keep today's single port and restart. This brings back HTTPS, domains and maintenance mode. During the restart the proxy answers with a gateway error instead of the client seeing connection refused. It is a small change on top of what exists: the deploy flow gains the registration step, `remove` deregisters, and `app maintenance` / `live` stop refusing in native mode.
+
+### 16.4 Level 2: zero downtime
+
+Two processes must run at once, so a release needs two ports:
+
+- **Config:** `native.ports: [8081, 8082]` in place of `port`. The app takes its port from qifa: `exec: [myapp, --port, "{port}"]`, or `PORT` in its environment.
+- **Units:** a templated unit, `qifa-myapp@.service`, instantiated per port (`qifa-myapp@8081`). Each slot has its own link (`slot-8081 -> releases/<id>`), so the two processes can run different releases. `WorkingDirectory` and `ExecStart` follow the slot's link instead of `current`, and `current` keeps naming the live release for `status` and `rollback`.
+- **Deploy:** stage as today, point the idle slot at the new release, start that instance, health-check it on its port, run `kamal-proxy deploy --target 127.0.0.1:<idle>` (kamal-proxy health-checks again and switches atomically, draining the old target), then stop the old instance and update `current`. A failure before the switch only stops the new instance: the old one never stopped serving.
+- **Rollback:** the same steps, with the previous release in the idle slot.
+- **sudoers:** start/stop/restart of each instance, by exact name, which still means no wildcards (`qifa-myapp@8081.service`, `qifa-myapp@8082.service`).
+
+Not every app can run twice at once: one holding an SQLite write lock, a single-instance scheduler, anything binding a fixed second port. Those stay on level 1. Non-web roles (workers) never go behind the proxy and keep restart mode.
+
+### 16.5 To verify before building
+
+Against kamal-proxy v0.9.x, in the e2e container:
+
+- the flags that set the state directory and the control socket path, and the socket's default ownership and mode
+- that `--target 127.0.0.1:<port>` and kamal-proxy's own health check behave as expected for a host-local target
+- that the state directory holds routes across a restart of `qifa-proxy.service`, as the Docker volume does today
+- autocert (`tls.source: kamal`) when the proxy runs as a non-root account with `CAP_NET_BIND_SERVICE`
+
+### 16.6 Phases
+
+1. Native proxy boot, the command seam in `internal/proxy`, and level 1 for native apps: HTTPS, domains and maintenance mode on a Docker-free host. The e2e extends to a second unit for the proxy and a request through it.
+2. Level 2: port slots, the templated unit, switch and rollback through the proxy, and an e2e test that keeps requesting during a deploy and expects no failed request.
+3. `tls.source: qifa` (lego DNS-01) on native hosts, if needed.
 
 ## 17. Design decisions
 
 1. **`native:` block selects the mode**: it fits the existing schema and strict key checking without changing what `builder:` means.
-2. **Downtime accepted in v1**: a simple `systemctl restart`; zero downtime is the §16 follow-up.
+2. **Downtime accepted in v1**: a simple `systemctl restart`; HTTPS, domains and zero downtime come from kamal-proxy in §16, preferably run natively so the host stays Docker-free.
 3. **systemd only.**
 4. **SSH, no agent**: qifa stays client-driven and the deployer stateless.
 5. **Immutable releases + `current` link + `.qifa-ok` marker**: the host filesystem is the source of truth, as Docker labels are in Docker mode.
