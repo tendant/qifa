@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"github.com/tendant/qifa/internal/dockererr"
+	"github.com/tendant/qifa/internal/proxy"
 	"github.com/tendant/qifa/internal/ssh"
 )
 
@@ -84,6 +85,13 @@ type Manager struct {
 	volumeName string
 	subdir     string
 	out        io.Writer
+
+	// native runs everything directly on a host whose kamal-proxy is a
+	// systemd service (config.native): lego as a binary in the deploy
+	// user's ~/.qifa/bin, certificates in proxy.NativeQifaDir. Set via
+	// Options.Native.
+	native  bool
+	legoBin string // remote path, resolved by ensureLego
 }
 
 // Options configure a Manager. Empty fields fall back to package defaults.
@@ -92,6 +100,8 @@ type Options struct {
 	AlpineImage string
 	VolumeName  string
 	Subdir      string
+	// Native selects the native-proxy layout (see Manager.native).
+	Native bool
 }
 
 // New creates a Manager bound to the given SSH client and proxy host.
@@ -104,6 +114,7 @@ func New(client *ssh.Client, proxyHost string, out io.Writer, opts Options) *Man
 		volumeName: ProxyVolume,
 		subdir:     LegoSubdir,
 		out:        out,
+		native:     opts.Native,
 	}
 	if opts.LegoImage != "" {
 		m.legoImage = opts.LegoImage
@@ -280,13 +291,7 @@ func (c CertInfo) DaysLeft(now time.Time) int {
 // SANs. The volume is docker-private, so the cert is read out through
 // the alpine helper rather than from a host path.
 func (m *Manager) CertInfo(ctx context.Context, host string) (CertInfo, error) {
-	cmd := fmt.Sprintf(
-		"docker run --rm -v %s:%s %s cat %s",
-		shellQuote(m.volumeName),
-		shellQuote(m.mountPoint()),
-		shellQuote(m.alpineImg),
-		shellQuote(fmt.Sprintf("%s/certificates/%s.crt", m.subdirPath(), host)),
-	)
+	cmd := m.storeCommand("cat " + shellQuote(fmt.Sprintf("%s/certificates/%s.crt", m.subdirPath(), host)))
 	out, err := m.ssh.Run(ctx, m.proxyHost, cmd)
 	if err != nil {
 		return CertInfo{}, fmt.Errorf("read cert for %s: %w", host, err)
@@ -348,16 +353,10 @@ func sanExtras(primary string, names []string) []string {
 // List returns the FQDNs that currently have a cert+key pair in the
 // proxy volume.
 func (m *Manager) List(ctx context.Context) ([]string, error) {
-	cmd := fmt.Sprintf(
-		"docker run --rm -v %s:%s %s sh -c %s",
-		shellQuote(m.volumeName),
-		shellQuote(m.mountPoint()),
-		shellQuote(m.alpineImg),
-		shellQuote(fmt.Sprintf(
-			"ls %s/certificates/*.crt 2>/dev/null | sed -e 's|.*/||' -e 's|\\.crt$||' || true",
-			m.subdirPath(),
-		)),
-	)
+	cmd := m.storeCommand(fmt.Sprintf(
+		"ls %s/certificates/*.crt 2>/dev/null | sed -e 's|.*/||' -e 's|\\.crt$||' || true",
+		m.subdirPath(),
+	))
 	out, err := m.ssh.Run(ctx, m.proxyHost, cmd)
 	if err != nil {
 		return nil, err
@@ -394,21 +393,14 @@ func (m *Manager) Remove(ctx context.Context, host string) error {
 	if host == "" {
 		return fmt.Errorf("host is required")
 	}
-	cmd := fmt.Sprintf(
-		"docker run --rm -v %s:%s %s sh -c %s",
-		shellQuote(m.volumeName),
-		shellQuote(m.mountPoint()),
-		shellQuote(m.alpineImg),
-		// lego writes four files per cert: the leaf, the issuer chain,
-		// the key, and a metadata sidecar. Removing only .crt/.key
-		// leaves the other two orphaned in the volume forever, so
-		// "remove" quietly didn't.
-		shellQuote(fmt.Sprintf(
-			"rm -f %s/certificates/%s.crt %s/certificates/%s.key %s/certificates/%s.issuer.crt %s/certificates/%s.json",
-			m.subdirPath(), host, m.subdirPath(), host,
-			m.subdirPath(), host, m.subdirPath(), host,
-		)),
-	)
+	// lego writes four files per cert: the leaf, the issuer chain, the
+	// key, and a metadata sidecar. Removing only .crt/.key leaves the other
+	// two orphaned forever, so "remove" quietly didn't.
+	cmd := m.storeCommand(fmt.Sprintf(
+		"rm -f %s/certificates/%s.crt %s/certificates/%s.key %s/certificates/%s.issuer.crt %s/certificates/%s.json",
+		m.subdirPath(), host, m.subdirPath(), host,
+		m.subdirPath(), host, m.subdirPath(), host,
+	))
 	_, err := m.ssh.Run(ctx, m.proxyHost, cmd)
 	return err
 }
@@ -433,14 +425,22 @@ func (m *Manager) runLego(ctx context.Context, opts IssueOptions, extra []string
 		return fmt.Errorf("provider is required for dns-01 challenge")
 	}
 
-	envFileFlag, cleanup, err := m.pushEnv(ctx, opts.EnvVars)
+	if m.native {
+		if err := m.ensureLego(ctx); err != nil {
+			return err
+		}
+	}
+	envFile, cleanup, err := m.pushEnv(ctx, opts.EnvVars)
 	if err != nil {
 		return err
 	}
 	defer cleanup()
 
-	cmd := m.legoCommand(envFileFlag, opts, extra)
+	cmd := m.legoCommand(envFile, opts, extra)
 	if err := m.ssh.Stream(ctx, m.proxyHost, cmd, m.out); err != nil {
+		if m.native {
+			return fmt.Errorf("lego on %s: %w", m.proxyHost, err)
+		}
 		// The lego helper runs as a container, so this fails for registry and
 		// network reasons as often as for ACME ones. Diagnose both.
 		return dockererr.WrapKnownNetwork(ctx, m.ssh, "issue certificate with", m.proxyHost, m.legoImage, 1, err)
@@ -464,17 +464,31 @@ func (m *Manager) runLego(ctx context.Context, opts IssueOptions, extra []string
 // global flags preceding the action: pinning Options.LegoImage to a v4
 // tag needs an older qifa binary too. Default LegoImage
 // `goacme/lego:latest` has been v5+ since mid-2025.
-func (m *Manager) legoCommand(envFileFlag string, opts IssueOptions, extra []string) string {
-	args := []string{
-		"docker run --rm",
-		envFileFlag,
-		"-v " + shellQuote(m.volumeName) + ":" + shellQuote(m.mountPoint()),
-		shellQuote(m.legoImage),
-		"run",
-		"--dns " + shellQuote(opts.Provider),
-		"--email " + shellQuote(opts.Email),
-		"--domains " + shellQuote(opts.Host),
+func (m *Manager) legoCommand(envFile string, opts IssueOptions, extra []string) string {
+	var args []string
+	if m.native {
+		// The env file is shell (see pushEnv), sourced in a subshell so the
+		// credentials reach lego and nothing else.
+		if envFile != "" {
+			args = append(args, "( . "+shellQuote(envFile)+" &&")
+		}
+		args = append(args, shellQuote(m.legoBin), "run")
+	} else {
+		args = append(args, "docker run --rm")
+		if envFile != "" {
+			args = append(args, "--env-file "+shellQuote(envFile))
+		}
+		args = append(args,
+			"-v "+shellQuote(m.volumeName)+":"+shellQuote(m.mountPoint()),
+			shellQuote(m.legoImage),
+			"run",
+		)
 	}
+	args = append(args,
+		"--dns "+shellQuote(opts.Provider),
+		"--email "+shellQuote(opts.Email),
+		"--domains "+shellQuote(opts.Host),
+	)
 	// Each extra host becomes another --domains flag — lego supports
 	// repeating it for SAN. The cert file still gets saved under
 	// opts.Host (the first --domains value).
@@ -517,12 +531,26 @@ func (m *Manager) legoCommand(envFileFlag string, opts IssueOptions, extra []str
 	for _, e := range extra {
 		args = append(args, shellQuote(e))
 	}
+	if m.native && envFile != "" {
+		args = append(args, ")")
+	}
 	return strings.Join(args, " ")
 }
 
 // fixCertPerms makes the qifa cert subtree readable by whatever
 // non-root user kamal-proxy is running as. Idempotent.
 func (m *Manager) fixCertPerms(ctx context.Context) error {
+	if m.native {
+		// lego writes 0700 directories and 0600 files as the deploy user.
+		// The proxy reads them through the qifa-proxy group (the parent is
+		// setgid, so the group is already right; chgrp makes sure). The
+		// ACME account key under accounts/ stays the deploy user's alone.
+		dir := shellQuote(m.subdirPath() + "/certificates")
+		_, err := m.ssh.Run(ctx, m.proxyHost, fmt.Sprintf(
+			"chgrp -R %s %s && chmod g+rX %s && chmod -R g+r %s",
+			shellQuote(proxy.NativeUser), dir, dir, dir))
+		return err
+	}
 	cmd := fmt.Sprintf(
 		"docker run --rm -v %s:%s %s chmod -R o+rX %s",
 		shellQuote(m.volumeName),
@@ -562,6 +590,14 @@ func (m *Manager) pushEnv(ctx context.Context, envVars map[string]string) (strin
 		if strings.ContainsAny(v, "\n\r") {
 			return "", noop, fmt.Errorf("env var %s contains a newline; lego --env-file can't represent that", k)
 		}
+		if m.native {
+			// Sourced by sh, so each value is single-quoted: no expansion.
+			if !envName(k) {
+				return "", noop, fmt.Errorf("env var name %q is not valid", k)
+			}
+			fmt.Fprintf(&buf, "export %s=%s\n", k, shellQuote(v))
+			continue
+		}
 		fmt.Fprintf(&buf, "%s=%s\n", k, v)
 	}
 	if err := m.ssh.Upload(ctx, m.proxyHost, remotePath, []byte(buf.String()), 0o600); err != nil {
@@ -570,7 +606,19 @@ func (m *Manager) pushEnv(ctx context.Context, envVars map[string]string) (strin
 	cleanup := func() {
 		_, _ = m.ssh.Run(context.Background(), m.proxyHost, "rm -f "+shellQuote(remotePath))
 	}
-	return "--env-file " + shellQuote(remotePath), cleanup, nil
+	return remotePath, cleanup, nil
+}
+
+func envName(k string) bool {
+	if k == "" || k[0] >= '0' && k[0] <= '9' {
+		return false
+	}
+	for _, c := range k {
+		if !(c == '_' || c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' || c >= '0' && c <= '9') {
+			return false
+		}
+	}
+	return true
 }
 
 // resolverArgs returns resolvers, or DefaultDNSResolvers if resolvers is
@@ -587,7 +635,21 @@ func (m *Manager) mountPoint() string {
 }
 
 func (m *Manager) subdirPath() string {
+	if m.native {
+		return proxy.NativeQifaDir
+	}
 	return m.mountPoint() + "/" + m.subdir
+}
+
+// storeCommand runs a shell command against the certificate store: in a
+// helper container that mounts the proxy's volume, or directly on a native
+// host, where the store is a plain directory.
+func (m *Manager) storeCommand(inner string) string {
+	if m.native {
+		return "sh -c " + shellQuote(inner)
+	}
+	return fmt.Sprintf("docker run --rm -v %s:%s %s sh -c %s",
+		shellQuote(m.volumeName), shellQuote(m.mountPoint()), shellQuote(m.alpineImg), shellQuote(inner))
 }
 
 func randomNonce() (string, error) {

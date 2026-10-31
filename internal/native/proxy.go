@@ -257,6 +257,9 @@ while [ ! -S "$sock" ]; do
   fi
   sleep 0.25
 done
+# Certificates qifa issues (tls.source: qifa): the deploy user writes them
+# with lego, the proxy reads them. setgid keeps new files in the group.
+install -d -m 2770 -o "$user" -g "$user" ` + q(proxy.NativeQifaDir) + `
 echo "kamal-proxy is running"
 `)
 	return b.String()
@@ -410,4 +413,24 @@ func (d *Deployer) Live(ctx context.Context) error {
 		d.log.Printf("%s: %s live", host, d.cfg.Service)
 	}
 	return nil
+}
+
+// RegisterRoutes deploys the app's route on every host that serves it,
+// without touching the app: what a renewed certificate needs, since
+// kamal-proxy reads certificate files only when a route is deployed.
+func (d *Deployer) RegisterRoutes(ctx context.Context) (int, error) {
+	if !d.cfg.NativeProxied() {
+		return 0, nil
+	}
+	n := 0
+	for _, host := range d.hosts() {
+		if !d.routedOn(host) {
+			continue
+		}
+		if err := d.registerRoute(ctx, host); err != nil {
+			return n, err
+		}
+		n++
+	}
+	return n, nil
 }

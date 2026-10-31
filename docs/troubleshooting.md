@@ -286,6 +286,15 @@ cert to the requesting account, failing the whole order. qifa passes
 `--ari-disable` for this reason; pass it yourself if you invoke lego
 directly.
 
+## Native servers: `tls.source: qifa`
+
+| Message | Cause and fix |
+| --- | --- |
+| `download https://github.com/go-acme/lego/... ` | The machine running qifa cannot reach GitHub. Set `QIFA_LEGO_BINARY` to a local linux lego binary of the pinned version for the server's architecture. |
+| `... does not match the release checksum` | The download is not the published release. Do not work around it; retry, or check what sits between you and GitHub. |
+| lego cannot write to `/var/lib/qifa-proxy/qifa` | The proxy was booted before this directory existed: re-run `qifa proxy boot --ssh-user root`. |
+| `tls: ... permission denied` in `qifa proxy logs` for a qifa certificate | The certificate files lost the proxy group's read access (edited by hand?). `qifa cert renew` restores it; or `chgrp -R qifa-proxy` and `chmod -R g+rX` on `/var/lib/qifa-proxy/qifa/certificates`. |
+
 ## Pinning the lego image
 
 `LegoImage` defaults to an exact version, not `:latest`, and

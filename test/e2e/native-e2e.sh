@@ -11,6 +11,7 @@ root=$(cd "$(dirname "$0")/../.." && pwd)
 work=$(mktemp -d)
 name=qifa-native-e2e
 pebble=qifa-native-e2e-pebble
+dns=qifa-native-e2e-dns
 net=qifa-native-e2e-net
 port=${QIFA_NATIVE_E2E_PORT:-2299}
 
@@ -20,7 +21,7 @@ cleanup() {
     echo "--- journal (last 60 lines) ---"
     docker exec "$name" journalctl -n 60 --no-pager 2>/dev/null || true
   fi
-  docker rm -f "$name" "$pebble" >/dev/null 2>&1 || true
+  docker rm -f "$name" "$pebble" "$dns" >/dev/null 2>&1 || true
   docker network rm "$net" >/dev/null 2>&1 || true
   rm -rf "$work"
   exit "$status"
@@ -37,7 +38,7 @@ ssh-keygen -t ed25519 -N '' -f "$work/id" -q
 mkdir -p "$work/keys" "$work/app/dist"
 cp "$work/id.pub" "$work/keys/authorized_keys"
 docker build -q -t qifa-native-host "$root/test/e2e/native-host" >/dev/null
-docker rm -f "$name" "$pebble" >/dev/null 2>&1 || true
+docker rm -f "$name" "$pebble" "$dns" >/dev/null 2>&1 || true
 docker network rm "$net" >/dev/null 2>&1 || true
 docker network create "$net" >/dev/null
 # The server answers as app.test on the test network, so Pebble (below) can
@@ -260,9 +261,15 @@ cat > "$work/pebble.json" <<EOF
   "certificate": "/test/certs/localhost/cert.pem", "privateKey": "/test/certs/localhost/key.pem",
   "httpPort": 80, "tlsPort": 443, "ocspResponderURL": "", "externalAccountBindingRequired": false}}
 EOF
+# Pebble's own DNS server answers app.test with this server's address (for
+# validation here) and serves the TXT records lego sets below (DNS-01). No
+# AAAA answer: its default, ::1, would send Pebble to itself.
+host_ip=$(docker inspect -f "{{(index .NetworkSettings.Networks \"$net\").IPAddress}}" "$name")
+docker run -d --name "$dns" --network "$net" --network-alias challtestsrv \
+  ghcr.io/letsencrypt/pebble-challtestsrv:2.6.0 -defaultIPv4 "$host_ip" -defaultIPv6 "" -dns01 :8053 -management :8055 >/dev/null
 docker run -d --name "$pebble" --network "$net" --network-alias pebble \
   -e PEBBLE_VA_NOSLEEP=1 -e PEBBLE_WFE_NONCEREJECT=0 \
-  -v "$work/pebble.json:/pebble.json:ro" ghcr.io/letsencrypt/pebble:2.6.0 -config /pebble.json >/dev/null
+  -v "$work/pebble.json:/pebble.json:ro" ghcr.io/letsencrypt/pebble:2.6.0 -config /pebble.json -dnsserver challtestsrv:8053 >/dev/null
 # Trust the CA behind Pebble's own HTTPS endpoint, as a server trusts Let's
 # Encrypt's. kamal-proxy reads the trust store when it starts, below.
 docker cp "$pebble:/test/certs/pebble.minica.pem" "$work/pebble-minica.pem"
@@ -307,6 +314,58 @@ on_host '! ls /home/deploy/.config/kamal-proxy/certs/* >/dev/null 2>&1' \
   || fail "ACME data landed in the deploy user's home"
 # Back to the stock proxy and the static certificate for the rest of the run.
 qifa proxy upgrade --ssh-user root >/dev/null
+qifa deploy --version v6 >/dev/null
+expect_eq "$(via_proxy /version)" v6 "static certificate again"
+
+step "certificates qifa issues (tls.source: qifa): lego on the server, DNS-01"
+# lego's exec DNS provider calls this script on the server to set the TXT
+# record in Pebble's DNS server. lego reads every flag from LEGO_* too, which
+# points it at Pebble and replaces its propagation checks with a short wait
+# (the test DNS server answers no SOA queries, as real DNS does).
+cat > "$work/qifa-test-dns" <<'EOF'
+#!/bin/sh
+case "$1" in
+  present) curl -fsS -d "{\"host\":\"$2\",\"value\":\"$3\"}" http://challtestsrv:8055/set-txt ;;
+  cleanup) curl -fsS -d "{\"host\":\"$2\"}" http://challtestsrv:8055/clear-txt ;;
+esac
+EOF
+docker cp "$work/qifa-test-dns" "$name:/usr/local/bin/qifa-test-dns"
+on_host 'chmod 755 /usr/local/bin/qifa-test-dns'
+cat > "$work/lego.env" <<EOF
+EXEC_PATH=/usr/local/bin/qifa-test-dns
+LEGO_SERVER=https://pebble:14000/dir
+LEGO_DNS_PROPAGATION_WAIT=2s
+EOF
+write_config "$work/app/qifa-lego.yaml" "  tls:
+    source: qifa
+    provider: exec"
+lego() { "$work/qifa" -c "$work/app/qifa-lego.yaml" "$@"; }
+lego cert issue app.test --provider exec --email e2e@example.test \
+  --env-file "$work/lego.env" --dns-resolvers challtestsrv:8053
+on_host "su deploy -c 'test -x ~/.qifa/bin/lego-v5.3.1'" || fail "lego not installed in the deploy user's ~/.qifa/bin"
+on_host "stat -c '%G %A' /var/lib/qifa-proxy/qifa/certificates/app.test.key" | grep -q '^qifa-proxy -rw-r-----' \
+  || fail "the key is not readable by the proxy group and nobody else"
+on_host "su -s /bin/sh qifa-proxy -c 'ls /var/lib/qifa-proxy/qifa/accounts' 2>/dev/null" && fail "the ACME account is readable by the proxy"
+on_host 'ls /dev/shm/qifa-lego-env.* 2>/dev/null' && fail "lego credentials left in /dev/shm"
+lego cert list | grep -qx app.test || fail "cert list"
+lego deploy --version v6 >/dev/null
+expect_eq "$(on_host "curl -fsS --cacert /tmp/pebble-root.pem --resolve app.test:443:127.0.0.1 https://app.test/version")" v6 \
+  "HTTPS with the certificate lego issued"
+# The leaf certificate on disk, and the one kamal-proxy serves.
+# First PEM block only: curl's %{certs} puts certificate details before it.
+first_pem="sed -n '/BEGIN CERTIFICATE/,/END CERTIFICATE/{p;/END CERTIFICATE/q;}'"
+leaf_file() { on_host "$first_pem /var/lib/qifa-proxy/qifa/certificates/app.test.crt" | sha256sum; }
+leaf_served() { on_host "curl -fsS -o /dev/null --cacert /tmp/pebble-root.pem --resolve app.test:443:127.0.0.1 -w '%{certs}' https://app.test/up | $first_pem" | sha256sum; }
+before=$(leaf_file)
+expect_eq "$(leaf_served)" "$before" "served certificate before renewal"
+# Pebble 2.6.0 issues five-year certificates: a window longer than that
+# makes this one due now.
+lego cert renew --email e2e@example.test --renew-days 2000 --env-file "$work/lego.env" --dns-resolvers challtestsrv:8053
+after=$(leaf_file)
+[ "$before" != "$after" ] || fail "renew did not replace the certificate"
+# kamal-proxy reads a certificate only when a route is deployed: renew must
+# have re-registered the route for the new one to be served.
+expect_eq "$(leaf_served)" "$after" "served certificate after renewal"
 qifa deploy --version v6 >/dev/null
 expect_eq "$(via_proxy /version)" v6 "static certificate again"
 

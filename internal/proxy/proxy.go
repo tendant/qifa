@@ -37,6 +37,9 @@ type KamalProxy struct {
 	// container, or the native binary and its socket. The arguments after
 	// it are the same either way.
 	cli string
+	// qifaCertRoot is where tls.source: qifa certificates are read from:
+	// inside the container (QifaCertRootInContainer) or on a native host.
+	qifaCertRoot string
 	// acmeCache, when set, is passed as --tls-acme-cache-path. The deploy
 	// command defaults it from the *caller's* home directory, which is right
 	// inside the container (same user as the server) and wrong for a native
@@ -47,7 +50,7 @@ type KamalProxy struct {
 const proxyContainerName = "kamal-proxy"
 
 func New(client *ssh.Client, app config.Proxy, boot config.ProxyBoot) *KamalProxy {
-	return &KamalProxy{client: client, app: app, boot: boot, cli: "docker exec " + shellQuote(proxyContainerName) + " kamal-proxy"}
+	return &KamalProxy{client: client, app: app, boot: boot, cli: "docker exec " + shellQuote(proxyContainerName) + " kamal-proxy", qifaCertRoot: QifaCertRootInContainer}
 }
 
 // Native-proxy layout on a host. The server runs as NativeUser with HOME set
@@ -61,6 +64,11 @@ const (
 	NativeRuntimeDir = "/run/qifa-proxy"
 	NativeSocket     = NativeRuntimeDir + "/kamal-proxy.sock"
 	NativeACMECache  = NativeStateDir + "/.config/kamal-proxy/certs"
+	// NativeQifaDir holds certificates qifa issues (tls.source: qifa) for a
+	// native proxy: lego's --path, run by the deploy user. Group qifa-proxy,
+	// setgid and group-writable, so the deploy user writes and the proxy
+	// reads. Outside .config/kamal-proxy, which kamal-proxy creates 0700.
+	NativeQifaDir = NativeStateDir + "/qifa"
 )
 
 // NativeCLI is the command prefix that reaches a native proxy.
@@ -72,7 +80,7 @@ func NativeCLI() string {
 // (config.native). Only route commands apply; the service itself is managed
 // by internal/native.
 func NewNative(client *ssh.Client, app config.Proxy) *KamalProxy {
-	return &KamalProxy{client: client, app: app, cli: NativeCLI(), acmeCache: NativeACMECache}
+	return &KamalProxy{client: client, app: app, cli: NativeCLI(), acmeCache: NativeACMECache, qifaCertRoot: NativeQifaDir + "/certificates"}
 }
 
 // Boot starts the kamal-proxy container on every host listed in
@@ -381,7 +389,7 @@ func (k *KamalProxy) deployArgs(target Target) string {
 					args = append(args, "--tls-acme-cache-path", shellQuote(k.acmeCache))
 				}
 			case "qifa":
-				certPath, keyPath := QifaCertPaths(PrimaryHost(k.app))
+				certPath, keyPath := certPaths(k.qifaCertRoot, PrimaryHost(k.app))
 				args = append(args,
 					"--tls-certificate-path", shellQuote(certPath),
 					"--tls-private-key-path", shellQuote(keyPath),
@@ -436,6 +444,12 @@ const QifaCertRootInContainer = "/home/kamal-proxy/.config/kamal-proxy/qifa/cert
 // QifaCertPaths returns the cert and key paths kamal-proxy reads when
 // source: qifa is in effect for the given proxy host.
 func QifaCertPaths(host string) (cert, key string) {
-	return QifaCertRootInContainer + "/" + host + ".crt",
-		QifaCertRootInContainer + "/" + host + ".key"
+	return certPaths(QifaCertRootInContainer, host)
+}
+
+func certPaths(root, host string) (cert, key string) {
+	if root == "" {
+		root = QifaCertRootInContainer
+	}
+	return root + "/" + host + ".crt", root + "/" + host + ".key"
 }

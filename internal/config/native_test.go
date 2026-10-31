@@ -55,7 +55,6 @@ func TestNativeConfigRejects(t *testing.T) {
 		"builder":           {"builder:\n  context: .\n", "config.builder"},
 		"proxy app_port":    {"proxy:\n  host: a.example.com\n  app_port: 80\n", "proxy.app_port"},
 		"proxy healthcheck": {"proxy:\n  host: a.example.com\n  healthcheck:\n    path: /x\n", "proxy.healthcheck"},
-		"proxy tls qifa":    {"proxy:\n  host: a.example.com\n  ssl: true\n  tls:\n    source: qifa\n    provider: cloudflare\n", "tls.source: qifa"},
 		"ssl without host":  {"proxy:\n  ssl: true\n  tls:\n    source: kamal\n", "needs config.proxy.host"},
 		"proxy_boot image":  {"proxy_boot:\n  image: x/proxy\n", "proxy_boot image"},
 		"proxy_boot bind":   {"proxy_boot:\n  bind_ips: [10.0.0.1]\n", "bind_ips"},
@@ -139,5 +138,15 @@ func TestProxyBootBinaryOnlyWithNative(t *testing.T) {
 	_, err := loadString(t, "service: app\nimage: x/app:1\nservers:\n  web:\n    hosts: [h]\nproxy_boot:\n  binary: ./kamal-proxy\n")
 	if err == nil || !strings.Contains(err.Error(), "proxy_boot.binary") {
 		t.Fatalf("got %v", err)
+	}
+}
+
+func TestNativeAcceptsQifaTLS(t *testing.T) {
+	cfg, err := loadString(t, nativeBase+"proxy:\n  host: app.example.com\n  ssl: true\n  tls:\n    source: qifa\n    provider: cloudflare\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Proxy.TLS.Source != "qifa" {
+		t.Fatalf("tls source = %q", cfg.Proxy.TLS.Source)
 	}
 }

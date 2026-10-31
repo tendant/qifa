@@ -340,3 +340,17 @@ func TestNativeDeployArgsUseServerACMECache(t *testing.T) {
 		t.Fatal("container proxy should not pass an ACME cache path")
 	}
 }
+
+// tls.source: qifa reads certificates from the native proxy's store, not
+// from the container's mount.
+func TestNativeQifaCertPaths(t *testing.T) {
+	app := config.Proxy{Host: "app.example.com", SSL: true, TLS: &config.TLS{Source: "qifa", Provider: "cloudflare"}}
+	args := NewNative(nil, app).deployArgs(Target{Service: "app", Host: "127.0.0.1", Port: 8080})
+	if !strings.Contains(args, "--tls-certificate-path '/var/lib/qifa-proxy/qifa/certificates/app.example.com.crt'") ||
+		!strings.Contains(args, "--tls-private-key-path '/var/lib/qifa-proxy/qifa/certificates/app.example.com.key'") {
+		t.Fatalf("native qifa cert paths: %s", args)
+	}
+	if !strings.Contains(New(nil, app, config.ProxyBoot{}).deployCommand(Target{Service: "app", Host: "c", Port: 1}), QifaCertRootInContainer) {
+		t.Fatal("container proxy must keep reading the volume path")
+	}
+}

@@ -13,6 +13,7 @@ import (
 
 	"github.com/tendant/qifa/internal/cert"
 	"github.com/tendant/qifa/internal/config"
+	"github.com/tendant/qifa/internal/native"
 	"github.com/tendant/qifa/internal/proxy"
 	"github.com/tendant/qifa/internal/ssh"
 )
@@ -353,6 +354,13 @@ func serveRenewed(ctx context.Context, stdout, stderr io.Writer, configFile, app
 			others = append(others, h)
 			continue
 		}
+		if native, err := isNative(configFile); err != nil {
+			errs = append(errs, err)
+			continue
+		} else if native {
+			errs = append(errs, reregisterNative(ctx, stdout, stderr, configFile, h))
+			continue
+		}
 		errs = append(errs, withRuntime(ctx, stdout, stderr, configFile, "cert", func(rt *runtime) error {
 			n, err := rt.deployer.ReregisterProxy(ctx)
 			if err == nil && n == 0 {
@@ -454,6 +462,9 @@ func newCertManager(out io.Writer, configFile, legoImage string) (*cert.Manager,
 	return cert.New(client, host, out, cert.Options{
 		LegoImage:   resolveLegoImage(legoImage),
 		AlpineImage: os.Getenv("QIFA_ALPINE_IMAGE"),
+		// A native config's proxy is a systemd service: lego runs as a
+		// binary there and certificates are a plain directory.
+		Native: cfg.IsNative(),
 	}), nil
 }
 
@@ -479,6 +490,12 @@ func resolveLegoImage(flag string) string {
 func proxyHostFromConfig(cfg *config.Config) string {
 	if len(cfg.ProxyBoot.Hosts) > 0 {
 		return cfg.ProxyBoot.Hosts[0]
+	}
+	// A native proxy runs on the routed role's hosts.
+	if cfg.IsNative() {
+		if role := cfg.NativeProxyRole(); role != "" && len(cfg.Servers[role].Hosts) > 0 {
+			return cfg.Servers[role].Hosts[0]
+		}
 	}
 	for _, server := range cfg.Servers {
 		if len(server.Hosts) > 0 {
@@ -549,4 +566,23 @@ func nextValue(flag string, args []string, i *int) (string, error) {
 	}
 	*i++
 	return args[*i], nil
+}
+
+// reregisterNative redeploys the native app's routes so kamal-proxy loads a
+// renewed certificate (it reads certificate files only when a route is
+// deployed).
+func reregisterNative(ctx context.Context, stdout, stderr io.Writer, configFile, host string) error {
+	cfg, store, err := loadConfig(configFile)
+	if err != nil {
+		return err
+	}
+	d, err := native.New(cfg, store, stdout, stderr)
+	if err != nil {
+		return err
+	}
+	n, err := d.RegisterRoutes(ctx)
+	if err == nil && n == 0 {
+		fmt.Fprintf(stdout, "renewed %s, but the app has no route to re-register; the next deploy serves it\n", host)
+	}
+	return err
 }

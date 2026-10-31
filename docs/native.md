@@ -189,8 +189,27 @@ qifa proxy remove --ssh-user root [--purge]  # --purge also deletes routes and c
 ```
 
 Static certificate files must be readable by the `qifa-proxy` account, for
-example `root:qifa-proxy`, mode 0640. Certificates managed by qifa itself
-(`tls.source: qifa`) need Docker and are not available here.
+example `root:qifa-proxy`, mode 0640.
+
+Certificates qifa issues itself (`tls.source: qifa`, DNS-01 through a DNS
+provider's API, e.g. for a host that is not reachable on port 80/443) work as
+in Docker mode, with the same commands:
+
+```sh
+qifa cert issue app.example.com --provider cloudflare --email ops@example.com --env-file cf.env
+qifa cert renew --email ops@example.com      # this app's cert; re-registers the route if it changed
+qifa cert list --expiry
+```
+
+On a native server, lego runs as a binary instead of a container. qifa
+downloads the pinned release (checksum-verified against the release's
+checksums, cached where you run qifa; `QIFA_LEGO_BINARY` ships a local one
+instead) into the deploy user's `~/.qifa/bin`. Certificates go to
+`/var/lib/qifa-proxy/qifa`, created by `proxy boot`: readable by the proxy
+through the `qifa-proxy` group, while the ACME account key stays private to
+the deploy user. Provider credentials are passed through `/dev/shm` and
+removed afterwards, as in Docker mode. Re-run `qifa proxy boot --ssh-user
+root` on servers booted before this existed, to create that directory.
 
 A server runs one proxy or the other: `proxy boot` refuses while the
 kamal-proxy container is running there.

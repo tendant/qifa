@@ -255,9 +255,6 @@ func (c *Config) validateNativeProxy() error {
 	if n.Healthcheck.Path == "" {
 		return errors.New("config.proxy needs config.native.healthcheck.path: kamal-proxy checks it before routing")
 	}
-	if c.Proxy.TLS != nil && c.Proxy.TLS.Source == "qifa" {
-		return errors.New("config.proxy.tls.source: qifa runs lego in a container; with config.native use kamal (automatic certificates) or static")
-	}
 	return c.validateProxyTLS()
 }
 
