@@ -33,3 +33,8 @@ jobs:
 
       - name: Run Zot E2E Harness
         run: make test-e2e
+
+      # Native deploys against a throwaway systemd server (no Docker on it),
+      # including the native kamal-proxy and certificates from Pebble.
+      - name: Run Native E2E
+        run: make test-e2e-native

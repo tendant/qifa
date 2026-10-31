@@ -10,6 +10,8 @@ set -eu
 root=$(cd "$(dirname "$0")/../.." && pwd)
 work=$(mktemp -d)
 name=qifa-native-e2e
+pebble=qifa-native-e2e-pebble
+net=qifa-native-e2e-net
 port=${QIFA_NATIVE_E2E_PORT:-2299}
 
 cleanup() {
@@ -18,7 +20,8 @@ cleanup() {
     echo "--- journal (last 60 lines) ---"
     docker exec "$name" journalctl -n 60 --no-pager 2>/dev/null || true
   fi
-  docker rm -f "$name" >/dev/null 2>&1 || true
+  docker rm -f "$name" "$pebble" >/dev/null 2>&1 || true
+  docker network rm "$net" >/dev/null 2>&1 || true
   rm -rf "$work"
   exit "$status"
 }
@@ -34,8 +37,13 @@ ssh-keygen -t ed25519 -N '' -f "$work/id" -q
 mkdir -p "$work/keys" "$work/app/dist"
 cp "$work/id.pub" "$work/keys/authorized_keys"
 docker build -q -t qifa-native-host "$root/test/e2e/native-host" >/dev/null
-docker rm -f "$name" >/dev/null 2>&1 || true
+docker rm -f "$name" "$pebble" >/dev/null 2>&1 || true
+docker network rm "$net" >/dev/null 2>&1 || true
+docker network create "$net" >/dev/null
+# The server answers as app.test on the test network, so Pebble (below) can
+# validate certificate requests against it the way Let's Encrypt would.
 docker run -d --name "$name" --privileged --cgroupns=host \
+  --network "$net" --network-alias app.test \
   -v /sys/fs/cgroup:/sys/fs/cgroup:rw -v "$work/keys:/test-ssh:ro" \
   -p "127.0.0.1:$port:22" qifa-native-host >/dev/null
 for i in $(seq 1 60); do
@@ -51,7 +59,9 @@ build_app() {
   (cd "$root" && GOOS=linux GOARCH="$goarch" CGO_ENABLED=0 go build -trimpath -ldflags "-X main.version=$1" -o "$work/app/dist/app" ./test/e2e/native-app)
 }
 
-cat > "$work/app/qifa.yaml" <<EOF
+# write_config <file> <proxy tls block> [extra yaml]
+write_config() {
+  cat > "$1" <<EOF
 service: nativeapp
 servers:
   web:
@@ -78,11 +88,14 @@ native:
 proxy:
   host: app.test
   ssl: true
-  tls:
+$2
+${3:-}
+EOF
+}
+write_config "$work/app/qifa.yaml" "  tls:
     source: static
     cert_path: /etc/qifa-proxy-certs/app.test.crt
-    key_path: /etc/qifa-proxy-certs/app.test.key
-EOF
+    key_path: /etc/qifa-proxy-certs/app.test.key"
 qifa() { "$work/qifa" -c "$work/app/qifa.yaml" "$@"; }
 app_get() { on_host "curl -fsS http://127.0.0.1:8080$1"; }
 # Through kamal-proxy, over TLS, by name: what a client on the internet does.
@@ -226,6 +239,68 @@ build_app v5; qifa deploy --version v5 >/dev/null
 build_app v6; qifa deploy --version v6 >/dev/null
 releases=$(on_host 'ls /opt/qifa/nativeapp/releases | sort | tr "\n" " "')
 expect_eq "$releases" "v3 v5 v6 " "releases after pruning"
+
+step "automatic certificates: kamal-proxy gets one from an ACME server (Pebble)"
+# kamal-proxy's ACME server is fixed: Let's Encrypt, or its staging URL with
+# --tls-staging. A test build swaps that one constant for Pebble, Let's
+# Encrypt's test server; everything qifa controls runs as in production: the
+# pinned certificate cache, the qifa-proxy account, ports 80/443 through the
+# capability. Pebble validates for real, over the test network, against
+# app.test on this server.
+cat > "$work/pebble.json" <<EOF
+{"pebble": {"listenAddress": "0.0.0.0:14000", "managementListenAddress": "0.0.0.0:15000",
+  "certificate": "/test/certs/localhost/cert.pem", "privateKey": "/test/certs/localhost/key.pem",
+  "httpPort": 80, "tlsPort": 443, "ocspResponderURL": "", "externalAccountBindingRequired": false}}
+EOF
+docker run -d --name "$pebble" --network "$net" --network-alias pebble \
+  -e PEBBLE_VA_NOSLEEP=1 -e PEBBLE_WFE_NONCEREJECT=0 \
+  -v "$work/pebble.json:/pebble.json:ro" ghcr.io/letsencrypt/pebble:2.6.0 -config /pebble.json >/dev/null
+# Trust the CA behind Pebble's own HTTPS endpoint, as a server trusts Let's
+# Encrypt's. kamal-proxy reads the trust store when it starts, below.
+docker cp "$pebble:/test/certs/pebble.minica.pem" "$work/pebble-minica.pem"
+docker cp "$work/pebble-minica.pem" "$name:/usr/local/share/ca-certificates/pebble-minica.crt"
+on_host 'update-ca-certificates >/dev/null 2>&1'
+kp_src=$(cd "$work" && go mod download -json github.com/basecamp/kamal-proxy@v0.10.2 | sed -n 's/^[[:space:]]*"Dir": "\(.*\)",$/\1/p')
+[ -d "$kp_src" ] || fail "could not fetch kamal-proxy source"
+cp -R "$kp_src" "$work/kamal-proxy-src" && chmod -R u+w "$work/kamal-proxy-src"
+sed 's#https://acme-staging-v02.api.letsencrypt.org/directory#https://pebble:14000/dir#' \
+  "$work/kamal-proxy-src/internal/server/server.go" > "$work/server.go"
+mv "$work/server.go" "$work/kamal-proxy-src/internal/server/server.go"
+grep -q 'https://pebble:14000/dir' "$work/kamal-proxy-src/internal/server/server.go" || fail "staging URL not patched"
+(cd "$work/kamal-proxy-src" && GOOS=linux GOARCH="$goarch" CGO_ENABLED=0 GOFLAGS=-mod=mod \
+  go build -trimpath -ldflags "-X github.com/basecamp/kamal-proxy/internal/version.Version=v0.10.2-pebble" \
+  -o "$work/kamal-proxy-pebble" ./cmd/kamal-proxy)
+write_config "$work/app/qifa-acme.yaml" "  tls:
+    source: kamal
+    staging: true" "proxy_boot:
+  binary: $work/kamal-proxy-pebble"
+acme() { "$work/qifa" -c "$work/app/qifa-acme.yaml" "$@"; }
+acme proxy upgrade --ssh-user root
+on_host '/opt/qifa/proxy/bin/kamal-proxy version' | grep -q pebble || fail "test proxy not installed"
+acme deploy --version v6 >/dev/null
+on_host 'curl -fsS https://pebble:15000/roots/0 > /tmp/pebble-root.pem' || fail "cannot fetch Pebble's issuing root"
+# The first TLS handshake for app.test makes kamal-proxy order the certificate.
+issued=""
+for i in $(seq 1 30); do
+  if out=$(on_host "curl -fsS --cacert /tmp/pebble-root.pem --resolve app.test:443:127.0.0.1 https://app.test/version" 2>/dev/null); then
+    issued=$out; break
+  fi
+  sleep 1
+done
+if [ "$issued" != v6 ]; then
+  echo "--- kamal-proxy ---"; on_host 'journalctl -u qifa-proxy.service -n 30 --no-pager' || true
+  echo "--- pebble ---"; docker logs --tail 30 "$pebble" 2>&1 || true
+  echo "--- curl ---"; on_host "curl -sS -v --cacert /tmp/pebble-root.pem --resolve app.test:443:127.0.0.1 https://app.test/version" 2>&1 | tail -15 || true
+fi
+expect_eq "$issued" v6 "HTTPS with a certificate issued by the ACME server"
+on_host 'find /var/lib/qifa-proxy/.config/kamal-proxy/certs -type f -user qifa-proxy | grep -q .' \
+  || fail "no certificate in the proxy's pinned cache, owned by qifa-proxy"
+on_host '! ls /home/deploy/.config/kamal-proxy/certs/* >/dev/null 2>&1' \
+  || fail "ACME data landed in the deploy user's home"
+# Back to the stock proxy and the static certificate for the rest of the run.
+qifa proxy upgrade --ssh-user root >/dev/null
+qifa deploy --version v6 >/dev/null
+expect_eq "$(via_proxy /version)" v6 "static certificate again"
 
 step "remove: plain remove points at native remove; teardown keeps data; purge deletes it"
 if qifa remove >"$work/out" 2>&1; then fail "qifa remove succeeded without root"; fi

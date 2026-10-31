@@ -1,4 +1,4 @@
-FROM golang:1.25.1-alpine AS kamal-proxy-build
+FROM golang:1.27.3-alpine AS kamal-proxy-build
 
 RUN GOBIN=/out go install github.com/basecamp/kamal-proxy/cmd/kamal-proxy@v0.9.0
 
