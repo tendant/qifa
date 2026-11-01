@@ -32,8 +32,10 @@ uninstall:
 test:
 	go test ./...
 
+# Docker deploys against a throwaway SSH+Docker host, with a local zot
+# registry and kamal-proxy.
 test-e2e:
-	bash scripts/test-zot-e2e.sh
+	test/e2e/docker-e2e.sh
 
 # Native (systemd, no Docker on the target) deploys against a throwaway
 # systemd host container. Needs Docker locally, privileged containers allowed.

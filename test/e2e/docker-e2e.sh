@@ -1,24 +1,57 @@
 #!/usr/bin/env bash
+# End-to-end test for Docker deploys: build, push to a local zot registry,
+# pull and run on a throwaway SSH+Docker host behind kamal-proxy, including
+# zero downtime under load. See CONTRIBUTING.md.
+#
+#   test/e2e/docker-e2e.sh        (make test-e2e)
 set -euo pipefail
 
-ROOT_DIR=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
+ROOT_DIR=$(CDPATH= cd -- "$(dirname "$0")/../.." && pwd)
 E2E_DIR="$ROOT_DIR/test/e2e"
 TMP_DIR="$E2E_DIR/.tmp"
 SSH_DIR="$TMP_DIR/ssh"
 BIN_DIR="$TMP_DIR/bin"
-RUN_ROOT=${RUN_ROOT:-$(mktemp -d /tmp/qifa-zot-e2e-XXXXXX)}
+RUN_ROOT=${RUN_ROOT:-$(mktemp -d /tmp/qifa-docker-e2e-XXXXXX)}
 WEB_DIR="$RUN_ROOT/web-run"
 WORKER_DIR="$RUN_ROOT/worker-run"
 COMPOSE_FILE="$E2E_DIR/docker-compose.yml"
 REGISTRY_HOST="zottest:5001"
 REGISTRY_USER="testuser"
 REGISTRY_PASSWORD_VALUE="testpass"
-# Host ports, overridable when the defaults are taken on this machine. Inside
+# Host ports. A port set in the environment is used as given; otherwise the
+# default, or the next free port after it when something on this machine
+# already listens there (a local registry on 5001, an app on 8080). Inside
 # the compose network the registry is always zottest:5001.
-ZOT_PORT=${QIFA_E2E_ZOT_PORT:-5001}
-SSH_PORT=${QIFA_E2E_SSH_PORT:-2222}
-DOCKER_PORT=${QIFA_E2E_DOCKER_PORT:-23750}
-HTTP_PORT=${QIFA_E2E_HTTP_PORT:-8080}
+taken_ports=" "
+# Ports Docker has published for other containers count as taken even when
+# nothing answers on them (Docker Desktop reserves them in its VM). Our own
+# compose project's are not: it is torn down before starting.
+docker_ports=" $(docker ps --format '{{.Label "com.docker.compose.project"}} {{.Ports}}' 2>/dev/null \
+  | awk '$1 != "e2e"' | grep -oE ':[0-9]+->' | sed 's/[^0-9]//g' | sort -u | tr '\n' ' ')"
+port_in_use() { [[ "$docker_ports" == *" $1 "* ]] || (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null; }
+pick_port() {
+  local var=$1 port=$2 given=${!1:-}
+  if [[ -n "$given" ]]; then
+    port=$given
+  else
+    local tries=0
+    while port_in_use "$port" || [[ "$taken_ports" == *" $port "* ]]; do
+      port=$((port + 1)); tries=$((tries + 1))
+      if (( tries > 200 )); then echo "no free port near $2 for $var; set $var" >&2; exit 1; fi
+    done
+    [[ "$port" != "$2" ]] && echo "e2e: port $2 is in use; $var=$port" >&2
+  fi
+  taken_ports+="$port "
+  printf -v "$var" '%s' "$port"
+}
+pick_port QIFA_E2E_ZOT_PORT 5001
+pick_port QIFA_E2E_SSH_PORT 2222
+pick_port QIFA_E2E_DOCKER_PORT 23750
+pick_port QIFA_E2E_HTTP_PORT 8080
+ZOT_PORT=$QIFA_E2E_ZOT_PORT
+SSH_PORT=$QIFA_E2E_SSH_PORT
+DOCKER_PORT=$QIFA_E2E_DOCKER_PORT
+HTTP_PORT=$QIFA_E2E_HTTP_PORT
 export QIFA_E2E_ZOT_PORT=$ZOT_PORT QIFA_E2E_SSH_PORT=$SSH_PORT QIFA_E2E_DOCKER_PORT=$DOCKER_PORT QIFA_E2E_HTTP_PORT=$HTTP_PORT
 
 # The script later points DOCKER_HOST at the deploy host's inner daemon and
@@ -303,7 +336,7 @@ load_check() {
 docker --host "$DOCKER_HOST" ps
 docker --host "$DOCKER_HOST" images | grep "$REGISTRY_HOST/demo"
 
-echo "zot e2e test completed"
+printf "\nPASS: docker e2e\n"
 if [[ "${KEEP_E2E_ENV:-0}" == "1" ]]; then
   echo "environment kept running"
 fi

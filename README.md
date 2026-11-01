@@ -446,6 +446,7 @@ in their environment.
 Common issues and fixes: [docs/troubleshooting.md](docs/troubleshooting.md).
 Team and multi-machine setup: [docs/deploying.md](docs/deploying.md).
 Deploying without Docker: [docs/native.md](docs/native.md).
+Building and testing qifa: [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Status
 
