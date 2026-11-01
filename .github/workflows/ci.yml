@@ -31,7 +31,7 @@ jobs:
       - name: Run Go Tests
         run: make test
 
-      - name: Run Zot E2E Harness
+      - name: Run Docker E2E
         run: make test-e2e
 
       # Native deploys against a throwaway systemd server (no Docker on it),
