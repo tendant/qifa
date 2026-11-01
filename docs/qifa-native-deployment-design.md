@@ -1,7 +1,7 @@
 # Qifa Native Deployment — Design
 
 **Status:** Implemented on branch `native-deploy` (phases 1–3). User guide: [native.md](native.md)  
-**Scope:** Linux hosts, native application deployment without Docker  
+**Scope:** Linux hosts (systemd) and macOS hosts (launchd, §17), native application deployment without Docker  
 **Principle:** Keep Qifa simple: build → SSH upload → activate release → systemd restart → health check → rollback on failure.
 
 ## 1. Goals
@@ -18,7 +18,7 @@
 
 - Zero-downtime deployment and blue-green switching: a deploy restarts the process. §16.4 records a design, which is not planned.
 - TLS termination and domain routing in v1. The operator brings their own (Caddy, nginx) or binds the app port directly; §16 plans kamal-proxy for this.
-- Non-Linux platforms or init systems other than systemd.
+- Init systems other than systemd and, on macOS, launchd (§17). Windows.
 - Container image building for the native backend.
 - Language-specific packaging or dependency installation.
 
@@ -407,3 +407,21 @@ Zero downtime (§16.4) is not planned.
 **Verification:** `test/e2e/native-e2e.sh` runs the acceptance criterion against a Debian container with systemd as PID 1, sshd, sudo and no Docker: refusal before setup, idempotent setup, two deploys, an identical rebuild reused, a crashing release rolled back with its journal attached, env values with quotes, backslashes, `$`, `%` and newlines delivered byte-for-byte, the shared directory writable, and the privilege boundaries (deploy user limited to three `systemctl` verbs on its own unit; service account unable to read the env file or write its release).
 
 **Acceptance criterion:** On a Linux server with no Docker installed, after `qifa native setup`, `qifa deploy` ships a non-Docker application under systemd, `qifa status` / `qifa logs` report it, and a subsequent deploy whose health check fails leaves the previous release running, without the deploy user having unrestricted root.
+
+## 17. macOS hosts (launchd)
+
+`native.init: launchd` runs the app under launchd on a Mac. The release layout, upload, staging, `current` switch, env file, health check, rollback, lock, audit log and installed-program mode are the systemd ones; only supervision differs.
+
+**LaunchAgent, not LaunchDaemon.** The app is an agent in the deploy user's `gui/<uid>` domain, with its plist in `~/Library/LaunchAgents/qifa.<service>[.<role>].plist`. A daemon would survive logout and start before login, but it needs root to install and to control (a sudoers rule per verb, as on Linux), and it runs outside the user's session, cut off from the login keychain that CLIs on a Mac often keep credentials in. On a Mac with FileVault, nothing starts before someone unlocks the disk at the console, which logs that user in, so a daemon gains little. The agent's limits follow: `native.user` is the SSH user (validated, and checked by preflight with `id -un`), and preflight refuses a host where that user has no login session (`launchctl print gui/<uid>` fails).
+
+**No root.** `qifa setup` runs as the deploy user: it makes `<dir>/{releases,shared,log,etc}` and writes the plist, comparing before replacing as the systemd setup does with units, and loads nothing. Control is `launchctl` as that user: start = `bootstrap` (or `kickstart` when loaded); stop = `bootout`, waiting until launchd no longer has the job; restart = stop then start, so a plist setup rewrote takes effect (a `kickstart -k` would keep the loaded one). launchctl returns before the program runs, unlike systemd's `Type=exec`, so `qifa start` and `qifa restart` wait for the health check.
+
+**Plist.** `ProgramArguments` is `/bin/sh -c <fixed loader> <label> <dir>/etc/env <bin> <args...>`: the loader sources the env file if present (RenderEnv's output is valid sh) and `exec "$@"`. The argv travels as arguments and is never parsed by a shell; the env stays out of the plist (so out of `launchctl print`), and the plist changes only with the config, as a unit does, which keeps the preflight checksum meaningful. `KeepAlive` follows `native.restart` (mapping in native.md); `ThrottleInterval` 3 and `ExitTimeOut` 90 match `RestartSec` and systemd's stop timeout; `ProcessType` Standard avoids Background throttling. stdout and stderr go to `<dir>/log/<label>.log`, moved to `.1` past 10 MiB on restart (newsyslog needs root).
+
+**Shell.** sshd hands commands to the login shell, zsh on a Mac, which differs from sh (an unmatched glob is an error). On launchd hosts every script runs as `/bin/sh -c '<script>'`. Scripts shared with Linux pick their tools at run time where GNU and BSD differ: `relink` (`mv -T` / `mv -h`), `mtime` (`stat -c %Y` / `stat -f %m`), `sha256sum` / `shasum -a 256`; `chmod --` is gone (BSD chmod reads `--` as a file).
+
+**Artifacts.** `artifactArch` reads Mach-O as well as ELF, and refuses a Linux executable for launchd hosts or a macOS one for systemd hosts before uploading. A universal binary carries no single architecture and passes.
+
+**Out of scope on macOS:** systemd hardening (no equivalent without root), kamal-proxy (built and supervised for Linux), and creating users.
+
+**Tests.** Unit tests render and `plutil -lint` the plist and run its `ProgramArguments` against an env file and argv full of shell metacharacters. `test/e2e/launchd-e2e.sh` deploys to the Mac it runs on through the `local` host, as a real LaunchAgent.

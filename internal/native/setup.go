@@ -20,6 +20,10 @@ func (d *Deployer) setupDeployUser(deployUser string) (string, error) {
 	if deployUser == "" {
 		deployUser = d.cfg.SSH.User
 	}
+	if deployUser == "" && d.launchd() {
+		// On a Mac the deploy user is the user the app runs as.
+		deployUser = d.cfg.Native.User
+	}
 	if deployUser == "" {
 		return "", fmt.Errorf("setup needs the deploy user: set ssh.user in the config, or pass --deploy-user")
 	}
@@ -40,6 +44,11 @@ func (d *Deployer) PrintSetup(ctx context.Context, deployUser, host string, out 
 		return err
 	}
 	if host, err = d.printSetupHost(host); err != nil {
+		return err
+	}
+	if d.launchd() {
+		fmt.Fprintf(out, "#!/bin/sh\n# qifa setup for %s on %s; run as %s, not root (sh <this file>).\n", d.cfg.Service, host, d.cfg.Native.User)
+		_, err = io.WriteString(out, d.launchdSetupScript(host))
 		return err
 	}
 	systemctl, err := d.ssh.Run(ctx, host, "command -v systemctl")
@@ -75,6 +84,9 @@ func (d *Deployer) Setup(ctx context.Context, deployUser string) error {
 	if err != nil {
 		return err
 	}
+	if d.launchd() {
+		return d.setupLaunchd(ctx, deployUser)
+	}
 	for _, host := range d.hosts() {
 		d.log.Printf("setup %s: service user %s, deploy user %s, dir %s", host, d.cfg.Native.User, deployUser, d.cfg.Native.Dir)
 		systemctl, err := d.ssh.Run(ctx, host, "command -v systemctl")
@@ -91,6 +103,28 @@ func (d *Deployer) Setup(ctx context.Context, deployUser string) error {
 		}
 		if err != nil {
 			return fmt.Errorf("setup on %s (needs root, or a user with passwordless sudo — try --ssh-user root): %w", host, err)
+		}
+	}
+	d.log.Printf("setup complete; deploy with `qifa deploy` as %s", deployUser)
+	return nil
+}
+
+// setupLaunchd provisions Macs. It runs as the deploy user, who is also the
+// user the app runs as; there is nothing to do as root.
+func (d *Deployer) setupLaunchd(ctx context.Context, deployUser string) error {
+	if deployUser != d.cfg.Native.User {
+		return fmt.Errorf("with init: launchd the deploy user is the user the app runs as: native.user is %s, not %s", d.cfg.Native.User, deployUser)
+	}
+	for _, host := range d.hosts() {
+		d.log.Printf("setup %s: LaunchAgent for %s, dir %s", host, deployUser, d.cfg.Native.Dir)
+		out, err := d.run(ctx, host, d.launchdSetupScript(host))
+		for _, line := range strings.Split(out, "\n") {
+			if line != "" {
+				d.log.Printf("setup %s: %s", host, line)
+			}
+		}
+		if err != nil {
+			return fmt.Errorf("setup on %s (connect as %s, not root): %w", host, deployUser, err)
 		}
 	}
 	d.log.Printf("setup complete; deploy with `qifa deploy` as %s", deployUser)

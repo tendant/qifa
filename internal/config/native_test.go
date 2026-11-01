@@ -367,3 +367,66 @@ func TestNativeContainerProxyMode(t *testing.T) {
 		})
 	}
 }
+
+// agent-slow-town on a Mac: an installed program, run as a LaunchAgent of the
+// deploy user.
+const launchdBase = `service: slow-town
+servers:
+  web:
+    hosts: [mini]
+    cmd: [/Users/mini/go/bin/agent-runner]
+    app_port: 8080
+ssh:
+  user: mini
+healthcheck:
+  path: /health
+native:
+  init: launchd
+  user: mini
+  dir: /Users/mini/qifa/slow-town
+  workdir: /Users/mini/workspace/agent-slow-town
+`
+
+func TestNativeLaunchd(t *testing.T) {
+	cfg, err := loadString(t, launchdBase)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := cfg.Native
+	if !n.Launchd() || n.HardeningOn() || n.Dir != "/Users/mini/qifa/slow-town" {
+		t.Fatalf("launchd=%v hardening=%v dir=%q", n.Launchd(), n.HardeningOn(), n.Dir)
+	}
+	if got := cfg.NativeUnitName("web"); got != "qifa.slow-town" {
+		t.Fatalf("label = %s", got)
+	}
+	cfg, err = loadString(t, strings.Replace(launchdBase, "ssh:\n", "  worker:\n    hosts: [mini]\n    cmd: [/Users/mini/go/bin/agent-runner, work]\nssh:\n", 1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.NativeUnitName("worker"); got != "qifa.slow-town.worker" {
+		t.Fatalf("multi-role label = %s", got)
+	}
+}
+
+func TestNativeLaunchdRejects(t *testing.T) {
+	replace := map[string]struct{ old, new, want string }{
+		"unknown init": {"init: launchd", "init: upstart", "use systemd (Linux) or launchd (macOS)"},
+		"no dir":       {"  dir: /Users/mini/qifa/slow-town\n", "", "native.dir is required with init: launchd"},
+		"hardening":    {"  init: launchd\n", "  init: launchd\n  hardening: true\n", "launchd has none"},
+		"other user":   {"  init: launchd\n  user: mini\n", "  init: launchd\n  user: agent\n", "a LaunchAgent runs as the user who deploys it"},
+		"on-watchdog":  {"  init: launchd\n", "  init: launchd\n  restart: on-watchdog\n", "no launchd equivalent"},
+		"proxied":      {"ssh:\n", "proxy:\n  host: a.example.com\nssh:\n", "not supported with init: launchd"},
+		"proxy_boot":   {"ssh:\n", "proxy_boot:\n  mode: native\nssh:\n", "not supported with init: launchd"},
+	}
+	for name, c := range replace {
+		t.Run(name, func(t *testing.T) {
+			if !strings.Contains(launchdBase, c.old) {
+				t.Fatalf("test bug: %q not in base", c.old)
+			}
+			_, err := loadString(t, strings.Replace(launchdBase, c.old, c.new, 1))
+			if err == nil || !strings.Contains(err.Error(), c.want) {
+				t.Fatalf("got %v, want error containing %q", err, c.want)
+			}
+		})
+	}
+}

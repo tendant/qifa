@@ -99,7 +99,7 @@ func TestParseEnvRoundTrip(t *testing.T) {
 
 func TestPhase2ScriptsParse(t *testing.T) {
 	for name, s := range map[string]string{
-		"inventory": inventoryScript("/opt/qifa/app", []string{"qifa-app.service"}, "http://127.0.0.1:8080/up"),
+		"inventory": inventoryScript("/opt/qifa/app", []string{"qifa-app.service"}, func(u string) string { return "systemctl is-active " + u }, "http://127.0.0.1:8080/up"),
 		"switch":    switchScript("/opt/qifa/app", "v1"),
 		"remove":    removeReleasesScript("/opt/qifa/app", []string{"v1", "v2"}),
 		"teardown":  teardownScript("/opt/qifa/app", "app", "/etc/sudoers.d/qifa-app", []string{"qifa-app.service"}, true),

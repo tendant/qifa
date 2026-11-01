@@ -1,4 +1,4 @@
-.PHONY: build install uninstall test test-e2e test-e2e-native test-e2e-mixed ci
+.PHONY: build install uninstall test test-e2e test-e2e-native test-e2e-mixed test-e2e-launchd ci
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
@@ -46,5 +46,10 @@ test-e2e-native:
 # host.
 test-e2e-mixed:
 	test/e2e/mixed-e2e.sh
+
+# Native deploys to this Mac as a LaunchAgent (native.init: launchd). macOS
+# only; no Docker.
+test-e2e-launchd:
+	test/e2e/launchd-e2e.sh
 
 ci: test test-e2e

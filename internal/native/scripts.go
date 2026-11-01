@@ -18,6 +18,23 @@ func q(s string) string { return ssh.Quote(s) }
 
 func uploadPath(dir, id string) string { return dir + "/releases/." + id + ".tgz" }
 
+// The scripts run on Linux (GNU tools) and macOS (BSD tools). Where the two
+// differ, these pick at run time.
+
+// sha256Of prints "<hash>  <file>" for word, a shell word naming the file.
+func sha256Of(word string) string {
+	return fmt.Sprintf("{ sha256sum %[1]s 2>/dev/null || shasum -a 256 %[1]s; }", word)
+}
+
+// relinkFn defines relink, which atomically replaces the symlink $2 (to a
+// directory) with $1: GNU mv -T, or BSD mv -h, which do the same rename.
+const relinkFn = `relink() { if [ "$(uname -s)" = Darwin ]; then mv -h "$1" "$2"; else mv -T "$1" "$2"; fi; }
+`
+
+// mtimeFn defines mtime, which prints a file's mtime in epoch seconds, or 0.
+const mtimeFn = `mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || echo 0; }
+`
+
 // stageScript turns an uploaded archive into releases/<id>. It never touches
 // `current`, so a failure here leaves the running release alone.
 func stageScript(dir, id, sha string, sharedDirs, execs []string) string {
@@ -35,7 +52,7 @@ if [ -d "$id" ]; then
   fi
   rm -rf -- "$id"
 fi
-got=$(sha256sum "$tgz" | cut -d' ' -f1)
+got=$(` + sha256Of(`"$tgz"`) + ` | cut -d' ' -f1)
 if [ "$got" != "$sha" ]; then
   rm -f -- "$tgz"
   echo "upload checksum mismatch: got $got, expected $sha" >&2
@@ -59,7 +76,7 @@ rm -f -- "$tgz"
 			check, q(fmt.Sprintf("%s is missing from the release or not executable (check native.artifact and native.exec)", e)))
 	}
 	b.WriteString(`printf '%s\n' "$sha" > "$id.tmp/.qifa-checksum"
-chmod -R a+rX,go-w -- "$id.tmp"
+chmod -R a+rX,go-w "$id.tmp" # no --: BSD chmod takes it for a file; $id starts with a letter or digit
 mv -- "$id.tmp" "$id"
 echo staged
 `)
@@ -71,24 +88,24 @@ echo staged
 // env is kept as env.prev so a failed deploy restores both together.
 func activateScript(dir, id string) string {
 	return fmt.Sprintf(`set -eu
-cd %s
+%scd %s
 prev=$(readlink current 2>/dev/null || true)
 if [ -f etc/env ]; then cp -p etc/env etc/env.prev; else rm -f etc/env.prev; fi
 mv -f etc/env.next etc/env
 ln -sfn %s current.tmp
-mv -T current.tmp current
+relink current.tmp current
 printf '%%s' "$prev"
-`, q(dir), q("releases/"+id))
+`, relinkFn, q(dir), q("releases/"+id))
 }
 
 // revertScript points `current` back at prev and restores the env it ran with.
 func revertScript(dir, prev string) string {
 	return fmt.Sprintf(`set -eu
-cd %s
+%scd %s
 if [ -f etc/env.prev ]; then mv -f etc/env.prev etc/env; fi
 ln -sfn %s current.tmp
-mv -T current.tmp current
-`, q(dir), q(prev))
+relink current.tmp current
+`, relinkFn, q(dir), q(prev))
 }
 
 func markOKScript(dir, id string) string {
@@ -98,8 +115,9 @@ func markOKScript(dir, id string) string {
 // healthScript waits until the unit is active and, if url is set, answers it.
 // Without a URL, the unit must be seen active on two checks an interval apart:
 // a process that crashes on startup is "active" for an instant before systemd
-// notices, and one look would pass it.
-func healthScript(unit, url string, timeoutSec, intervalSec, attemptSec int) string {
+// notices, and one look would pass it. isActive and state are the init
+// system's shell condition and state command for the unit.
+func healthScript(unit, isActive, state, url string, timeoutSec, intervalSec, attemptSec int) string {
 	if intervalSec < 1 {
 		intervalSec = 1
 	}
@@ -116,18 +134,18 @@ func healthScript(unit, url string, timeoutSec, intervalSec, attemptSec int) str
 end=$(( $(date +%%s) + %d ))
 ok=0
 while :; do
-  if systemctl is-active --quiet "$unit"; then
+  if %s; then
     %s
   else
     ok=0
   fi
   if [ "$(date +%%s)" -ge "$end" ]; then
-    echo "$unit: $(systemctl is-active "$unit" 2>&1 || true)" >&2
+    echo "$unit: $(%s 2>&1 || true)" >&2
     exit 1
   fi
   sleep %d
 done
-`, q(unit), timeoutSec, probe, intervalSec)
+`, q(unit), timeoutSec, isActive, probe, state, intervalSec)
 }
 
 // diagnosticsScript is attached to a failed deploy, so the reason a unit did
@@ -140,7 +158,7 @@ func diagnosticsScript(unit string) string {
 // on every host before changing any of them.
 func preflightScript(dir string, units []string, routed bool, proxyCLI string) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "echo arch=$(uname -m)\n")
+	fmt.Fprintf(&b, "echo arch=$(uname -m)\necho os=$(uname -s)\n")
 	fmt.Fprintf(&b, "if command -v systemctl >/dev/null 2>&1; then echo systemd=yes; else echo systemd=no; fi\n")
 	fmt.Fprintf(&b, "if [ -d %[1]s/releases ] && [ -w %[1]s/releases ] && [ -w %[1]s/etc ]; then echo dir=ok; else echo dir=missing; fi\n", q(dir))
 	for _, u := range units {
@@ -182,22 +200,22 @@ func parseKV(out string) map[string]string {
 //
 // The healthy time is the .qifa-ok mtime, refreshed on every deploy or
 // rollback that passes, so "newest healthy" means "most recently live".
-func inventoryScript(dir string, units []string, url string) string {
+func inventoryScript(dir string, units []string, state func(unit string) string, url string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "cd %s 2>/dev/null || exit 0\n", q(dir))
-	b.WriteString(`echo "current=$(readlink current 2>/dev/null || true)"
+	b.WriteString(mtimeFn + `echo "current=$(readlink current 2>/dev/null || true)"
 echo "installed=$(cat etc/version 2>/dev/null || true)"
 for d in releases/*/; do
   d=${d%/}; id=${d#releases/}
   case "$id" in *.tmp) echo "tmp=$id"; continue;; esac
   [ -d "$d" ] || continue
-  st=$(stat -c %Y "$d/.qifa-checksum" 2>/dev/null || echo 0)
-  ok=$(stat -c %Y "$d/.qifa-ok" 2>/dev/null || echo 0)
+  st=$(mtime "$d/.qifa-checksum")
+  ok=$(mtime "$d/.qifa-ok")
   echo "release=$id $st $ok"
 done
 `)
 	for _, u := range units {
-		fmt.Fprintf(&b, "echo \"unit=%s $(systemctl is-active %s 2>/dev/null)\"\n", u, q(u))
+		fmt.Fprintf(&b, "echo \"unit=%s $(%s)\"\n", u, state(u))
 	}
 	if url != "" {
 		fmt.Fprintf(&b, "if curl -fsS -o /dev/null --max-time 3 %s 2>/dev/null; then echo health=up; else echo health=down; fi\n", q(url))
@@ -210,14 +228,14 @@ done
 // printing the previous target.
 func switchScript(dir, id string) string {
 	return fmt.Sprintf(`set -eu
-cd %s
+%scd %s
 [ -d %s ] || { echo "release %s is not on this host" >&2; exit 2; }
 prev=$(readlink current 2>/dev/null || true)
 rm -f etc/env.prev
 ln -sfn %s current.tmp
-mv -T current.tmp current
+relink current.tmp current
 printf '%%s' "$prev"
-`, q(dir), q("releases/"+id), id, q("releases/"+id))
+`, relinkFn, q(dir), q("releases/"+id), id, q("releases/"+id))
 }
 
 func removeReleasesScript(dir string, ids []string) string {

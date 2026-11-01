@@ -4,8 +4,23 @@
 
 ### Added
 
+- **Native deploys to macOS: `native.init: launchd`.** The app runs as a
+  LaunchAgent of the deploy user (`~/Library/LaunchAgents/qifa.<service>.plist`)
+  instead of a systemd unit, with no root anywhere: `qifa setup` runs as that
+  user, deploys load the agent with `launchctl`. Releases, env, health checks,
+  rollback, status, logs (`<dir>/log/`), `app exec` and installed programs work
+  as on Linux; `hardening` and the proxy do not apply. A release's executables
+  are checked to be macOS builds (Mach-O). See docs/native.md, "macOS hosts".
+  `make test-e2e-launchd` runs it end to end on the Mac you are on.
+
 - `qifa setup --print --host <host>` prints one host's setup script from a
   config with several hosts. Before, `--print` refused such configs.
+
+### Fixed
+
+- Native release scripts ran only with GNU tools (`mv -T`, `stat -c`,
+  `sha256sum`, `chmod --`); they now pick the BSD equivalents on macOS.
+  Linux hosts behave as before.
 
 ## v0.4.0 — 2026-10-31
 

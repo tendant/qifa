@@ -9,6 +9,7 @@ make test             # unit tests (go test ./...)
 make test-e2e         # Docker deploys, end to end
 make test-e2e-native  # native (systemd) deploys, end to end
 make test-e2e-mixed   # Docker and native apps on one server
+make test-e2e-launchd # native deploys to this Mac, under launchd (macOS only)
 ```
 
 The end-to-end suites need Docker on your machine, only to provide
@@ -65,6 +66,17 @@ status, reconcile, prune, certificates from a local ACME server (Pebble, for
 kamal-proxy and for `tls.source: qifa`), a program installed on the server
 (no artifact, `workdir`, `hardening: false`, `setup --print`), and remove.
 SSH port 2299 (`QIFA_NATIVE_E2E_PORT`).
+
+### `test-e2e-launchd`: native deploys on macOS
+
+[`test/e2e/launchd-e2e.sh`](test/e2e/launchd-e2e.sh) needs no Docker: it
+deploys [`test/e2e/native-app`](test/e2e/native-app) to the Mac it runs on
+(`hosts: [local]`, `native.init: launchd`) as a real LaunchAgent in your login
+session: setup without root, deploys, the env file byte for byte, a crashing
+release rolled back, launchd restarting a killed app, restart/stop/start,
+logs, `app exec`, status, rollback, and remove. Everything lives in a temp
+directory and the agent is booted out at the end. Port 38085
+(`QIFA_LAUNCHD_E2E_PORT`).
 
 ### `test-e2e-mixed`: one proxy for Docker and native
 

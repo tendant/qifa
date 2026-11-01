@@ -46,7 +46,7 @@ func (d *Deployer) deployInstalledHost(ctx context.Context, deployment state.Dep
 	if err := d.ssh.Upload(ctx, host, dir+"/etc/env.next", envFile, 0o600); err != nil {
 		return fmt.Errorf("%s: upload env: %w", host, err)
 	}
-	out, err := d.ssh.Run(ctx, host, installEnvScript(dir, id))
+	out, err := d.run(ctx, host, installEnvScript(dir, id))
 	if err != nil {
 		return fmt.Errorf("%s: install env: %w", host, err)
 	}
@@ -57,12 +57,12 @@ func (d *Deployer) deployInstalledHost(ctx context.Context, deployment state.Dep
 		event("failed", err.Error())
 		if !hadEnv {
 			for _, unit := range d.unitsOn(host) {
-				_, _ = d.ssh.Sudo(ctx, host, "systemctl", "stop", unit)
+				_ = d.control(ctx, host, "stop", unit)
 			}
 			return fmt.Errorf("%w\nfirst deploy on %s failed (units stopped)", err, host)
 		}
 		d.log.Printf("%s: restoring the previous env", host)
-		if _, rerr := d.ssh.Run(ctx, host, revertEnvScript(dir)); rerr != nil {
+		if _, rerr := d.run(ctx, host, revertEnvScript(dir)); rerr != nil {
 			return fmt.Errorf("%w\nROLLBACK FAILED on %s: could not restore the env: %v", err, host, rerr)
 		}
 		if rerr := d.restartAndCheck(ctx, host); rerr != nil {
@@ -70,7 +70,7 @@ func (d *Deployer) deployInstalledHost(ctx context.Context, deployment state.Dep
 		}
 		return fmt.Errorf("%w\nrestored the previous env on %s (the program itself is whatever is installed)", err, host)
 	}
-	if _, err := d.ssh.Run(ctx, host, "rm -f "+q(dir+"/etc/env.prev")); err != nil {
+	if _, err := d.run(ctx, host, "rm -f "+q(dir+"/etc/env.prev")); err != nil {
 		d.log.Printf("warning: %s: %v", host, err)
 	}
 	if d.routedOn(host) {

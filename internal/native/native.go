@@ -214,24 +214,41 @@ func (d *Deployer) Deploy(ctx context.Context) error {
 }
 
 // artifactArch returns the architecture of the release's executables, checked
-// against native.arch. "" means none of them is ELF (scripts, a JVM jar).
+// against native.arch and the hosts' OS (Linux for systemd, macOS for
+// launchd). "" means none of them is a Linux or macOS executable (scripts, a
+// JVM jar, a universal macOS binary).
 func (d *Deployer) artifactArch(pkg *Package) (string, error) {
 	want := d.cfg.Native.Arch
+	goos := "linux"
+	if d.launchd() {
+		goos = "darwin"
+	}
 	found := ""
 	for _, role := range fleet.OrderedRoles(d.cfg.Servers) {
 		local := ExecPathInArtifact(d.cfg.Native.Artifact, pkg.IsDir, d.cfg.NativeExec(role)[0])
 		if local == "" {
 			continue
 		}
-		arch, err := ELFArch(local)
+		elfArch, err := ELFArch(local)
 		if err != nil {
 			return "", fmt.Errorf("native.exec for %s: %w", role, err)
+		}
+		machArch, err := MachOArch(local)
+		if err != nil {
+			return "", fmt.Errorf("native.exec for %s: %w", role, err)
+		}
+		arch, built := elfArch, "linux"
+		if machArch != "" {
+			arch, built = machArch, "darwin"
 		}
 		if arch == "" {
 			continue
 		}
+		if built != goos {
+			return "", fmt.Errorf("%s is a %s executable but the hosts run %s (build with GOOS=%s)", local, built, goos, goos)
+		}
 		if want != "" && arch != want {
-			return "", fmt.Errorf("%s is built for %s but native.arch is %s (cross-compile, e.g. GOOS=linux GOARCH=%s)", local, arch, want, want)
+			return "", fmt.Errorf("%s is built for %s but native.arch is %s (cross-compile, e.g. GOOS=%s GOARCH=%s)", local, arch, want, goos, want)
 		}
 		found = arch
 	}
@@ -269,20 +286,34 @@ func (d *Deployer) checkHost(ctx context.Context, host, artifactArch string) (pr
 			installed = append(installed, bin)
 		}
 	}
-	out, err := d.ssh.Run(ctx, host, preflightScript(d.cfg.Native.Dir, d.unitsOn(host), routed, d.proxyCLI())+
-		installedCheckScript(installed, d.cfg.Native.Workdir))
+	script := preflightScript(d.cfg.Native.Dir, d.unitsOn(host), routed, d.proxyCLI())
+	if d.launchd() {
+		script = launchdPreflight(d.cfg.Native.Dir, d.unitsOn(host))
+	}
+	out, err := d.run(ctx, host, script+installedCheckScript(installed, d.cfg.Native.Workdir))
 	if err != nil {
 		return nil, nil, err
 	}
 	kv := parseKV(out)
-	if kv["systemd"] != "yes" {
-		return []string{"systemd is not available"}, nil, nil
-	}
-	if kv["bus"] != "ok" {
-		problems = append(problems, fmt.Sprintf("systemctl cannot reach systemd as %s (no D-Bus system bus?) — install dbus", d.sshUser()))
-	}
-	if kv["dir"] != "ok" {
-		problems = append(problems, fmt.Sprintf("%s is missing or not writable by %s — run `qifa setup --ssh-user root`", d.cfg.Native.Dir, d.sshUser()))
+	setup := "qifa setup --ssh-user root"
+	if d.launchd() {
+		setup = "qifa setup"
+		if problems = d.checkLaunchdHost(kv); len(problems) > 0 && kv["os"] != "Darwin" {
+			return problems, nil, nil
+		}
+	} else {
+		if kv["systemd"] != "yes" {
+			if kv["os"] == "Darwin" {
+				return []string{"systemd is not available: this is a macOS host — set native.init: launchd"}, nil, nil
+			}
+			return []string{"systemd is not available"}, nil, nil
+		}
+		if kv["bus"] != "ok" {
+			problems = append(problems, fmt.Sprintf("systemctl cannot reach systemd as %s (no D-Bus system bus?) — install dbus", d.sshUser()))
+		}
+		if kv["dir"] != "ok" {
+			problems = append(problems, fmt.Sprintf("%s is missing or not writable by %s — run `%s`", d.cfg.Native.Dir, d.sshUser(), setup))
+		}
 	}
 	for _, role := range d.rolesOn(host) {
 		if bin := d.cfg.NativeExec(role)[0]; path.IsAbs(bin) && kv["exec:"+bin] != "ok" {
@@ -290,7 +321,7 @@ func (d *Deployer) checkHost(ctx context.Context, host, artifactArch string) (pr
 		}
 	}
 	if w := d.cfg.Native.Workdir; w != "" && kv["workdir"] != "ok" {
-		problems = append(problems, fmt.Sprintf("native.workdir %s does not exist — create it, or run `qifa setup --ssh-user root`", w))
+		problems = append(problems, fmt.Sprintf("native.workdir %s does not exist — create it, or run `%s`", w, setup))
 	}
 	hostArch := UnameArch(kv["arch"])
 	if want := firstNonEmpty(d.cfg.Native.Arch, artifactArch); want != "" && hostArch != want {
@@ -298,6 +329,16 @@ func (d *Deployer) checkHost(ctx context.Context, host, artifactArch string) (pr
 	}
 	for _, role := range d.rolesOn(host) {
 		unit := d.cfg.NativeUnitName(role)
+		if d.launchd() {
+			switch kv["unitsum:"+unit] {
+			case "":
+				problems = append(problems, fmt.Sprintf("LaunchAgent %s is not installed — run `qifa setup`", unit))
+			case d.launchdUnitSum(role):
+			default:
+				problems = append(problems, fmt.Sprintf("LaunchAgent %s differs from the config (exec, dir or restart changed) — run `qifa setup`", unit))
+			}
+			continue
+		}
 		if kv["sudo:"+unit] != "ok" {
 			problems = append(problems, fmt.Sprintf("%s may not run `sudo -n systemctl restart %s` — run `qifa setup --ssh-user root`", d.sshUser(), unit))
 		}
@@ -354,7 +395,7 @@ func (d *Deployer) deployHost(ctx context.Context, deployment state.Deployment, 
 	for _, role := range d.rolesOn(host) {
 		execs = append(execs, d.cfg.NativeExec(role)[0])
 	}
-	out, err := d.ssh.Run(ctx, host, stageScript(n.Dir, id, pkg.SHA256, n.SharedDirs, execs))
+	out, err := d.run(ctx, host, stageScript(n.Dir, id, pkg.SHA256, n.SharedDirs, execs))
 	if err != nil {
 		return fmt.Errorf("%s: stage release %s: %w", host, id, err)
 	}
@@ -366,7 +407,7 @@ func (d *Deployer) deployHost(ctx context.Context, deployment state.Deployment, 
 	}
 
 	// Past this point the live release changes; any failure restores it.
-	prev, err := d.ssh.Run(ctx, host, activateScript(n.Dir, id))
+	prev, err := d.run(ctx, host, activateScript(n.Dir, id))
 	if err != nil {
 		return fmt.Errorf("%s: activate %s: %w", host, id, err)
 	}
@@ -378,7 +419,7 @@ func (d *Deployer) deployHost(ctx context.Context, deployment state.Deployment, 
 		event("failed", err.Error())
 		return d.recover(ctx, host, prev, err)
 	}
-	if _, err := d.ssh.Run(ctx, host, markOKScript(n.Dir, id)); err != nil {
+	if _, err := d.run(ctx, host, markOKScript(n.Dir, id)); err != nil {
 		return fmt.Errorf("%s: mark release %s healthy: %w", host, id, err)
 	}
 	if d.routedOn(host) {
@@ -397,14 +438,19 @@ func (d *Deployer) deployHost(ctx context.Context, deployment state.Deployment, 
 
 // restartAndCheck restarts every unit on host and waits for each to pass.
 func (d *Deployer) restartAndCheck(ctx context.Context, host string) error {
-	hc := d.cfg.Health()
 	for _, role := range d.rolesOn(host) {
 		unit := d.cfg.NativeUnitName(role)
 		d.log.Printf("%s: restarting %s", host, unit)
-		if _, err := d.ssh.Sudo(ctx, host, "systemctl", "restart", unit); err != nil {
+		if err := d.control(ctx, host, "restart", unit); err != nil {
 			return d.withDiagnostics(ctx, host, unit, fmt.Errorf("%s: restart %s: %w", host, unit, err))
 		}
 	}
+	return d.waitHealthy(ctx, host)
+}
+
+// waitHealthy waits for every unit on host to pass its health check.
+func (d *Deployer) waitHealthy(ctx context.Context, host string) error {
+	hc := d.cfg.Health()
 	for _, role := range d.rolesOn(host) {
 		unit := d.cfg.NativeUnitName(role)
 		url := d.healthURL(role)
@@ -413,8 +459,8 @@ func (d *Deployer) restartAndCheck(ctx context.Context, host string) error {
 			what = url
 		}
 		d.log.Printf("%s: waiting for %s (%s)", host, unit, what)
-		script := healthScript(unit, url, int(hc.DeployTimeout.Seconds()), int(hc.Interval.Seconds()), int(hc.Timeout.Seconds()))
-		if _, err := d.ssh.Run(ctx, host, script); err != nil {
+		script := healthScript(unit, d.isActive(unit), d.unitState(unit), url, int(hc.DeployTimeout.Seconds()), int(hc.Interval.Seconds()), int(hc.Timeout.Seconds()))
+		if _, err := d.run(ctx, host, script); err != nil {
 			return d.withDiagnostics(ctx, host, unit, fmt.Errorf("%s: %s did not become healthy within %s: %w", host, unit, hc.DeployTimeout, err))
 		}
 	}
@@ -427,12 +473,12 @@ func (d *Deployer) restartAndCheck(ctx context.Context, host string) error {
 func (d *Deployer) recover(ctx context.Context, host, prev string, cause error) error {
 	if prev == "" {
 		for _, unit := range d.unitsOn(host) {
-			_, _ = d.ssh.Sudo(ctx, host, "systemctl", "stop", unit)
+			_ = d.control(ctx, host, "stop", unit)
 		}
 		return fmt.Errorf("%w\nfirst deploy on %s failed; there is no previous release to restore (units stopped)", cause, host)
 	}
 	d.log.Printf("%s: rolling back to %s", host, prev)
-	if _, err := d.ssh.Run(ctx, host, revertScript(d.cfg.Native.Dir, prev)); err != nil {
+	if _, err := d.run(ctx, host, revertScript(d.cfg.Native.Dir, prev)); err != nil {
 		return fmt.Errorf("%w\nROLLBACK FAILED on %s: could not restore %s: %v", cause, host, prev, err)
 	}
 	if err := d.restartAndCheck(ctx, host); err != nil {
@@ -443,7 +489,7 @@ func (d *Deployer) recover(ctx context.Context, host, prev string, cause error) 
 }
 
 func (d *Deployer) withDiagnostics(ctx context.Context, host, unit string, cause error) error {
-	out, _ := d.ssh.Run(ctx, host, diagnosticsScript(unit))
+	out, _ := d.run(ctx, host, d.diagnostics(unit))
 	if strings.TrimSpace(out) == "" {
 		return cause
 	}
@@ -493,7 +539,12 @@ func (d *Deployer) Plan(ctx context.Context, out io.Writer) error {
 	for _, role := range fleet.OrderedRoles(d.cfg.Servers) {
 		check := firstNonEmpty(d.healthURL(role), "unit active")
 		fmt.Fprintf(out, "  Role %s: %s on %v\n", role, d.cfg.NativeUnitName(role), d.cfg.Servers[role].Hosts)
-		fmt.Fprintf(out, "    ExecStart=%s\n", ExecStart(n.Dir, d.cfg.NativeExec(role)))
+		if d.launchd() {
+			fmt.Fprintf(out, "    launchd: LaunchAgent %s, logs in %s\n", d.cfg.NativeUnitName(role), d.logFile(d.cfg.NativeUnitName(role)))
+			fmt.Fprintf(out, "    cmd:     %s\n", strings.Join(RenderArgv(n.Dir, d.cfg.NativeExec(role)), " "))
+		} else {
+			fmt.Fprintf(out, "    ExecStart=%s\n", ExecStart(n.Dir, d.cfg.NativeExec(role)))
+		}
 		fmt.Fprintf(out, "    health:  %s (within %s)\n", check, d.cfg.Health().DeployTimeout)
 	}
 	if n.Installed() {
@@ -511,9 +562,17 @@ func (d *Deployer) Restart(ctx context.Context) error { return d.eachUnit(ctx, "
 func (d *Deployer) eachUnit(ctx context.Context, verb string) error {
 	for _, host := range d.hosts() {
 		for _, unit := range d.unitsOn(host) {
-			d.log.Printf("%s: systemctl %s %s", host, verb, unit)
-			if _, err := d.ssh.Sudo(ctx, host, "systemctl", verb, unit); err != nil {
+			d.log.Printf("%s: %s %s", host, verb, unit)
+			if err := d.control(ctx, host, verb, unit); err != nil {
 				return d.withDiagnostics(ctx, host, unit, err)
+			}
+		}
+		// launchctl returns once launchd has the job, before the program
+		// runs (systemd's Type=exec waits for the exec), so say it started
+		// only once it is up.
+		if d.launchd() && verb != "stop" {
+			if err := d.waitHealthy(ctx, host); err != nil {
+				return err
 			}
 		}
 	}
@@ -533,6 +592,15 @@ func (d *Deployer) Logs(ctx context.Context, lines int, follow bool, out io.Writ
 		if follow {
 			cmd = append(cmd, "-f")
 		}
+		if d.launchd() {
+			cmd = []string{"tail", "-n", fmt.Sprint(lines)}
+			if follow {
+				cmd = append(cmd, "-F")
+			}
+			for _, unit := range d.unitsOn(host) {
+				cmd = append(cmd, d.logFile(unit))
+			}
+		}
 		quoted := make([]string, len(cmd))
 		for i, c := range cmd {
 			quoted[i] = q(c)
@@ -540,12 +608,12 @@ func (d *Deployer) Logs(ctx context.Context, lines int, follow bool, out io.Writ
 		return strings.Join(quoted, " ")
 	}
 	if len(hosts) == 1 {
-		return d.ssh.Stream(ctx, hosts[0], command(hosts[0]), out)
+		return d.stream(ctx, hosts[0], command(hosts[0]), out)
 	}
 	var mu sync.Mutex
 	stream := func(host string) error {
 		w := &fleet.PrefixWriter{Prefix: host + " | ", Out: out, Mu: &mu}
-		err := d.ssh.Stream(ctx, host, command(host), w)
+		err := d.stream(ctx, host, command(host), w)
 		w.Flush()
 		if err != nil {
 			return fmt.Errorf("%s: %w", host, err)
@@ -580,6 +648,9 @@ func (d *Deployer) Logs(ctx context.Context, lines int, follow bool, out io.Writ
 // on a command line. Needs the SETENV rule `qifa setup` installs.
 func (d *Deployer) Exec(ctx context.Context, command string, out io.Writer) error {
 	host := d.cfg.Servers[fleet.OrderedRoles(d.cfg.Servers)[0]].Hosts[0]
+	if d.launchd() {
+		return d.stream(ctx, host, launchdExecScript(d.cfg.Native.Dir, d.workdir(), command), out)
+	}
 	return d.ssh.Stream(ctx, host, execScript(d.cfg.Native.Dir, d.workdir(), d.cfg.Native.User, command), out)
 }
 

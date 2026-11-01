@@ -77,7 +77,11 @@ func runNative(ctx context.Context, args []string, stdout, stderr io.Writer, con
 		return d.Setup(ctx, deployUser)
 	}
 	if purge && !yes {
-		fmt.Fprintf(stdout, "--purge deletes %s on every host — every release and all shared data — and the %s account.\nType the service name (%s) to confirm: ", cfg.Native.Dir, cfg.Native.User, cfg.Service)
+		account := fmt.Sprintf(" — and the %s account", cfg.Native.User)
+		if cfg.Native.Launchd() {
+			account = "" // the deploy user's own login; never deleted
+		}
+		fmt.Fprintf(stdout, "--purge deletes %s on every host — every release and all shared data%s.\nType the service name (%s) to confirm: ", cfg.Native.Dir, account, cfg.Service)
 		line, _ := bufio.NewReader(confirmInput).ReadString('\n')
 		if strings.TrimSpace(line) != cfg.Service {
 			return errors.New("not confirmed; nothing was removed")
@@ -270,7 +274,11 @@ func runRemove(ctx context.Context, args []string, stdout, stderr io.Writer, con
 		return err
 	}
 	if purge && cfg.IsNative() && !yes {
-		fmt.Fprintf(stdout, "--purge deletes %s on every host — every release and all shared data — and the %s account.\nType the service name (%s) to confirm: ", cfg.Native.Dir, cfg.Native.User, cfg.Service)
+		account := fmt.Sprintf(" — and the %s account", cfg.Native.User)
+		if cfg.Native.Launchd() {
+			account = "" // the deploy user's own login; never deleted
+		}
+		fmt.Fprintf(stdout, "--purge deletes %s on every host — every release and all shared data%s.\nType the service name (%s) to confirm: ", cfg.Native.Dir, account, cfg.Service)
 		line, _ := bufio.NewReader(confirmInput).ReadString('\n')
 		if strings.TrimSpace(line) != cfg.Service {
 			return errors.New("not confirmed; nothing was removed")

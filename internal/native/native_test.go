@@ -197,8 +197,8 @@ func TestScriptsParse(t *testing.T) {
 		"activate":    activateScript("/opt/qifa/app", "abc123"),
 		"revert":      revertScript("/opt/qifa/app", "releases/old"),
 		"markok":      markOKScript("/opt/qifa/app", "abc123"),
-		"health-http": healthScript("qifa-app.service", "http://127.0.0.1:8080/up", 30, 2, 5),
-		"health":      healthScript("qifa-app.service", "", 30, 2, 5),
+		"health-http": healthScript("qifa-app.service", "systemctl is-active --quiet qifa-app.service", "systemctl is-active qifa-app.service", "http://127.0.0.1:8080/up", 30, 2, 5),
+		"health":      healthScript("qifa-app.service", "systemctl is-active --quiet qifa-app.service", "systemctl is-active qifa-app.service", "", 30, 2, 5),
 		"preflight":   preflightScript("/opt/qifa/app", []string{"qifa-app.service"}, true, proxy.NativeCLI()),
 		"diagnostics": diagnosticsScript("qifa-app.service"),
 		"installed":   installedCheckScript([]string{"/usr/local/bin/app"}, "/srv/app"),
@@ -215,17 +215,9 @@ func TestScriptsParse(t *testing.T) {
 	}
 }
 
-// The stage, activate and revert scripts run for real against a temp dir
-// (sha256sum and mv -T are GNU; skipped where they are missing).
+// The stage, activate and revert scripts run for real against a temp dir,
+// with GNU tools on Linux and BSD tools on macOS.
 func TestReleaseLifecycleLocally(t *testing.T) {
-	for _, tool := range []string{"sha256sum"} {
-		if _, err := exec.LookPath(tool); err != nil {
-			t.Skipf("%s not available", tool)
-		}
-	}
-	if err := exec.Command("sh", "-c", "mv -T /dev/null /dev/null 2>&1 | grep -q 'invalid option\\|illegal option'").Run(); err == nil {
-		t.Skip("mv -T not supported (BSD mv)")
-	}
 	base := t.TempDir()
 	dir := filepath.Join(base, "app")
 	for _, sub := range []string{"releases", "etc", "shared/storage"} {

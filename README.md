@@ -248,7 +248,8 @@ native:
 Releases, rollback, status and env work as they do for containers. For HTTPS
 and domains, kamal-proxy runs natively too (`qifa proxy boot --ssh-user root`,
 then a `proxy:` block). Deploys restart the process; there is no
-zero-downtime switch. See
+zero-downtime switch. On a Mac, `native.init: launchd` runs the app as a
+LaunchAgent instead, with no root needed. See
 [docs/native.md](docs/native.md).
 
 ### Keys shared by both modes

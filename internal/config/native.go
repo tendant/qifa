@@ -8,10 +8,14 @@ import (
 	"strings"
 )
 
-// Native deploys the app as a systemd service running a release directory on
-// each host, instead of as a container. Its presence selects native mode.
-// See docs/qifa-native-deployment-design.md.
+// Native deploys the app as a systemd service (or, on macOS, a launchd
+// agent) running a release directory on each host, instead of as a container.
+// Its presence selects native mode. See docs/qifa-native-deployment-design.md.
 type Native struct {
+	// Init is the service manager on the hosts: systemd (the default), or
+	// launchd for macOS hosts, where the app runs as a LaunchAgent in the
+	// deploy user's login session (see docs/qifa-native-deployment-design.md).
+	Init string `yaml:"init,omitempty"`
 	// Build runs on the deployer, in the config's directory, before upload.
 	// Optional: the artifact may be produced by CI or a hook instead.
 	Build string `yaml:"build"`
@@ -39,7 +43,9 @@ type Native struct {
 	// Retain is how many releases to keep on each host.
 	// Deprecated: use prune.retain.
 	Retain int `yaml:"retain,omitempty"`
-	// Restart is the systemd Restart= policy.
+	// Restart is the systemd Restart= policy. With launchd it sets KeepAlive:
+	// always, no, on-success, and on-failure (on-abnormal, on-abort) for
+	// "restart unless it exited 0".
 	Restart string `yaml:"restart"`
 	// SharedDirs are directories under shared/ linked into every release, for
 	// data that must outlive a release (uploads, sqlite files, logs).
@@ -56,7 +62,11 @@ type Native struct {
 }
 
 // HardeningOn reports whether the unit gets systemd hardening (the default).
-func (n *Native) HardeningOn() bool { return n.Hardening == nil || *n.Hardening }
+// launchd has no equivalent, so a launchd unit never does.
+func (n *Native) HardeningOn() bool { return !n.Launchd() && (n.Hardening == nil || *n.Hardening) }
+
+// Launchd reports whether the hosts are Macs running the app under launchd.
+func (n *Native) Launchd() bool { return n.Init == InitLaunchd }
 
 // Installed reports whether the config runs a program already on the server
 // instead of shipping releases.
@@ -68,6 +78,9 @@ func (c *Config) IsNative() bool { return c.Native != nil }
 const (
 	NativeDefaultRetain  = 5
 	NativeDefaultRestart = "on-failure"
+
+	InitSystemd = "systemd"
+	InitLaunchd = "launchd"
 )
 
 var (
@@ -78,9 +91,15 @@ var (
 	nativeDirRe  = regexp.MustCompile(`^/[A-Za-z0-9_./-]+$`)
 )
 
-// NativeUnitName is the systemd unit for a role. A single-role service gets
-// the short name; several roles get one unit each.
+// NativeUnitName is the systemd unit, or the launchd label, for a role. A
+// single-role service gets the short name; several roles get one unit each.
 func (c *Config) NativeUnitName(role string) string {
+	if c.Native != nil && c.Native.Launchd() {
+		if len(c.Servers) == 1 {
+			return "qifa." + c.Service
+		}
+		return "qifa." + c.Service + "." + role
+	}
 	if len(c.Servers) == 1 {
 		return "qifa-" + c.Service + ".service"
 	}
@@ -104,7 +123,9 @@ func applyNativeDefaults(cfg *Config) {
 	if n == nil {
 		return
 	}
-	if n.Dir == "" && cfg.Service != "" {
+	// A Mac has no /opt/qifa its deploy user may write, and no root to make
+	// one: a launchd config names its directory (validateNative says so).
+	if n.Dir == "" && cfg.Service != "" && !n.Launchd() {
 		n.Dir = "/opt/qifa/" + cfg.Service
 	}
 	n.Dir = strings.TrimRight(n.Dir, "/")
@@ -128,6 +149,16 @@ func (c *Config) validateNative() error {
 	n := c.Native
 	if !nativeNameRe.MatchString(c.Service) {
 		return fmt.Errorf("config.service %q: native mode needs letters, digits, '.', '_' or '-' (it names the unit and install directory)", c.Service)
+	}
+	switch n.Init {
+	case "", InitSystemd, InitLaunchd:
+	default:
+		return fmt.Errorf("config.native.init %q: use systemd (Linux) or launchd (macOS)", n.Init)
+	}
+	if n.Launchd() {
+		if err := c.validateLaunchd(); err != nil {
+			return err
+		}
 	}
 	// Container settings are not ignored silently: a config that sets them
 	// was written for the other mode, and would deploy something different
@@ -233,7 +264,11 @@ func (c *Config) validateNative() error {
 		return errors.New("config.prune.retain must be at least 2 in native mode (the live release and one to roll back to)")
 	}
 	switch n.Restart {
-	case "no", "always", "on-success", "on-failure", "on-abnormal", "on-abort", "on-watchdog":
+	case "no", "always", "on-success", "on-failure", "on-abnormal", "on-abort":
+	case "on-watchdog":
+		if n.Launchd() {
+			return errors.New("config.native.restart on-watchdog has no launchd equivalent; use on-failure or always")
+		}
 	default:
 		return fmt.Errorf("config.native.restart %q is not a systemd Restart= value", n.Restart)
 	}
@@ -250,6 +285,30 @@ func (c *Config) validateNative() error {
 		if strings.TrimSpace(f.Src) == "" || strings.TrimSpace(f.Dest) == "" {
 			return fmt.Errorf("config.files[%d]: src and dest are required", i)
 		}
+	}
+	return nil
+}
+
+// validateLaunchd rejects what a launchd host cannot do. The app runs as a
+// LaunchAgent of the deploy user, so there is no separate service account, no
+// root, no systemd sandboxing and no kamal-proxy (qifa runs that on Linux).
+func (c *Config) validateLaunchd() error {
+	n := c.Native
+	if n.Dir == "" {
+		user := n.User
+		if user == "" {
+			user = "<user>"
+		}
+		return fmt.Errorf("config.native.dir is required with init: launchd: a directory the deploy user owns, e.g. /Users/%s/qifa/%s", user, c.Service)
+	}
+	if n.Hardening != nil && *n.Hardening {
+		return errors.New("config.native.hardening is systemd sandboxing; launchd has none (remove it)")
+	}
+	if c.SSH.User != "" && n.User != "" && c.SSH.User != n.User {
+		return fmt.Errorf("config.native.user %q must be ssh.user %q with init: launchd: a LaunchAgent runs as the user who deploys it", n.User, c.SSH.User)
+	}
+	if c.NativeProxied() || c.ProxyBoot.Mode != "" || c.ProxyBoot.Binary != "" {
+		return errors.New("config.proxy and proxy_boot are not supported with init: launchd (qifa runs kamal-proxy on Linux): reach the app on its app_port")
 	}
 	return nil
 }

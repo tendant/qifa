@@ -89,7 +89,7 @@ func (d *Deployer) inventory(ctx context.Context, host string, probe bool) (inve
 			}
 		}
 	}
-	out, err := d.ssh.Run(ctx, host, inventoryScript(d.cfg.Native.Dir, d.unitsOn(host), url))
+	out, err := d.run(ctx, host, inventoryScript(d.cfg.Native.Dir, d.unitsOn(host), d.unitState, url))
 	if err != nil {
 		return inventory{}, err
 	}
@@ -140,7 +140,7 @@ func (d *Deployer) prune(ctx context.Context, host string) error {
 		return nil
 	}
 	d.log.Printf("%s: pruning releases %s", host, strings.Join(del, ", "))
-	_, err = d.ssh.Run(ctx, host, removeReleasesScript(d.cfg.Native.Dir, del))
+	_, err = d.run(ctx, host, removeReleasesScript(d.cfg.Native.Dir, del))
 	return err
 }
 
@@ -212,7 +212,7 @@ func (d *Deployer) Rollback(ctx context.Context, version string) error {
 			d.log.Printf("%s: %s is already live", host, target)
 			return nil
 		}
-		prev, err := d.ssh.Run(ctx, host, switchScript(d.cfg.Native.Dir, target))
+		prev, err := d.run(ctx, host, switchScript(d.cfg.Native.Dir, target))
 		if err != nil {
 			return fmt.Errorf("%s: switch to %s: %w", host, target, err)
 		}
@@ -221,7 +221,7 @@ func (d *Deployer) Rollback(ctx context.Context, version string) error {
 			_ = d.audit().Event(deployment.ID, host, "", "failed", err.Error())
 			return d.recover(ctx, host, strings.TrimSpace(prev), err)
 		}
-		if _, err := d.ssh.Run(ctx, host, markOKScript(d.cfg.Native.Dir, target)); err != nil {
+		if _, err := d.run(ctx, host, markOKScript(d.cfg.Native.Dir, target)); err != nil {
 			return err
 		}
 		_ = d.audit().Event(deployment.ID, host, "", "rolled_back", target)
@@ -329,7 +329,7 @@ func (d *Deployer) EnvDiff(ctx context.Context, out io.Writer) error {
 	drift := false
 	for _, host := range d.hosts() {
 		path := d.cfg.Native.Dir + "/etc/env"
-		contents, err := d.ssh.Run(ctx, host, "cat "+q(path))
+		contents, err := d.run(ctx, host, "cat "+q(path))
 		if err != nil {
 			fmt.Fprintf(out, "%s: cannot read %s: %v\n", host, path, err)
 			drift = true
@@ -485,6 +485,8 @@ func (d *Deployer) Doctor(ctx context.Context, out io.Writer) error {
 			fmt.Fprintf(out, "%s: FAIL cannot run checks: %v\n", host, err)
 			failed++
 			continue
+		case len(problems) == 0 && d.launchd():
+			fmt.Fprintf(out, "%s: ok (macOS, login session, %s, LaunchAgents)\n", host, d.cfg.Native.Dir)
 		case len(problems) == 0:
 			fmt.Fprintf(out, "%s: ok (systemd, dbus, %s, sudo rules, units)\n", host, d.cfg.Native.Dir)
 		default:
@@ -528,8 +530,23 @@ func (d *Deployer) SyncFiles(ctx context.Context) error {
 	return d.syncFiles(ctx, d.hosts())
 }
 
-// Teardown undoes Setup on every host, as root.
+// Teardown undoes Setup on every host, as root (as the deploy user on a
+// launchd host, whose setup needed no root either).
 func (d *Deployer) Teardown(ctx context.Context, purge bool) error {
+	if d.launchd() {
+		for _, host := range d.hosts() {
+			out, err := d.run(ctx, host, d.launchdTeardownScript(host, purge))
+			for _, line := range strings.Split(out, "\n") {
+				if line != "" {
+					d.log.Printf("remove %s: %s", host, line)
+				}
+			}
+			if err != nil {
+				return fmt.Errorf("remove on %s: %w", host, err)
+			}
+		}
+		return nil
+	}
 	for _, host := range d.hosts() {
 		script := teardownScript(d.cfg.Native.Dir, d.cfg.Native.User, d.sudoersFile(), d.unitsOn(host), purge)
 		if d.routedOn(host) {

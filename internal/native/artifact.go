@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"crypto/sha256"
 	"debug/elf"
+	"debug/macho"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -202,6 +203,26 @@ func ELFArch(file string) (string, error) {
 		return "riscv64", nil
 	}
 	return f.Machine.String(), nil
+}
+
+// MachOArch returns the Go-style architecture of a macOS (Mach-O) executable,
+// or "" when the file is not one, or is a universal binary that runs on both.
+func MachOArch(file string) (string, error) {
+	f, err := macho.Open(file)
+	if err != nil {
+		if _, statErr := os.Stat(file); statErr != nil {
+			return "", statErr
+		}
+		return "", nil
+	}
+	defer f.Close()
+	switch f.Cpu {
+	case macho.CpuAmd64:
+		return "amd64", nil
+	case macho.CpuArm64:
+		return "arm64", nil
+	}
+	return f.Cpu.String(), nil
 }
 
 // UnameArch maps `uname -m` to the Go-style names ELFArch returns.

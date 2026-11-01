@@ -23,6 +23,12 @@ func main() {
 		}
 		_, _ = w.Write([]byte("wrote"))
 	})
-	log.Printf("native-app %s listening on :8080", version)
-	log.Fatal(http.ListenAndServe(":8080", mux))
+	// PORT lets the launchd e2e, which runs on a developer's Mac, avoid a
+	// port in use there.
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080"
+	}
+	log.Printf("native-app %s listening on :%s", version, port)
+	log.Fatal(http.ListenAndServe(":"+port, mux))
 }

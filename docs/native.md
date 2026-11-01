@@ -13,6 +13,8 @@ kamal-proxy as a systemd service in front of the app ([below](#https-and-domains
 Deploys restart the process: the app is down for as long as it takes to start
 (zero-downtime switching is not planned for native apps).
 
+On a Mac, launchd takes systemd's place: see [macOS hosts](#macos-hosts-launchd).
+
 ## Requirements on the server
 
 - Linux with systemd, and `dbus` (as a non-root user, `systemctl` talks to
@@ -332,6 +334,66 @@ scripts). Removing needs root, as setup does, so pass `--ssh-user root`
 
 The server is the source of truth, as Docker labels are in Docker mode, so any
 checkout on any machine can deploy, roll back, or ask for status.
+
+## macOS hosts: launchd
+
+Set `native.init: launchd` and the app runs as a **LaunchAgent** of the
+deploy user instead of a systemd unit. Everything else (releases, the env
+file, health checks, rollback, status, `app exec`, a program installed on the
+server) works as above.
+
+```yaml
+service: slow-town
+servers:
+  web:
+    hosts: [mini]
+    cmd: [/Users/mini/go/bin/agent-runner]
+    app_port: 8080
+healthcheck:
+  path: /health
+ssh:
+  user: mini
+native:
+  init: launchd
+  user: mini                          # the same user as ssh.user
+  dir: /Users/mini/qifa/slow-town     # required: there is no /opt/qifa to own
+  workdir: /Users/mini/workspace/agent-slow-town
+```
+
+What is different on a Mac:
+
+- **No root, at all.** The app runs as the user qifa connects as, so
+  `native.user` must be that user: there is no service account, no sudoers
+  rule and no `--ssh-user root`. `qifa setup` (as that user) makes the
+  install directory and writes `~/Library/LaunchAgents/qifa.<service>.plist`,
+  without loading it; the first deploy does.
+- **It runs in the user's login session.** A LaunchAgent starts when the user
+  logs in and stops when they log out. After a reboot it starts once someone
+  logs in at the console (with FileVault on, unlocking the disk does that);
+  until then nothing runs. Preflight refuses a host where the user is not
+  logged in. It is also why it is an agent and not a LaunchDaemon: it sees
+  what that login sees (the keychain, `~/Library`), and needs no root to set up.
+- **The env file stays out of the plist.** launchd runs `/bin/sh` with a
+  fixed script that loads `<dir>/etc/env` (optional, as systemd's
+  `EnvironmentFile=-` is) and execs `cmd` with its arguments untouched. Secrets
+  never appear in `launchctl print`, and a deploy changes the env without
+  rewriting the plist.
+- **`restart`** maps onto `KeepAlive`: `always`, `no`, `on-success`, and
+  `on-failure` (also `on-abnormal`, `on-abort`) for "restart unless it exited
+  0"; `on-watchdog` has no equivalent. Restarts wait 3s (`ThrottleInterval`)
+  and a stop gives the app 90s to exit (`ExitTimeOut`), as the systemd unit
+  does.
+- **Logs** go to `<dir>/log/qifa.<service>.log` (stdout and stderr);
+  `qifa logs` tails it. A restart moves it to `.log.1` past 10 MiB, since
+  macOS's own log rotation needs root.
+- **Not available:** `hardening` (systemd sandboxing), and `proxy` /
+  `proxy_boot` (qifa runs kamal-proxy on Linux): reach the app on its
+  `app_port`. A release's executables must be macOS builds (`GOOS=darwin`);
+  qifa checks the binary before uploading.
+- `qifa remove --purge` deletes `<dir>` and the plist, never the user.
+
+Remote commands reach the user's login shell, which on a Mac is zsh; qifa runs
+its scripts through `/bin/sh` there, so they behave as on Linux.
 
 ## Next to Docker apps
 
