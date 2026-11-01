@@ -27,7 +27,7 @@ taken_ports=" "
 # nothing answers on them (Docker Desktop reserves them in its VM). Our own
 # compose project's are not: it is torn down before starting.
 docker_ports=" $(docker ps --format '{{.Label "com.docker.compose.project"}} {{.Ports}}' 2>/dev/null \
-  | awk '$1 != "e2e"' | grep -oE ':[0-9]+->' | sed 's/[^0-9]//g' | sort -u | tr '\n' ' ')"
+  | awk '$1 != "e2e"' | grep -oE ':[0-9]+->' | sed 's/[^0-9]//g' | sort -u | tr '\n' ' ' || true)"
 port_in_use() { [[ "$docker_ports" == *" $1 "* ]] || (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null; }
 pick_port() {
   local var=$1 port=$2 given=${!1:-}
