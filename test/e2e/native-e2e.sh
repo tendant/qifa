@@ -417,7 +417,7 @@ EOF
 write_installed one
 iq() { "$work/qifa" -c "$work/installed/qifa.yaml" "$@"; }
 # As on a host with no root login: print the script, run it as root there.
-iq setup --print > "$work/setup.sh"
+iq setup --print --host "127.0.0.1:$port" > "$work/setup.sh"
 docker exec -i "$name" sh < "$work/setup.sh"
 iq doctor >/dev/null 2>&1 && fail "doctor passed before the program was installed"
 expect_eq "$(on_host 'stat -c %U /srv/installed')" deploy "setup creates a missing workdir for the service user"

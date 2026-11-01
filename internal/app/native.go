@@ -208,12 +208,24 @@ func runSetup(ctx context.Context, args []string, stdout, stderr io.Writer, conf
 	if err != nil {
 		return err
 	}
-	printOnly := false
-	if len(args) > 0 && args[0] == "--print" {
-		printOnly, args = true, args[1:]
+	host, args, err := takeFlag(args, "--host")
+	if err != nil {
+		return err
 	}
-	if len(args) > 0 {
-		return fmt.Errorf("unknown argument %q\nusage: qifa setup [--ssh-user <user>] [--deploy-user <user>] [--print]", args[0])
+	printOnly := false
+	var rest []string
+	for _, a := range args {
+		if a == "--print" {
+			printOnly = true
+			continue
+		}
+		rest = append(rest, a)
+	}
+	if len(rest) > 0 {
+		return fmt.Errorf("unknown argument %q\nusage: qifa setup [--ssh-user <user>] [--deploy-user <user>] [--print [--host <host>]]", rest[0])
+	}
+	if host != "" && !printOnly {
+		return fmt.Errorf("--host goes with --print (setup itself runs on every host)")
 	}
 	return withBackend(ctx, stdout, stderr, configFile, func(b backend) error {
 		if sshUser != "" {
@@ -224,7 +236,7 @@ func runSetup(ctx context.Context, args []string, stdout, stderr io.Writer, conf
 			if !ok {
 				return fmt.Errorf("setup --print is for native configs")
 			}
-			return n.PrintSetup(ctx, deployUser, stdout)
+			return n.PrintSetup(ctx, deployUser, host, stdout)
 		}
 		return b.Setup(ctx, deployUser)
 	})

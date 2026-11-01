@@ -29,27 +29,45 @@ func (d *Deployer) setupDeployUser(deployUser string) (string, error) {
 	return deployUser, nil
 }
 
-// PrintSetup writes the script `qifa setup` would run as root on the single
-// host, for a host where qifa cannot become root itself (no root login, sudo
-// with a password): copy it over and run it with sudo. Connecting as the
-// deploy user only finds systemctl, which the sudoers rule names by path.
-func (d *Deployer) PrintSetup(ctx context.Context, deployUser string, out io.Writer) error {
+// PrintSetup writes the script `qifa setup` would run as root on one host,
+// for a host where qifa cannot become root itself (no root login, sudo with a
+// password): copy it over and run it with sudo. host picks the host; it may
+// be empty when the config has only one. Connecting as the deploy user only
+// finds systemctl, which the sudoers rule names by path.
+func (d *Deployer) PrintSetup(ctx context.Context, deployUser, host string, out io.Writer) error {
 	deployUser, err := d.setupDeployUser(deployUser)
 	if err != nil {
 		return err
 	}
-	hosts := d.hosts()
-	if len(hosts) != 1 {
-		return fmt.Errorf("setup --print writes one host's script; this config has %d hosts (%s)", len(hosts), strings.Join(hosts, ", "))
+	if host, err = d.printSetupHost(host); err != nil {
+		return err
 	}
-	systemctl, err := d.ssh.Run(ctx, hosts[0], "command -v systemctl")
+	systemctl, err := d.ssh.Run(ctx, host, "command -v systemctl")
 	systemctl = strings.TrimSpace(systemctl)
 	if err != nil || !strings.HasPrefix(systemctl, "/") {
-		return fmt.Errorf("setup on %s: systemd (systemctl) not found: %v", hosts[0], err)
+		return fmt.Errorf("setup on %s: systemd (systemctl) not found: %v", host, err)
 	}
-	fmt.Fprintf(out, "#!/bin/sh\n# qifa setup for %s on %s; run as root (sudo sh <this file>).\n", d.cfg.Service, hosts[0])
-	_, err = io.WriteString(out, d.setupScript(hosts[0], deployUser, systemctl))
+	fmt.Fprintf(out, "#!/bin/sh\n# qifa setup for %s on %s; run as root (sudo sh <this file>).\n", d.cfg.Service, host)
+	_, err = io.WriteString(out, d.setupScript(host, deployUser, systemctl))
 	return err
+}
+
+// printSetupHost resolves --host for setup --print: required when the config
+// has several hosts, since each host's script differs (its roles' units).
+func (d *Deployer) printSetupHost(host string) (string, error) {
+	hosts := d.hosts()
+	if host == "" {
+		if len(hosts) == 1 {
+			return hosts[0], nil
+		}
+		return "", fmt.Errorf("this config has %d hosts; print one host's script at a time with --host <host> (one of: %s)", len(hosts), strings.Join(hosts, ", "))
+	}
+	for _, h := range hosts {
+		if h == host {
+			return host, nil
+		}
+	}
+	return "", fmt.Errorf("--host %s is not in this config (hosts: %s)", host, strings.Join(hosts, ", "))
 }
 
 func (d *Deployer) Setup(ctx context.Context, deployUser string) error {

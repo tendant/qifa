@@ -129,6 +129,10 @@ qifa setup --print > setup.sh       # connects as the deploy user only
 scp setup.sh host: && ssh -t host sudo sh setup.sh
 ```
 
+The script is for one host. With several hosts in the config, print each
+with `--host <host>` (as written under `servers`): each host's script
+installs only the units of the roles it runs.
+
 On every host it creates the service account, `/opt/qifa/<service>`, the
 systemd unit (`qifa-<service>.service`, or one per role), and a sudoers rule
 for the deploy user. It is safe to re-run; it prints only what it changed.

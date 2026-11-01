@@ -321,6 +321,36 @@ func TestHostsAndUnits(t *testing.T) {
 	}
 }
 
+// setup --print writes one host's script: --host picks it, and is required
+// when there is more than one, since each host's units differ.
+func TestPrintSetupHost(t *testing.T) {
+	d := &Deployer{cfg: testConfig()} // web on h1, h2
+	if _, err := d.printSetupHost(""); err == nil || !strings.Contains(err.Error(), "--host <host> (one of: h1, h2)") {
+		t.Fatalf("no --host with two hosts: %v", err)
+	}
+	if h, err := d.printSetupHost("h2"); err != nil || h != "h2" {
+		t.Fatalf("--host h2: %q %v", h, err)
+	}
+	if _, err := d.printSetupHost("h9"); err == nil || !strings.Contains(err.Error(), "not in this config") {
+		t.Fatalf("unknown --host: %v", err)
+	}
+	one := testConfig()
+	one.Servers["web"] = config.Server{Hosts: []string{"h1"}}
+	if h, err := (&Deployer{cfg: one}).printSetupHost(""); err != nil || h != "h1" {
+		t.Fatalf("single host needs no --host: %q %v", h, err)
+	}
+	// The script for a host installs only its roles' units.
+	cfg := testConfig()
+	cfg.Servers["worker"] = config.Server{Hosts: []string{"h2"}, Exec: []string{"bin/worker"}}
+	d = &Deployer{cfg: cfg}
+	if s := d.setupScript("h1", "deploy", "/usr/bin/systemctl"); strings.Contains(s, "qifa-app-worker.service") {
+		t.Fatal("h1's script installs the worker unit, which runs only on h2")
+	}
+	if s := d.setupScript("h2", "deploy", "/usr/bin/systemctl"); !strings.Contains(s, "qifa-app-worker.service") {
+		t.Fatal("h2's script lacks the worker unit")
+	}
+}
+
 func testConfig() *config.Config {
 	return &config.Config{
 		Service: "app",

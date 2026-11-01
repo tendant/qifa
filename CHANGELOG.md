@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- `qifa setup --print --host <host>` prints one host's setup script from a
+  config with several hosts. Before, `--print` refused such configs.
+
 ## v0.4.0 — 2026-10-31
 
 ### Added

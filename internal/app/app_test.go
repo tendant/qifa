@@ -59,3 +59,17 @@ func TestRunUnknownCommand(t *testing.T) {
 		t.Fatalf("unexpected stdout: %q", stdout.String())
 	}
 }
+
+// --host only picks which host's script --print writes; setup itself runs on
+// every host, so --host without --print is refused before anything loads.
+func TestSetupHostNeedsPrint(t *testing.T) {
+	var out, errOut bytes.Buffer
+	err := runSetup(context.Background(), []string{"--host", "h1"}, &out, &errOut, "missing.yaml")
+	if err == nil || !strings.Contains(err.Error(), "--host goes with --print") {
+		t.Fatalf("got %v", err)
+	}
+	err = runSetup(context.Background(), []string{"--print", "--bogus"}, &out, &errOut, "missing.yaml")
+	if err == nil || !strings.Contains(err.Error(), `unknown argument "--bogus"`) {
+		t.Fatalf("got %v", err)
+	}
+}

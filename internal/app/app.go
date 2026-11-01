@@ -575,7 +575,7 @@ func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "  stop")
 	fmt.Fprintln(w, "  start")
 	fmt.Fprintln(w, "  restart")
-	fmt.Fprintln(w, "  setup [--ssh-user <user>] [--deploy-user <user>] [--print]")
+	fmt.Fprintln(w, "  setup [--ssh-user <user>] [--deploy-user <user>] [--print [--host <host>]]")
 	fmt.Fprintln(w, "  remove [--purge [--yes]] [--ssh-user <user>]")
 	fmt.Fprintln(w, "  prune")
 	fmt.Fprintln(w, "  backup")
