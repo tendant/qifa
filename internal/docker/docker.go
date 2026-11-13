@@ -306,7 +306,7 @@ func (r *Remote) BuildxPush(ctx context.Context, host string, cfg *config.Config
 		remoteRoot := fmt.Sprintf("/tmp/qifa-build-%d", time.Now().UTC().UnixNano())
 		repoDir := filepath.Join(remoteRoot, "repo")
 		contextDir := filepath.Join(repoDir, cfg.Builder.Subdir)
-		command := strings.Join([]string{
+		command := cleanupAfter(remoteRoot, []string{
 			"rm -rf " + shellQuote(remoteRoot),
 			"mkdir -p " + shellQuote(remoteRoot),
 			"git clone " + shellQuote(cfg.Builder.Repo) + " " + shellQuote(repoDir),
@@ -316,7 +316,7 @@ func (r *Remote) BuildxPush(ctx context.Context, host string, cfg *config.Config
 				Dockerfile: remoteDockerfileIn("", contextDir, cfg.Builder.Dockerfile),
 				Platform:   cfg.Builder.Platform,
 			}, imageRef)),
-		}, " && ")
+		})
 		return dockererr.WrapKnownNetwork(ctx, r.client, "build and push image", host, imageRef, 1,
 			r.streamWatched(ctx, host, command, "buildx of "+imageRef))
 	}
@@ -330,7 +330,7 @@ func (r *Remote) BuildxPush(ctx context.Context, host string, cfg *config.Config
 	if err := r.client.Upload(ctx, host, remoteArchive, archive, 0o600); err != nil {
 		return err
 	}
-	command := strings.Join([]string{
+	command := cleanupAfter(remoteRoot, []string{
 		"rm -rf " + shellQuote(remoteContext),
 		"mkdir -p " + shellQuote(remoteContext),
 		"tar -xf " + shellQuote(remoteArchive) + " -C " + shellQuote(remoteContext),
@@ -340,7 +340,7 @@ func (r *Remote) BuildxPush(ctx context.Context, host string, cfg *config.Config
 			Platform:   cfg.Builder.Platform,
 		}, imageRef)),
 		"rm -f " + shellQuote(remoteArchive),
-	}, " && ")
+	})
 	return dockererr.WrapKnownNetwork(ctx, r.client, "build and push image", host, imageRef, 1,
 		r.streamWatched(ctx, host, command, "buildx of "+imageRef))
 }
@@ -350,7 +350,7 @@ func (r *Remote) Build(ctx context.Context, host string, cfg *config.Config, ima
 		remoteRoot := fmt.Sprintf("/tmp/qifa-build-%d", time.Now().UTC().UnixNano())
 		repoDir := filepath.Join(remoteRoot, "repo")
 		contextDir := filepath.Join(repoDir, cfg.Builder.Subdir)
-		command := strings.Join([]string{
+		command := cleanupAfter(remoteRoot, []string{
 			"rm -rf " + shellQuote(remoteRoot),
 			"mkdir -p " + shellQuote(remoteRoot),
 			"echo '==> cloning " + cfg.Builder.Repo + " (" + cfg.Builder.Ref + ")'",
@@ -362,7 +362,7 @@ func (r *Remote) Build(ctx context.Context, host string, cfg *config.Config, ima
 				Dockerfile: remoteDockerfileIn("", contextDir, cfg.Builder.Dockerfile),
 				Platform:   cfg.Builder.Platform,
 			}, imageRef),
-		}, " && ")
+		})
 		// A build pulls its base images, so build failures share the registry
 		// and network causes that pulls have.
 		return dockererr.WrapKnownNetwork(ctx, r.client, "build image", host, imageRef, 1,
@@ -380,7 +380,7 @@ func (r *Remote) Build(ctx context.Context, host string, cfg *config.Config, ima
 	if err := r.client.Upload(ctx, host, remoteArchive, archive, 0o600); err != nil {
 		return err
 	}
-	command := strings.Join([]string{
+	command := cleanupAfter(remoteRoot, []string{
 		"rm -rf " + shellQuote(remoteContext),
 		"mkdir -p " + shellQuote(remoteContext),
 		"echo '==> extracting build context'",
@@ -392,7 +392,7 @@ func (r *Remote) Build(ctx context.Context, host string, cfg *config.Config, ima
 			Platform:   cfg.Builder.Platform,
 		}, imageRef),
 		"rm -f " + shellQuote(remoteArchive),
-	}, " && ")
+	})
 	return dockererr.WrapKnownNetwork(ctx, r.client, "build image", host, imageRef, 1,
 		r.streamWatched(ctx, host, command, "build of "+imageRef))
 }
@@ -871,4 +871,12 @@ func localBuildSpec(ctx context.Context, cfg *config.Config) (BuildSpec, func(),
 		Dockerfile: dockerfileIn(contextDir, cfg.Builder.Dockerfile),
 		Platform:   cfg.Builder.Platform,
 	}, func() {}, nil
+}
+
+// cleanupAfter runs steps (each only if the one before succeeded), then
+// removes root whether they succeeded or not, and exits with their status:
+// a build's working directory (the clone, or the uploaded context) never
+// outlives the build. Each build had left one in /tmp per deploy.
+func cleanupAfter(root string, steps []string) string {
+	return "( " + strings.Join(steps, " && ") + " ); rc=$?; rm -rf " + shellQuote(root) + "; exit $rc"
 }
