@@ -1,6 +1,7 @@
 package docker
 
 import (
+	"os/exec"
 	"strings"
 	"testing"
 )
@@ -114,5 +115,28 @@ func TestParseContainerIP(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+func TestGPUsFlag(t *testing.T) {
+	for in, want := range map[string]string{
+		"all":        `--gpus 'all'`,
+		"1":          `--gpus '1'`,
+		"device=0":   `--gpus 'device=0'`,
+		"device=0,1": `--gpus '"device=0,1"'`,
+	} {
+		if got := GPUsFlag(in); got != want {
+			t.Errorf("GPUsFlag(%q) = %s, want %s", in, got, want)
+		}
+	}
+	// What docker receives once the shell has parsed the flag: a device
+	// list must arrive still inside double quotes, or docker's CSV reading
+	// splits it at the comma.
+	out, err := exec.Command("sh", "-c", "set -- "+GPUsFlag("device=0,1")+`; for a in "$@"; do printf '[%s]' "$a"; done`).Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(out) != `[--gpus]["device=0,1"]` {
+		t.Errorf("shell passes %s", out)
 	}
 }

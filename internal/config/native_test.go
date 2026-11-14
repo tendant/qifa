@@ -87,6 +87,7 @@ func TestNativeConfigRejects(t *testing.T) {
 		"bad restart":    {"  user: app\n", "  user: app\n  restart: sometimes\n", "Restart="},
 		"bad service":    {"service: app\n", "service: \"my app\"\n", "config.service"},
 		"newline in cmd": {"cmd: [app, --port, \"8080\"]", "cmd: [app, \"a\\nb\"]", "newline"},
+		"gpus":           {"    app_port: 8080\n", "    app_port: 8080\n    gpus: all\n", "gpus is for containers"},
 	}
 	for name, c := range replace {
 		t.Run(name, func(t *testing.T) {

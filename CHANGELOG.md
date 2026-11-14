@@ -4,6 +4,12 @@
 
 ### Added
 
+- **GPUs for containers: `gpus:`** on `servers.<role>` and on accessories,
+  passed to `docker run --gpus`: `all`, a count, or `device=0` /
+  `device=0,1` / GPU UUIDs (a device list is kept in the double quotes
+  docker's parsing needs). Validated at load; rejected in native mode. Needs
+  the NVIDIA Container Toolkit on the host. See README, "GPUs".
+
 - **Native deploys to macOS: `native.init: launchd`.** The app runs as a
   LaunchAgent of the deploy user (`~/Library/LaunchAgents/qifa.<service>.plist`)
   instead of a systemd unit, with no root anywhere: `qifa setup` runs as that

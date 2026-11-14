@@ -509,6 +509,55 @@ func TestAccessoryBootPassesCmdToDockerRun(t *testing.T) {
 	}
 }
 
+// gpus reaches docker run as --gpus, for the app's containers and for
+// accessories, with a device list kept in the double quotes docker's CSV
+// parsing needs.
+func TestGPUsReachDockerRun(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	env := newIntegrationEnv(t)
+	cfg := env.config(t, config.BuilderHostPerTarget, "local", "nginx:1.27-alpine", config.Registry{})
+	cfg.Builder = nil
+	proxyDisabled := false
+	web := cfg.Servers["web"]
+	web.Port = 19085
+	web.AppPort = 80
+	web.Proxy = &proxyDisabled
+	web.GPUs = "all"
+	cfg.Servers["web"] = web
+	delete(cfg.Servers, "worker")
+	redis := cfg.Accessories["redis"]
+	redis.GPUs = "device=0,1"
+	cfg.Accessories["redis"] = redis
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := state.NewStore(filepath.Join(env.root, ".qifa", "state.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	deployer, err := New(cfg, store, &stdout, &stderr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := deployer.Deploy(ctx); err != nil {
+		t.Fatalf("deploy: %v\ndocker calls:\n%s", err, readIfExists(filepath.Join(env.stateDir, "docker_calls.log")))
+	}
+	if err := deployer.AccessoryBoot(ctx, "redis"); err != nil {
+		t.Fatalf("accessory boot: %v", err)
+	}
+	calls := readIfExists(filepath.Join(env.stateDir, "docker_calls.log"))
+	if !strings.Contains(calls, "--name testapp-web-") || !strings.Contains(calls, "--gpus all") {
+		t.Errorf("the app's docker run should carry --gpus all:\n%s", calls)
+	}
+	if !strings.Contains(calls, `--gpus "device=0,1"`) {
+		t.Errorf("the accessory's docker run should carry --gpus \"device=0,1\":\n%s", calls)
+	}
+}
+
 // Accessory env is plaintext in the config, so a database password has to come
 // from somewhere else. secret_command output reaches the accessory's env file,
 // merged over env.
@@ -1244,7 +1293,7 @@ case "$cmd" in
     seq=$((count + 1))
     while [ "$#" -gt 0 ]; do
       case "$1" in
-        --restart|--name|--env-file|-p|--network|--network-alias|--volume|--log-opt)
+        --restart|--name|--env-file|-p|--network|--network-alias|--volume|--log-opt|--gpus)
           key="$1"; val="$2"
           if [ "$key" = "--name" ]; then name="$val"; fi
           if [ "$key" = "--env-file" ]; then envfile="$val"; fi

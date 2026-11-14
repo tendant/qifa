@@ -219,6 +219,30 @@ Nothing here registers a route with kamal-proxy, which is the point: a route
 would make the service answer to anyone who sends that `Host:` header to the
 proxy's public port.
 
+### GPUs
+
+`gpus:` gives a role's containers, or an accessory, GPUs, passed to
+`docker run --gpus`: `all`, a count (`"1"`), or specific devices
+(`"device=0"`, `"device=0,1"`, or GPU UUIDs from `nvidia-smi -L`). The host
+needs the NVIDIA Container Toolkit. A model server beside an app:
+
+```yaml
+accessories:
+  llm:
+    image: vllm/vllm-openai:v0.8.0
+    host: 10.0.0.12
+    gpus: all
+    port: 8000
+    app_port: 8000
+    volumes:
+      - /data/hf-cache:/root/.cache/huggingface
+    cmd: --model Qwen/Qwen2.5-7B-Instruct
+```
+
+The value is checked when the config loads. Native mode rejects it: a native
+app reaches the host's GPUs directly. An accessory picks up a changed `gpus`
+on its next `qifa accessory boot`, as with its other settings.
+
 ### 6. Without Docker: a systemd service
 
 A static binary run by systemd: no image, registry or proxy on the server.

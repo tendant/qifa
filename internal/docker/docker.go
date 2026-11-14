@@ -397,7 +397,17 @@ func (r *Remote) Build(ctx context.Context, host string, cfg *config.Config, ima
 		r.streamWatched(ctx, host, command, "build of "+imageRef))
 }
 
-func (r *Remote) RunContainer(ctx context.Context, host, name, imageRef, envFile, command, network string, labels map[string]string, volumes []string, hostPort, containerPort int, privileged bool, extraPublish, networkAliases []string) error {
+// GPUsFlag is the docker run flag for a gpus value (config.ValidateGPUs).
+// Docker reads --gpus as CSV, so a device list with a comma must reach it
+// inside double quotes ("device=0,1"), which the shell quoting keeps.
+func GPUsFlag(v string) string {
+	if strings.Contains(v, ",") {
+		v = `"` + v + `"`
+	}
+	return "--gpus " + shellQuote(v)
+}
+
+func (r *Remote) RunContainer(ctx context.Context, host, name, imageRef, envFile, command, network string, labels map[string]string, volumes []string, hostPort, containerPort int, privileged bool, gpus string, extraPublish, networkAliases []string) error {
 	if err := r.ensureVolumeHostDirs(ctx, host, volumes); err != nil {
 		return err
 	}
@@ -415,6 +425,9 @@ func (r *Remote) RunContainer(ctx context.Context, host, name, imageRef, envFile
 	}
 	if privileged {
 		args = append(args, "--privileged")
+	}
+	if gpus != "" {
+		args = append(args, GPUsFlag(gpus))
 	}
 	for _, key := range sortedKeys(labels) {
 		args = append(args, "--label "+shellQuote(key+"="+labels[key]))

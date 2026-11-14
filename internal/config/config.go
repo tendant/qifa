@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -147,6 +148,10 @@ type Server struct {
 	// that manage their own container/cgroup namespaces (e.g. Concourse
 	// workers using Garden runC, dind, …). Off by default.
 	Privileged bool `yaml:"privileged"`
+	// GPUs gives the container GPUs, as `docker run --gpus`: "all", a count
+	// ("1"), or specific devices ("device=0", "device=0,1", or GPU UUIDs).
+	// Needs the NVIDIA Container Toolkit on the host. Empty: no GPU.
+	GPUs string `yaml:"gpus"`
 	// ExtraPorts publishes additional host:container ports beyond the
 	// AppPort one used by the proxy/non-proxy path. Each entry is a string
 	// in docker `-p` form: "hostport:containerport",
@@ -415,6 +420,10 @@ type Accessory struct {
 	// collector needs its config file — so without this they are stuck with
 	// whatever the image defaults to.
 	Cmd string `yaml:"cmd"`
+
+	// GPUs gives the accessory GPUs, exactly as servers.<role>.gpus does for
+	// the app: a model server beside the app is the usual case.
+	GPUs string `yaml:"gpus"`
 }
 
 // ImageSource returns the effective origin of the accessory image. Defaults
@@ -480,6 +489,9 @@ func (c *Config) Validate() error {
 				return fmt.Errorf("config.servers.%s.extra_ports[%d]: %w", role, i, err)
 			}
 		}
+		if err := ValidateGPUs(server.GPUs); err != nil {
+			return fmt.Errorf("config.servers.%s.gpus: %w", role, err)
+		}
 	}
 	if c.ProxyBoot.Binary != "" {
 		return errors.New("config.proxy_boot.binary applies only with config.native (the container proxy runs its image)")
@@ -544,8 +556,40 @@ func (c *Config) Validate() error {
 		default:
 			return fmt.Errorf("accessories.%s.source: %q is not valid (use %q or %q)", name, acc.Source, SourceRegistry, SourceLocal)
 		}
+		if err := ValidateGPUs(acc.GPUs); err != nil {
+			return fmt.Errorf("accessories.%s.gpus: %w", name, err)
+		}
 	}
 	return c.validateBuilder()
+}
+
+// gpuDeviceID is one entry of a gpus device list: an index ("0") or a GPU
+// or MIG UUID as nvidia-smi -L prints it.
+var gpuDeviceID = regexp.MustCompile(`^([0-9]+|(GPU|MIG)-[0-9A-Za-z/-]+)$`)
+
+// ValidateGPUs checks a gpus value: "" (none), "all", a positive count, or
+// "device=" and a comma-separated list of indexes or UUIDs. Checked at load
+// so a typo fails before a deploy rather than at docker run on the host.
+func ValidateGPUs(v string) error {
+	switch {
+	case v == "" || v == "all":
+		return nil
+	case strings.HasPrefix(v, "device="):
+		list := strings.TrimPrefix(v, "device=")
+		if list == "" {
+			return errors.New(`"device=" names no device`)
+		}
+		for _, id := range strings.Split(list, ",") {
+			if !gpuDeviceID.MatchString(id) {
+				return fmt.Errorf("device %q is not an index or GPU UUID", id)
+			}
+		}
+		return nil
+	}
+	if n, err := strconv.Atoi(v); err == nil && n > 0 {
+		return nil
+	}
+	return fmt.Errorf(`%q is not valid (use "all", a count such as "1", or "device=0" / "device=0,1")`, v)
 }
 
 // validateSource checks the app-image source field. source applies only to

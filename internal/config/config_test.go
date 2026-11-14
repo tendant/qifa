@@ -535,3 +535,50 @@ func TestValidatePortPublishRanges(t *testing.T) {
 		}
 	}
 }
+
+func TestValidateGPUs(t *testing.T) {
+	for _, ok := range []string{"", "all", "1", "2", "device=0", "device=0,1", "device=GPU-3a23c669-1f69-c64e-cf85-44e9b07e7a2a", "device=MIG-GPU-3a23c669/1/0"} {
+		if err := ValidateGPUs(ok); err != nil {
+			t.Errorf("%q: %v", ok, err)
+		}
+	}
+	for _, bad := range []string{"0", "-1", "yes", "ALL", "device=", "device=0,", "device=0;rm -rf /", "device= 0", "count=1", "1 "} {
+		if err := ValidateGPUs(bad); err == nil {
+			t.Errorf("%q: accepted", bad)
+		}
+	}
+}
+
+// loadYAML loads a config from text, as Load does from a file.
+func loadYAML(t *testing.T, text string) (*Config, error) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "qifa.yaml")
+	if err := os.WriteFile(path, []byte(text), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return Load(path)
+}
+
+// A bad gpus value fails the config at load, naming the field, for a role
+// and for an accessory; a native role rejects gpus outright.
+func TestGPUsValidatedOnLoad(t *testing.T) {
+	base := `service: app
+image: app:1.0
+servers:
+  web:
+    hosts: [h1]
+`
+	cfg, err := loadYAML(t, base+"    gpus: \"device=0,1\"\naccessories:\n  llm:\n    image: vllm/vllm-openai:v0.8.0\n    host: h1\n    gpus: all\n")
+	if err != nil {
+		t.Fatalf("valid gpus rejected: %v", err)
+	}
+	if cfg.Servers["web"].GPUs != "device=0,1" || cfg.Accessories["llm"].GPUs != "all" {
+		t.Fatalf("gpus not parsed: %+v %+v", cfg.Servers["web"], cfg.Accessories["llm"])
+	}
+	if _, err := loadYAML(t, base+"    gpus: yes\n"); err == nil || !strings.Contains(err.Error(), "servers.web.gpus") {
+		t.Errorf("bad role gpus: %v", err)
+	}
+	if _, err := loadYAML(t, base+"accessories:\n  llm:\n    image: vllm/vllm-openai:v0.8.0\n    host: h1\n    gpus: \"device=\"\n"); err == nil || !strings.Contains(err.Error(), "accessories.llm.gpus") {
+		t.Errorf("bad accessory gpus: %v", err)
+	}
+}

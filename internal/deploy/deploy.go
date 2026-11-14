@@ -395,7 +395,7 @@ func (d *Deployer) deployHost(ctx context.Context, deployment state.Deployment, 
 	if err := d.remoteDocker.StopAndRemove(ctx, host, containerName); err != nil {
 		return err
 	}
-	if err := d.remoteDocker.RunContainer(ctx, host, containerName, imageRef, remoteEnv, server.Cmd.ShellString(), containerNetwork, labels, server.Volumes, publishedPort, containerPort, server.Privileged, server.ExtraPorts, networkAliases); err != nil {
+	if err := d.remoteDocker.RunContainer(ctx, host, containerName, imageRef, remoteEnv, server.Cmd.ShellString(), containerNetwork, labels, server.Volumes, publishedPort, containerPort, server.Privileged, server.GPUs, server.ExtraPorts, networkAliases); err != nil {
 		_ = d.remoteDocker.StopAndRemove(ctx, host, containerName)
 		return err
 	}
@@ -1729,7 +1729,7 @@ func (d *Deployer) AccessoryBoot(ctx context.Context, name string) error {
 	// can resolve each other by container DNS. The network is created by
 	// `qifa proxy boot`; without it, the accessory would land on the
 	// default bridge and not be reachable from app containers.
-	return d.remoteDocker.RunContainer(ctx, accessory.Host, containerName, accessory.Image, remoteEnv, accessory.Cmd, d.cfg.ProxyBoot.Network, nil, accessory.Volumes, accessory.Port, accessory.AppPort, false, nil, nil)
+	return d.remoteDocker.RunContainer(ctx, accessory.Host, containerName, accessory.Image, remoteEnv, accessory.Cmd, d.cfg.ProxyBoot.Network, nil, accessory.Volumes, accessory.Port, accessory.AppPort, false, accessory.GPUs, nil, nil)
 }
 
 func (d *Deployer) AccessoryLogs(ctx context.Context, name string, out io.Writer) error {
