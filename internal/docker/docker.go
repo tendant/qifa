@@ -411,6 +411,15 @@ func (r *Remote) RunContainer(ctx context.Context, host, name, imageRef, envFile
 	if err := r.ensureVolumeHostDirs(ctx, host, volumes); err != nil {
 		return err
 	}
+	if network != "" {
+		// Every container joins the estate network, which `qifa proxy boot`
+		// creates. A host with no proxy (only non-proxied roles and
+		// accessories) never boots one, so docker run failed with "network
+		// kamal not found". Create it here as proxy boot does: a no-op when
+		// it exists, and if creating fails for another reason, docker run
+		// says so next.
+		_, _ = r.client.Run(ctx, host, "docker network create "+shellQuote(network)+" >/dev/null 2>&1 || true")
+	}
 	var args []string
 	args = append(args, "docker run -d --restart unless-stopped")
 	args = append(args, "--name "+shellQuote(name))

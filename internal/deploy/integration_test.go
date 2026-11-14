@@ -558,6 +558,40 @@ func TestGPUsReachDockerRun(t *testing.T) {
 	}
 }
 
+// A host with no proxy never runs `qifa proxy boot`, which creates the estate
+// network every container joins; docker run then failed with "network kamal
+// not found". The deploy now creates it before running.
+func TestDeployCreatesTheNetworkOnAHostWithoutAProxy(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	env := newIntegrationEnv(t)
+	cfg := env.config(t, config.BuilderHostPerTarget, "local", "nginx:1.27-alpine", config.Registry{})
+	cfg.Builder = nil
+	proxyDisabled := false
+	web := cfg.Servers["web"]
+	web.Port, web.AppPort, web.Proxy = 19086, 80, &proxyDisabled
+	cfg.Servers["web"] = web
+	delete(cfg.Servers, "worker")
+	store, err := state.NewStore(filepath.Join(env.root, ".qifa", "state.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	deployer, err := New(cfg, store, &stdout, &stderr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := deployer.Deploy(ctx); err != nil {
+		t.Fatalf("deploy: %v", err)
+	}
+	calls := readIfExists(filepath.Join(env.stateDir, "docker_calls.log"))
+	create := strings.Index(calls, "network create "+cfg.ProxyBoot.Network)
+	run := strings.Index(calls, "run -d --restart unless-stopped --name testapp-web-")
+	if create < 0 || run < 0 || create > run {
+		t.Errorf("the network should be created before docker run:\n%s", calls)
+	}
+}
+
 // Accessory env is plaintext in the config, so a database password has to come
 // from somewhere else. secret_command output reaches the accessory's env file,
 // merged over env.

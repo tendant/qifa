@@ -24,6 +24,11 @@
 
 ### Fixed
 
+- A deploy to a host with no proxy failed at `docker run` with "network kamal
+  not found": every container joins the estate network, which only
+  `qifa proxy boot` created. The deploy now creates it first (a no-op when it
+  exists), for app containers and accessories alike.
+
 - Native release scripts ran only with GNU tools (`mv -T`, `stat -c`,
   `sha256sum`, `chmod --`); they now pick the BSD equivalents on macOS.
   Linux hosts behave as before.
