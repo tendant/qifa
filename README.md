@@ -21,10 +21,10 @@ systemd service: see [Native deploys](docs/native.md).
 
 ## Install
 
-The current release is **v0.5.0** ([CHANGELOG](CHANGELOG.md)).
+The current release is **v0.6.0** ([CHANGELOG](CHANGELOG.md)).
 
-From the next release on, each release publishes a prebuilt binary for Linux
-and macOS (amd64 and arm64), and one line installs it. You need no Go, only
+Each release from v0.6.0 on publishes a prebuilt binary for Linux and macOS
+(amd64 and arm64), and one line installs it. You need no Go, only
 `curl` or `wget`:
 
 ```bash
@@ -41,10 +41,10 @@ release's files. You can also download a binary from the
 `$PATH` yourself.
 
 With Go 1.27.1 or newer (an older `go` fetches the right toolchain itself
-unless `GOTOOLCHAIN=local`), this works for every release, v0.5.0 included:
+unless `GOTOOLCHAIN=local`), this works for every release, including ones before v0.6.0:
 
 ```bash
-go install github.com/tendant/qifa/cmd/qifa@v0.5.0
+go install github.com/tendant/qifa/cmd/qifa@v0.6.0
 qifa version
 ```
 
@@ -565,7 +565,7 @@ Building and testing qifa: [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Status
 
-Active development; current release v0.5.0, changes in
+Active development; current release v0.6.0, changes in
 [CHANGELOG.md](CHANGELOG.md). The CLI is reasonably stable; the schema may
 still change before a 1.0 tag, and renamed keys keep loading with a warning
 when it does.
