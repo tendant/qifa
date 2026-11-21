@@ -13,6 +13,7 @@ import (
 
 	"github.com/tendant/qifa/internal/cert"
 	"github.com/tendant/qifa/internal/config"
+	"github.com/tendant/qifa/internal/deploy"
 	"github.com/tendant/qifa/internal/native"
 	"github.com/tendant/qifa/internal/proxy"
 	"github.com/tendant/qifa/internal/ssh"
@@ -502,6 +503,9 @@ func proxyHostFromConfig(cfg *config.Config) string {
 		if role := cfg.NativeProxyRole(); role != "" && len(cfg.Servers[role].Hosts) > 0 {
 			return cfg.Servers[role].Hosts[0]
 		}
+	} else if hosts := deploy.ProxyHosts(cfg); len(hosts) > 0 {
+		// A container proxy runs on the proxied roles' hosts.
+		return hosts[0]
 	}
 	for _, server := range cfg.Servers {
 		if len(server.Hosts) > 0 {

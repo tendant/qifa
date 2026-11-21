@@ -43,8 +43,9 @@ builder:
   platform: linux/amd64
 ```
 
-Then `qifa proxy boot` once per host, and `qifa doctor` from each person's
-machine to confirm SSH, docker, and registry access before their first deploy.
+Then `qifa doctor` from each person's machine to confirm SSH, docker, and
+registry access before their first deploy. The first deploy boots kamal-proxy
+on any host that routes traffic and lacks it.
 
 Apps deployed without Docker (`native:` configs) use the same `deploy` user,
 without the docker group: `qifa setup --ssh-user root` once per host

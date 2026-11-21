@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"strconv"
@@ -93,12 +94,21 @@ func NewNative(client *ssh.Client, app config.Proxy) *KamalProxy {
 // skipped. Creates the docker network and state volume on first boot.
 func (k *KamalProxy) Boot(ctx context.Context) error {
 	for _, host := range k.boot.Hosts {
-		if _, err := k.client.Run(ctx, host, k.bootCommand()); err != nil {
-			// `docker run` pulls kamal-proxy when it is missing, so booting
-			// fails for the same registry/network reasons a deploy pull does —
-			// and with far less visible output, since this runs buffered.
-			return dockererr.Wrap(ctx, k.client, "boot proxy", host, k.Image(), 1, err)
+		if err := k.BootOn(ctx, host); err != nil {
+			return err
 		}
+	}
+	return nil
+}
+
+// BootOn starts the proxy container on one host, as Boot does for each of
+// boot.hosts. A deploy uses it to boot the proxy where it is missing.
+func (k *KamalProxy) BootOn(ctx context.Context, host string) error {
+	if _, err := k.client.Run(ctx, host, k.bootCommand()); err != nil {
+		// `docker run` pulls kamal-proxy when it is missing, so booting
+		// fails for the same registry/network reasons a deploy pull does —
+		// and with far less visible output, since this runs buffered.
+		return dockererr.Wrap(ctx, k.client, "boot proxy", host, k.Image(), 1, err)
 	}
 	return nil
 }
@@ -130,8 +140,12 @@ func (k *KamalProxy) EnsureRunning(ctx context.Context, host string) error {
 	if strings.TrimSpace(out) == proxyContainerName {
 		return nil
 	}
-	return fmt.Errorf("kamal-proxy is not running on %s — run `qifa proxy boot` first", host)
+	return fmt.Errorf("kamal-proxy is not running on %s — run `qifa proxy boot` first: %w", host, ErrNotRunning)
 }
+
+// ErrNotRunning is wrapped by EnsureRunning when the host answered and the
+// proxy container is not up, as opposed to the host not answering at all.
+var ErrNotRunning = errors.New("proxy not running")
 
 func (k *KamalProxy) Start(ctx context.Context) error {
 	for _, host := range k.boot.Hosts {

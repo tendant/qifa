@@ -67,7 +67,7 @@ func New(cfg *config.Config, store *state.Store, stdout, stderr io.Writer) (*Dep
 		localDocker:  docker.NewLocal(),
 		remoteDocker: docker.NewRemote(sshClient, stdout),
 		ssh:          sshClient,
-		proxy:        proxy.New(sshClient, cfg.ProxyRoute(), cfg.ProxyBoot),
+		proxy:        proxy.New(sshClient, cfg.ProxyRoute(), proxyBootFor(cfg)),
 		stdout:       stdout,
 	}, nil
 }
@@ -272,7 +272,7 @@ func (d *Deployer) deployHost(ctx context.Context, deployment state.Deployment, 
 	}
 	if useProxy {
 		d.log.Printf("checking proxy on %s", host)
-		if err := d.proxy.EnsureRunning(ctx, host); err != nil {
+		if err := d.ensureProxy(ctx, host); err != nil {
 			return err
 		}
 	}
@@ -771,7 +771,7 @@ func (d *Deployer) UseSSHUser(user string) {
 	client := ssh.New(sshCfg)
 	d.ssh = client
 	d.remoteDocker = docker.NewRemote(client, d.stdout)
-	d.proxy = proxy.New(client, d.cfg.ProxyRoute(), d.cfg.ProxyBoot)
+	d.proxy = proxy.New(client, d.cfg.ProxyRoute(), proxyBootFor(d.cfg))
 }
 
 // Setup prepares every host for deploys by deployUser, as root: Docker must
@@ -1383,13 +1383,75 @@ func shellQuoteB(s string) string {
 // ProxyBoot starts the kamal-proxy container on every host listed in
 // proxy_boot.hosts. Idempotent: hosts that already have it skip.
 func (d *Deployer) ProxyBoot(ctx context.Context) error {
-	if len(d.cfg.ProxyBoot.Hosts) == 0 {
-		return errors.New("config.proxy_boot.hosts is required")
+	if len(d.proxy.Hosts()) == 0 {
+		return errors.New("no host to boot kamal-proxy on: no role uses the proxy and config.proxy_boot.hosts is empty")
 	}
 	if err := d.pullProxyImage(ctx, false); err != nil {
 		return err
 	}
 	return d.proxy.Boot(ctx)
+}
+
+// proxyBootFor is the config's proxy_boot, with hosts defaulted to those of
+// the proxied roles when it lists none: kamal-proxy has to run on every host
+// that serves a proxied role, since it reaches the app containers over that
+// host's docker network, so those are the hosts to boot it on unless the
+// operator says otherwise.
+func proxyBootFor(cfg *config.Config) config.ProxyBoot {
+	boot := cfg.ProxyBoot
+	if len(boot.Hosts) > 0 {
+		return boot
+	}
+	seen := map[string]bool{}
+	for _, role := range orderedRoles(cfg.Servers) {
+		server := cfg.Servers[role]
+		if !serverUsesProxy(role, server) {
+			continue
+		}
+		for _, host := range server.Hosts {
+			if !seen[host] {
+				seen[host] = true
+				boot.Hosts = append(boot.Hosts, host)
+			}
+		}
+	}
+	return boot
+}
+
+// ProxyHosts are the hosts kamal-proxy runs on for a Docker config:
+// proxy_boot.hosts, or the proxied roles' hosts when it lists none.
+func ProxyHosts(cfg *config.Config) []string { return proxyBootFor(cfg).Hosts }
+
+// autoBootsProxy reports whether a deploy boots kamal-proxy on a host that
+// lacks it: only for a config that asks for routing by naming a host in its
+// proxy: block. Booting takes ports 80 and 443 on the host, which a role
+// that is proxied only by being called "web" never asked for.
+func (d *Deployer) autoBootsProxy() bool {
+	route := d.cfg.ProxyRoute()
+	return route.Host != "" || len(route.Hosts) > 0
+}
+
+// ensureProxy checks that kamal-proxy runs on host and, where the config
+// asks for routing (autoBootsProxy), boots it there if it does not — the
+// same boot as `qifa proxy boot`, image pull included. An existing proxy is
+// never touched: changing one is `qifa proxy upgrade`'s job.
+func (d *Deployer) ensureProxy(ctx context.Context, host string) error {
+	err := d.proxy.EnsureRunning(ctx, host)
+	if err == nil || !errors.Is(err, proxy.ErrNotRunning) || !d.autoBootsProxy() {
+		return err
+	}
+	d.log.Printf("kamal-proxy is not running on %s; booting it", host)
+	image := d.proxy.Image()
+	exists, err := d.remoteDocker.ImageExists(ctx, host, image)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		if err := d.remoteDocker.Pull(ctx, host, "", image); err != nil {
+			return err
+		}
+	}
+	return d.proxy.BootOn(ctx, host)
 }
 
 // pullProxyImage fetches the kamal-proxy image on every proxy host before the
@@ -1399,7 +1461,7 @@ func (d *Deployer) ProxyBoot(ctx context.Context) error {
 // Pulling first means live progress, retries, and a diagnosed error.
 func (d *Deployer) pullProxyImage(ctx context.Context, force bool) error {
 	image := d.proxy.Image()
-	for _, host := range d.cfg.ProxyBoot.Hosts {
+	for _, host := range d.proxy.Hosts() {
 		if err := d.remoteDocker.EnsureDocker(ctx, host); err != nil {
 			return err
 		}

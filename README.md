@@ -21,12 +21,12 @@ systemd service: see [Native deploys](docs/native.md).
 
 ## Install
 
-The current release is **v0.3.0** ([CHANGELOG](CHANGELOG.md)). Building
+The current release is **v0.5.0** ([CHANGELOG](CHANGELOG.md)). Building
 needs Go 1.27.1 or newer (an older `go` fetches the right toolchain itself
 unless `GOTOOLCHAIN=local`).
 
 ```bash
-go install github.com/tendant/qifa/cmd/qifa@v0.3.0
+go install github.com/tendant/qifa/cmd/qifa@v0.5.0
 qifa version
 ```
 
@@ -98,12 +98,8 @@ servers:
     hosts: [10.0.0.11, 10.0.0.12]
     app_port: 3000
 
-# Operator runs `qifa proxy boot` once to launch kamal-proxy on these hosts.
-# App deploys verify it's running but never modify boot config.
-proxy_boot:
-  hosts: [10.0.0.11, 10.0.0.12]
-
-# Per-app routing — set on every deploy.
+# Per-app routing — set on every deploy. The first deploy to a host starts
+# kamal-proxy there (ports 80 and 443) if it is not running.
 proxy:
   host: app.example.com
   app_port: 3000
@@ -126,9 +122,17 @@ env:
   secret_command: sops --decrypt secrets.enc.env
 ```
 
-First-time setup on each new host: `qifa proxy boot` (idempotent).
-To upgrade the proxy: `qifa proxy upgrade` (state volume preserved, routes
-survive).
+There is no separate proxy step. A deploy that finds no kamal-proxy on a host
+it routes to boots one there, exactly as `qifa proxy boot` would, and leaves a
+running one alone. It does this only when `proxy:` names a host. A role that
+is proxied only because it is called `web` still gets an error saying to run
+`qifa proxy boot`, so qifa never takes ports 80 and 443 unasked.
+
+`proxy_boot:` is optional. It sets how the proxy runs (`http_port`,
+`https_port`, `bind_ips`, image and version). Its `hosts` default to the
+hosts of the proxied roles, which is where `qifa proxy boot`, `upgrade`,
+`logs` and the rest act when it is left out. To upgrade the proxy: `qifa
+proxy upgrade` (state volume preserved, routes survive).
 
 ### 3. Deploy an externally produced image
 
@@ -164,9 +168,6 @@ servers:
     port: 8080
     app_port: 80
     proxy: false       # publish the port directly
-
-proxy_boot:
-  hosts: [local]
 ```
 
 `local` is opt-in by exact name. `localhost` and `127.0.0.1` still mean SSH,
@@ -544,7 +545,7 @@ Building and testing qifa: [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Status
 
-Active development; current release v0.3.0, changes in
+Active development; current release v0.5.0, changes in
 [CHANGELOG.md](CHANGELOG.md). The CLI is reasonably stable; the schema may
 still change before a 1.0 tag, and renamed keys keep loading with a warning
 when it does.

@@ -592,6 +592,107 @@ func TestDeployCreatesTheNetworkOnAHostWithoutAProxy(t *testing.T) {
 	}
 }
 
+// A config with a proxy: host needs no `qifa proxy boot` and no proxy_boot
+// block: the deploy boots kamal-proxy on the proxied host where it is
+// missing, then routes to the app through it.
+func TestDeployBootsAMissingProxy(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	env := newIntegrationEnv(t)
+	cfg := env.config(t, config.BuilderHostPerTarget, "local", "testapp", config.Registry{})
+	cfg.ProxyBoot.Hosts = nil
+	delete(cfg.Servers, "worker")
+	store, err := state.NewStore(filepath.Join(env.root, ".qifa", "state.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	deployer, err := New(cfg, store, &stdout, &stderr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := deployer.Deploy(ctx); err != nil {
+		t.Fatalf("deploy: %v\ndocker calls:\n%s", err, readIfExists(filepath.Join(env.stateDir, "docker_calls.log")))
+	}
+	calls := readIfExists(filepath.Join(env.stateDir, "docker_calls.log"))
+	boot := strings.Index(calls, "--name kamal-proxy")
+	app := strings.Index(calls, "--name testapp-web-")
+	if boot < 0 || app < 0 || boot > app {
+		t.Errorf("kamal-proxy should be booted before the app container runs:\n%s", calls)
+	}
+	if !strings.Contains(stderr.String()+stdout.String(), "kamal-proxy is not running") {
+		t.Errorf("the deploy should say it is booting the proxy:\n%s%s", stdout.String(), stderr.String())
+	}
+	if proxyCalls := readIfExists(filepath.Join(env.stateDir, "proxy_calls.log")); !strings.Contains(proxyCalls, "deploy testapp") {
+		t.Errorf("the app was not routed through the booted proxy:\n%s", proxyCalls)
+	}
+
+	// The second deploy finds it running and boots nothing.
+	if err := os.Truncate(filepath.Join(env.stateDir, "docker_calls.log"), 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := deployer.Deploy(ctx); err != nil {
+		t.Fatalf("second deploy: %v", err)
+	}
+	if calls := readIfExists(filepath.Join(env.stateDir, "docker_calls.log")); strings.Contains(calls, "--name kamal-proxy") {
+		t.Errorf("a running proxy was booted again:\n%s", calls)
+	}
+}
+
+// A role proxied only by being called "web", with no proxy: host, never
+// asked for routing: the deploy must not take ports 80 and 443 for it, and
+// still says to boot the proxy.
+func TestDeployDoesNotBootAProxyNobodyAskedFor(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	env := newIntegrationEnv(t)
+	cfg := env.config(t, config.BuilderHostPerTarget, "local", "testapp", config.Registry{})
+	cfg.ProxyBoot.Hosts = nil
+	cfg.Proxy.Host = ""
+	delete(cfg.Servers, "worker")
+	store, err := state.NewStore(filepath.Join(env.root, ".qifa", "state.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	deployer, err := New(cfg, store, &stdout, &stderr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = deployer.Deploy(ctx)
+	if err == nil || !strings.Contains(err.Error(), "qifa proxy boot") {
+		t.Fatalf("deploy should fail pointing at qifa proxy boot: %v", err)
+	}
+	if calls := readIfExists(filepath.Join(env.stateDir, "docker_calls.log")); strings.Contains(calls, "--name kamal-proxy") {
+		t.Errorf("a proxy was booted for a config with no proxy: host:\n%s", calls)
+	}
+}
+
+// With no proxy_boot.hosts, `qifa proxy boot` boots on the proxied roles'
+// hosts.
+func TestProxyBootDefaultsToTheProxiedHosts(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	env := newIntegrationEnv(t)
+	cfg := env.config(t, config.BuilderHostPerTarget, "local", "testapp", config.Registry{})
+	cfg.ProxyBoot.Hosts = nil
+	store, err := state.NewStore(filepath.Join(env.root, ".qifa", "state.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	deployer, err := New(cfg, store, &stdout, &stderr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := deployer.ProxyBoot(ctx); err != nil {
+		t.Fatalf("proxy boot: %v", err)
+	}
+	if calls := readIfExists(filepath.Join(env.stateDir, "docker_calls.log")); !strings.Contains(calls, "--name kamal-proxy") {
+		t.Errorf("proxy boot did not boot on the web role's host:\n%s", calls)
+	}
+}
+
 // networks: joins Compose-owned networks besides the estate one. The
 // container is created, connected (with the role's alias on each network) and
 // only then started, so the app never runs without the network it reaches its

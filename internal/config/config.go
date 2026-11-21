@@ -798,10 +798,8 @@ healthcheck:
 #  secret: [DATABASE_URL]          # read from your shell at deploy time
 
 # --- A domain with HTTPS, through kamal-proxy -----------------------------
-# Set servers.web.proxy to true, drop servers.web.port, run "qifa proxy boot"
-# once per host, then deploy.
-#proxy_boot:
-#  hosts: [local]
+# Set servers.web.proxy to true and drop servers.web.port. The first deploy
+# starts kamal-proxy on the host (ports 80 and 443) if it is not running.
 #proxy:
 #  host: app.example.com
 #  app_port: 80

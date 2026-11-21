@@ -22,6 +22,19 @@
 
 ### Changed
 
+- **Deploys boot kamal-proxy where it is missing.** A Docker deploy whose
+  `proxy:` block names a host now boots the proxy on a routed host that has
+  none, as `qifa proxy boot` would, instead of failing with "run qifa proxy
+  boot first". A running proxy is left alone. A role proxied only by being
+  called `web`, with no `proxy:` host, still gets the error, so ports 80 and
+  443 are never taken unasked. Native mode is unchanged: its proxy boot
+  needs root.
+- **`proxy_boot.hosts` defaults to the proxied roles' hosts**, for `qifa
+  proxy boot`, `upgrade`, `logs` and the rest, and for `qifa doctor`. The
+  `proxy_boot:` block is now needed only to change how the proxy runs.
+  Doctor reports a missing proxy that the next deploy will boot as info, not
+  as a failure.
+
 - **`qifa init` writes a starter that deploys as written:** a public image on
   this machine, published on port 8765, with no SSH, registry or proxy.
   Building, env, a domain with HTTPS and remote hosts are commented blocks,

@@ -2,6 +2,7 @@ package deploy
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/tendant/qifa/internal/dockererr"
+	"github.com/tendant/qifa/internal/proxy"
 	"github.com/tendant/qifa/internal/registry"
 	sshpkg "github.com/tendant/qifa/internal/ssh"
 )
@@ -83,7 +85,7 @@ func (d *Deployer) doctorTargets() []doctorTarget {
 			add(host, "app/"+role)
 		}
 	}
-	for _, host := range d.cfg.ProxyBoot.Hosts {
+	for _, host := range proxyBootFor(d.cfg).Hosts {
 		add(host, "proxy")
 	}
 	for name, accessory := range d.cfg.Accessories {
@@ -155,10 +157,13 @@ func (d *Deployer) doctorHost(ctx context.Context, target doctorTarget, image st
 
 	if d.usesProxy() {
 		if err := d.proxy.EnsureRunning(ctx, target.host); err != nil {
-			if hostInList(target.host, d.cfg.ProxyBoot.Hosts) {
-				record(dockererr.Check{Name: "kamal-proxy", Status: "FAIL", Detail: "not running — run `qifa proxy boot`"})
-			} else {
+			switch {
+			case !hostInList(target.host, proxyBootFor(d.cfg).Hosts):
 				record(dockererr.Check{Name: "kamal-proxy", Status: "info", Detail: "not running on this host (not a proxy host)"})
+			case d.autoBootsProxy() && errors.Is(err, proxy.ErrNotRunning):
+				record(dockererr.Check{Name: "kamal-proxy", Status: "info", Detail: "not running — the next deploy boots it (or run `qifa proxy boot`)"})
+			default:
+				record(dockererr.Check{Name: "kamal-proxy", Status: "FAIL", Detail: "not running — run `qifa proxy boot`"})
 			}
 		} else {
 			record(dockererr.Check{Name: "kamal-proxy", Status: "ok", Detail: "running"})

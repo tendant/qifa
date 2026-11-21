@@ -660,7 +660,7 @@ func TestSampleConfigBlocksLoad(t *testing.T) {
 		lines = append(lines, line)
 	}
 	all := strings.Join(lines, "\n")
-	for _, want := range []string{"\nbuilder:", "\nenv:", "\nproxy_boot:", "\nproxy:", "\nssh:"} {
+	for _, want := range []string{"\nbuilder:", "\nenv:", "\nproxy:", "\nssh:"} {
 		if !strings.Contains(all, want) {
 			t.Fatalf("uncommenting lost %q:\n%s", want, all)
 		}
