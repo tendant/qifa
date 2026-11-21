@@ -85,3 +85,18 @@ and Docker ([`test/e2e/mixed-host`](test/e2e/mixed-host)), runs a Docker app
 behind the Docker kamal-proxy, and a native app routed through the same proxy
 (`proxy_boot.mode: container`): deploy, rollback and maintenance of one leave
 the other alone. SSH port 2399 (`QIFA_MIXED_E2E_PORT`).
+
+## Releasing
+
+1. Rename CHANGELOG.md's `## Unreleased` section to `## vX.Y.Z — <date>`, and
+   update the version README.md names (Install, Status).
+2. Commit that to main and let CI pass.
+3. Tag it and push the tag: `git tag vX.Y.Z && git push origin vX.Y.Z`.
+
+The tag runs [`release.yml`](.github/workflows/release.yml). It tests, runs
+`make dist` (a static binary per platform, `qifa-<os>-<arch>`, and
+`SHA256SUMS`), and publishes a GitHub release whose notes are the tag's
+CHANGELOG section. A tag with no CHANGELOG section fails before anything is
+published. A tag with a suffix (`v0.6.0-rc1`) becomes a prerelease, which
+`install.sh` skips unless asked for it by `QIFA_VERSION`. `make dist` runs the
+same build locally.

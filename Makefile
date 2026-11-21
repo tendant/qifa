@@ -1,4 +1,4 @@
-.PHONY: build install uninstall test test-e2e test-e2e-native test-e2e-mixed test-e2e-launchd ci
+.PHONY: build dist install uninstall test test-e2e test-e2e-native test-e2e-mixed test-e2e-launchd ci
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
@@ -15,6 +15,24 @@ endif
 
 build:
 	go build -ldflags "$(LDFLAGS)" ./cmd/qifa
+
+# Release binaries: static (no cgo) builds for each platform in PLATFORMS,
+# named qifa-<os>-<arch> so install.sh can pick one without knowing the
+# version, plus SHA256SUMS over all of them. The release workflow runs this
+# with VERSION set to the tag.
+PLATFORMS := linux/amd64 linux/arm64 darwin/amd64 darwin/arm64
+
+dist:
+	mkdir -p dist
+	rm -f dist/qifa-* dist/SHA256SUMS
+	@for p in $(PLATFORMS); do \
+		os=$${p%/*}; arch=$${p#*/}; \
+		echo "building dist/qifa-$$os-$$arch"; \
+		CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch go build -trimpath \
+			-ldflags "-s -w $(LDFLAGS)" -o dist/qifa-$$os-$$arch ./cmd/qifa || exit 1; \
+	done
+	cd dist && { command -v sha256sum >/dev/null && sha256sum qifa-* || shasum -a 256 qifa-*; } > SHA256SUMS
+	@cat dist/SHA256SUMS
 
 # Install from local source into $GOBIN (or $GOPATH/bin). Version metadata is
 # stamped via -ldflags so `qifa version` reflects the working tree.

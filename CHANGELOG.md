@@ -4,6 +4,14 @@
 
 ### Added
 
+- **Prebuilt binaries and a one-line install.** Tagging a release publishes
+  a static binary per platform (Linux and macOS, amd64 and arm64) with
+  `SHA256SUMS` on a GitHub release, with notes taken from CHANGELOG.md.
+  `curl -fsSL https://raw.githubusercontent.com/tendant/qifa/main/install.sh | sh`
+  installs the right one, checked against its checksum, without Go or sudo.
+  `QIFA_VERSION`, `QIFA_INSTALL_DIR` and `QIFA_DOWNLOAD_URL` (for a mirror)
+  adjust it. `make dist` builds the same binaries locally.
+
 - **Join existing docker networks: `networks:`** on `servers.<role>` and on
   accessories, typically a Compose project's (`myproject_default`), so an app
   reaches services Compose runs on the same host by name. The container stays

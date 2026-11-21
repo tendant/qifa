@@ -1,0 +1,58 @@
+name: Release
+
+# Pushing a tag such as v0.6.0 publishes a GitHub release with a binary for
+# each platform (qifa-<os>-<arch>) and SHA256SUMS, which install.sh fetches.
+# The release notes are the tag's section of CHANGELOG.md, so the tag must
+# have a "## v0.6.0 — <date>" section there; without one the release fails
+# before anything is published.
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Check Out
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Set Up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Release Notes From CHANGELOG
+        run: |
+          awk -v tag="$GITHUB_REF_NAME" '
+            /^## / { if (found) exit; if ($2 == tag) { found = 1; next } }
+            found { print }
+          ' CHANGELOG.md > notes.md
+          if ! grep -q '[^[:space:]]' notes.md; then
+            echo "::error::CHANGELOG.md has no '## $GITHUB_REF_NAME' section to use as release notes"
+            exit 1
+          fi
+
+      - name: Run Go Tests
+        run: make test
+
+      - name: Build Binaries
+        run: make dist VERSION="$GITHUB_REF_NAME"
+
+      # A tag with a suffix (v0.6.0-rc1) is a prerelease, which GitHub's
+      # "latest" download URL, and so install.sh by default, skips.
+      - name: Publish Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          prerelease=""
+          case "$GITHUB_REF_NAME" in *-*) prerelease="--prerelease" ;; esac
+          gh release create "$GITHUB_REF_NAME" dist/qifa-* dist/SHA256SUMS \
+            --title "$GITHUB_REF_NAME" --notes-file notes.md --verify-tag $prerelease

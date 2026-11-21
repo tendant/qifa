@@ -21,9 +21,27 @@ systemd service: see [Native deploys](docs/native.md).
 
 ## Install
 
-The current release is **v0.5.0** ([CHANGELOG](CHANGELOG.md)). Building
-needs Go 1.27.1 or newer (an older `go` fetches the right toolchain itself
-unless `GOTOOLCHAIN=local`).
+The current release is **v0.5.0** ([CHANGELOG](CHANGELOG.md)).
+
+From the next release on, each release publishes a prebuilt binary for Linux
+and macOS (amd64 and arm64), and one line installs it. You need no Go, only
+`curl` or `wget`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/tendant/qifa/main/install.sh | sh
+```
+
+[`install.sh`](install.sh) checks the binary against the release's
+`SHA256SUMS` before installing it. It puts it in `/usr/local/bin` if you can
+write there, otherwise in `~/.local/bin`, and never uses sudo. Set
+`QIFA_VERSION=v0.6.0` to pin a release, `QIFA_INSTALL_DIR` to choose the
+directory, or `QIFA_DOWNLOAD_URL` to install from a mirror that holds the
+release's files. You can also download a binary from the
+[releases page](https://github.com/tendant/qifa/releases) and put it on
+`$PATH` yourself.
+
+With Go 1.27.1 or newer (an older `go` fetches the right toolchain itself
+unless `GOTOOLCHAIN=local`), this works for every release, v0.5.0 included:
 
 ```bash
 go install github.com/tendant/qifa/cmd/qifa@v0.5.0
