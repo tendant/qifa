@@ -102,6 +102,12 @@ func TestParseContainerIP(t *testing.T) {
 		t.Fatalf("got (%q, %v), want the address", ip, err)
 	}
 
+	// A container on more than one network has an address on each.
+	ip, err = parseContainerIP("172.18.0.5 172.20.0.3 \n", "app-web-1", "10.0.0.11")
+	if err != nil || ip != "172.18.0.5" {
+		t.Fatalf("two networks: got (%q, %v), want the first address", ip, err)
+	}
+
 	// docker 28 renders an unset netip.Addr like this. Passed through, it
 	// became http://invalid IP:8090/readyz and the healthcheck failed with
 	// "Could not resolve host: invalid" instead of "the container is down".

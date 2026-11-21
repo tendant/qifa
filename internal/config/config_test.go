@@ -582,3 +582,38 @@ servers:
 		t.Errorf("bad accessory gpus: %v", err)
 	}
 }
+
+// networks names existing user-defined networks; built-ins, the estate
+// network, repeats and bad names fail at load, naming the field.
+func TestNetworksValidatedOnLoad(t *testing.T) {
+	base := `service: app
+image: app:1.0
+servers:
+  web:
+    hosts: [h1]
+`
+	cfg, err := loadYAML(t, base+"    networks: [shop_default]\naccessories:\n  db:\n    image: postgres:16\n    host: h1\n    networks: [shop_backend, shop_default]\n")
+	if err != nil {
+		t.Fatalf("valid networks rejected: %v", err)
+	}
+	if got := cfg.Servers["web"].Networks; len(got) != 1 || got[0] != "shop_default" {
+		t.Fatalf("role networks not parsed: %v", got)
+	}
+	if got := cfg.Accessories["db"].Networks; len(got) != 2 {
+		t.Fatalf("accessory networks not parsed: %v", got)
+	}
+	for value, want := range map[string]string{
+		"[bridge]":     "built-in",
+		"[host]":       "built-in",
+		"[kamal]":      "estate network",
+		"[a, a]":       "twice",
+		"[\"my net\"]": "not a docker network name",
+	} {
+		if _, err := loadYAML(t, base+"    networks: "+value+"\n"); err == nil || !strings.Contains(err.Error(), "servers.web.networks") || !strings.Contains(err.Error(), want) {
+			t.Errorf("networks %s: got %v, want an error containing %q", value, err, want)
+		}
+	}
+	if _, err := loadYAML(t, base+"accessories:\n  db:\n    image: postgres:16\n    host: h1\n    networks: [none]\n"); err == nil || !strings.Contains(err.Error(), "accessories.db.networks") {
+		t.Errorf("bad accessory networks: %v", err)
+	}
+}

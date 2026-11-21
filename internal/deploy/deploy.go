@@ -276,6 +276,13 @@ func (d *Deployer) deployHost(ctx context.Context, deployment state.Deployment, 
 			return err
 		}
 	}
+	// Networks another tool owns (a Compose project's) are checked here,
+	// before anything is pulled or stopped: a non-overlapping role stops its
+	// running container before starting the new one, and finding out then
+	// would leave the role down.
+	if err := d.ensureNetworks(ctx, host, server.Networks); err != nil {
+		return err
+	}
 	previous, err := d.findRunningContainerInfo(ctx, host, role)
 	if err != nil {
 		return err
@@ -395,7 +402,7 @@ func (d *Deployer) deployHost(ctx context.Context, deployment state.Deployment, 
 	if err := d.remoteDocker.StopAndRemove(ctx, host, containerName); err != nil {
 		return err
 	}
-	if err := d.remoteDocker.RunContainer(ctx, host, containerName, imageRef, remoteEnv, server.Cmd.ShellString(), containerNetwork, labels, server.Volumes, publishedPort, containerPort, server.Privileged, server.GPUs, server.ExtraPorts, networkAliases); err != nil {
+	if err := d.remoteDocker.RunContainer(ctx, host, containerName, imageRef, remoteEnv, server.Cmd.ShellString(), containerNetwork, labels, server.Volumes, publishedPort, containerPort, server.Privileged, server.GPUs, server.ExtraPorts, networkAliases, server.Networks); err != nil {
 		_ = d.remoteDocker.StopAndRemove(ctx, host, containerName)
 		return err
 	}
@@ -1697,6 +1704,9 @@ func (d *Deployer) AccessoryBoot(ctx context.Context, name string) error {
 		return err
 	}
 	containerName := accessoryContainer(d.cfg.Service, name)
+	if err := d.ensureNetworks(ctx, accessory.Host, accessory.Networks); err != nil {
+		return err
+	}
 	if accessory.IsLocalSource() {
 		// Image is produced out-of-band and must already exist on the host;
 		// never pull. Single-host, so this presence check is naturally fail-fast.
@@ -1729,7 +1739,20 @@ func (d *Deployer) AccessoryBoot(ctx context.Context, name string) error {
 	// can resolve each other by container DNS. The network is created by
 	// `qifa proxy boot`; without it, the accessory would land on the
 	// default bridge and not be reachable from app containers.
-	return d.remoteDocker.RunContainer(ctx, accessory.Host, containerName, accessory.Image, remoteEnv, accessory.Cmd, d.cfg.ProxyBoot.Network, nil, accessory.Volumes, accessory.Port, accessory.AppPort, false, accessory.GPUs, nil, nil)
+	return d.remoteDocker.RunContainer(ctx, accessory.Host, containerName, accessory.Image, remoteEnv, accessory.Cmd, d.cfg.ProxyBoot.Network, nil, accessory.Volumes, accessory.Port, accessory.AppPort, false, accessory.GPUs, nil, nil, accessory.Networks)
+}
+
+// ensureNetworks fails when one of networks, which the config joins but qifa
+// does not own, is missing on host.
+func (d *Deployer) ensureNetworks(ctx context.Context, host string, networks []string) error {
+	missing, err := d.remoteDocker.MissingNetworks(ctx, host, networks)
+	if err != nil {
+		return err
+	}
+	if len(missing) > 0 {
+		return docker.MissingNetworksError(host, missing)
+	}
+	return nil
 }
 
 func (d *Deployer) AccessoryLogs(ctx context.Context, name string, out io.Writer) error {

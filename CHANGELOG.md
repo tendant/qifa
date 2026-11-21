@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **Join existing docker networks: `networks:`** on `servers.<role>` and on
+  accessories, typically a Compose project's (`myproject_default`), so an app
+  reaches services Compose runs on the same host by name. The container stays
+  on the estate network too, and a non-proxied role's `<service>-<role>` alias
+  applies on every network it joins. qifa never creates these networks. A
+  deploy or accessory boot checks for them before touching the running
+  container, and `qifa doctor` reports them. Built-in networks (`bridge`,
+  `host`, `none`) and the estate network are refused at load. Native mode
+  rejects the key. See README, "Beside Docker Compose". The health check
+  reads the address of a container on several networks correctly: it used to
+  run them together.
+
 ## v0.5.0 — 2026-11-14
 
 ### Added

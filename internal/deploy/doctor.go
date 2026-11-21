@@ -141,6 +141,18 @@ func (d *Deployer) doctorHost(ctx context.Context, target doctorTarget, image st
 
 	record(d.doctorRegistryAuth(ctx, target.host, image))
 
+	if networks := d.joinedNetworks(target.host); len(networks) > 0 {
+		missing, err := d.remoteDocker.MissingNetworks(ctx, target.host, networks)
+		switch {
+		case err != nil:
+			record(dockererr.Check{Name: "networks", Status: "FAIL", Detail: err.Error()})
+		case len(missing) > 0:
+			record(dockererr.Check{Name: "networks", Status: "FAIL", Detail: "missing " + strings.Join(missing, ", ") + " — start the Compose project that owns them, or docker network create"})
+		default:
+			record(dockererr.Check{Name: "networks", Status: "ok", Detail: strings.Join(networks, ", ")})
+		}
+	}
+
 	if d.usesProxy() {
 		if err := d.proxy.EnsureRunning(ctx, target.host); err != nil {
 			if hostInList(target.host, d.cfg.ProxyBoot.Hosts) {
@@ -236,4 +248,30 @@ func printChecks(out io.Writer, checks []dockererr.Check) {
 		}
 		fmt.Fprintf(out, "  %-*s  %-4s  %s\n", width, c.Name, c.Status, detail)
 	}
+}
+
+// joinedNetworks is every network besides the estate one that a container
+// on host is configured to join, sorted and without repeats.
+func (d *Deployer) joinedNetworks(host string) []string {
+	set := map[string]bool{}
+	for _, server := range d.cfg.Servers {
+		if hostInList(host, server.Hosts) {
+			for _, n := range server.Networks {
+				set[n] = true
+			}
+		}
+	}
+	for _, accessory := range d.cfg.Accessories {
+		if accessory.Host == host {
+			for _, n := range accessory.Networks {
+				set[n] = true
+			}
+		}
+	}
+	networks := make([]string, 0, len(set))
+	for n := range set {
+		networks = append(networks, n)
+	}
+	sort.Strings(networks)
+	return networks
 }

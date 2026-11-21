@@ -243,6 +243,67 @@ The value is checked when the config loads. Native mode rejects it: a native
 app reaches the host's GPUs directly. An accessory picks up a changed `gpus`
 on its next `qifa accessory boot`, as with its other settings.
 
+### Beside Docker Compose
+
+qifa and Compose can run on the same host without stepping on each other.
+Every qifa command finds its containers by their `qifa.*` labels, so `sweep`,
+`prune` and `remove` never touch a container Compose or a plain `docker run`
+started, and a deploy that needs no proxy never starts one. An app with no
+`proxy:` block and only non-proxied roles needs nothing on the host but
+Docker.
+
+To reach services Compose runs, such as a database, join the Compose
+project's network with `networks:`, on a role or an accessory:
+
+```yaml
+service: shop
+image: reg.example.com/shop:1.4
+
+servers:
+  web:
+    hosts: [10.0.0.11]
+    port: 8080
+    app_port: 3000
+    proxy: false
+    networks: [shop_default]   # Compose's network for project "shop"
+
+env:
+  clear:
+    DATABASE_URL: postgres://app@db:5432/shop   # "db" is the Compose service
+```
+
+The container stays on the estate network (`kamal`) as well, so it still
+reaches its accessories. On every network it joins it answers to the same
+`<service>-<role>` alias (`shop-web` here), so Compose services can call it
+by that name. Accessories are reached by their container name.
+
+qifa never creates or removes these networks. They belong to Compose, and
+Compose refuses to adopt a network it did not create. A deploy or
+`accessory boot` checks for them first and stops, before touching the
+running container, if one is missing. Bring the project up (`docker compose
+up -d`) before the first deploy. `qifa doctor` checks them too. `docker
+compose down` leaves the network in place while a qifa container still uses
+it ("Resource is still in use"). That is expected: the app keeps running, and
+the next `compose up` reuses the network.
+
+The other direction also works without `networks:`. A Compose service can join
+qifa's network as an external one and reach `shop-web` there:
+
+```yaml
+# compose.yaml
+services:
+  worker:
+    image: shop-worker
+    networks: [default, kamal]
+networks:
+  kamal:
+    external: true
+```
+
+The built-in `bridge`, `host` and `none` networks are refused. A changed
+`networks:` list takes effect on the next deploy, or the accessory's next
+boot.
+
 ### 6. Without Docker: a systemd service
 
 A static binary run by systemd: no image, registry or proxy on the server.

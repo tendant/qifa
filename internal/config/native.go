@@ -207,6 +207,8 @@ func (c *Config) validateNative() error {
 			return fmt.Errorf("config.servers.%s.privileged is for containers", role)
 		case s.GPUs != "":
 			return fmt.Errorf("config.servers.%s.gpus is for containers; a native app reaches the host's GPUs directly", role)
+		case len(s.Networks) > 0:
+			return fmt.Errorf("config.servers.%s.networks is for containers; a native app reaches services through the host's published ports", role)
 		case s.Proxy != nil && *s.Proxy:
 			return fmt.Errorf("config.servers.%s.proxy: native mode does not register with kamal-proxy", role)
 		}

@@ -407,7 +407,11 @@ func GPUsFlag(v string) string {
 	return "--gpus " + shellQuote(v)
 }
 
-func (r *Remote) RunContainer(ctx context.Context, host, name, imageRef, envFile, command, network string, labels map[string]string, volumes []string, hostPort, containerPort int, privileged bool, gpus string, extraPublish, networkAliases []string) error {
+// RunContainer starts a container on network, the estate network. With
+// extraNetworks it is created, connected to each (with the same aliases) and
+// only then started, so the process never runs without a network it was
+// configured to reach; the networks must exist (MissingNetworks).
+func (r *Remote) RunContainer(ctx context.Context, host, name, imageRef, envFile, command, network string, labels map[string]string, volumes []string, hostPort, containerPort int, privileged bool, gpus string, extraPublish, networkAliases, extraNetworks []string) error {
 	if err := r.ensureVolumeHostDirs(ctx, host, volumes); err != nil {
 		return err
 	}
@@ -421,7 +425,11 @@ func (r *Remote) RunContainer(ctx context.Context, host, name, imageRef, envFile
 		_, _ = r.client.Run(ctx, host, "docker network create "+shellQuote(network)+" >/dev/null 2>&1 || true")
 	}
 	var args []string
-	args = append(args, "docker run -d --restart unless-stopped")
+	if len(extraNetworks) > 0 {
+		args = append(args, "docker create --restart unless-stopped")
+	} else {
+		args = append(args, "docker run -d --restart unless-stopped")
+	}
 	args = append(args, "--name "+shellQuote(name))
 	if network != "" {
 		args = append(args, "--network "+shellQuote(network))
@@ -463,7 +471,49 @@ func (r *Remote) RunContainer(ctx context.Context, host, name, imageRef, envFile
 		// fail for exactly the same registry/network reasons a pull does.
 		return dockererr.WrapKnownNetwork(ctx, r.client, "start container "+name+" from", host, imageRef, 1, err)
 	}
+	if len(extraNetworks) == 0 {
+		return nil
+	}
+	for _, n := range extraNetworks {
+		connect := []string{"docker network connect"}
+		for _, alias := range networkAliases {
+			connect = append(connect, "--alias "+shellQuote(alias))
+		}
+		connect = append(connect, shellQuote(n), shellQuote(name))
+		if _, err := r.client.Run(ctx, host, strings.Join(connect, " ")); err != nil {
+			return fmt.Errorf("connect container %s to network %s on %s: %w", name, n, host, err)
+		}
+	}
+	if _, err := r.client.Run(ctx, host, "docker start "+shellQuote(name)+" >/dev/null"); err != nil {
+		return fmt.Errorf("start container %s on %s: %w", name, host, err)
+	}
 	return nil
+}
+
+// MissingNetworks reports which of networks do not exist on host. They are
+// networks qifa joins but does not own — a Compose project's, typically — so
+// a missing one is the operator's to create, never qifa's: Compose refuses to
+// adopt a network it did not create itself.
+func (r *Remote) MissingNetworks(ctx context.Context, host string, networks []string) ([]string, error) {
+	if len(networks) == 0 {
+		return nil, nil
+	}
+	quoted := make([]string, 0, len(networks))
+	for _, n := range networks {
+		quoted = append(quoted, shellQuote(n))
+	}
+	out, err := r.client.Run(ctx, host, fmt.Sprintf(
+		`for n in %s; do docker network inspect "$n" >/dev/null 2>&1 || echo "$n"; done`,
+		strings.Join(quoted, " ")))
+	if err != nil {
+		return nil, err
+	}
+	return strings.Fields(out), nil
+}
+
+// MissingNetworksError explains a missing joined network.
+func MissingNetworksError(host string, missing []string) error {
+	return fmt.Errorf("docker network(s) %s not found on %s: qifa joins these but never creates them — start the Compose project that owns them first (docker compose up -d), or create them with docker network create", strings.Join(missing, ", "), host)
 }
 
 // ensureVolumeHostDirs runs mkdir -p on the host side of each bind-mount
@@ -586,7 +636,10 @@ func sortedKeys(m map[string]string) []string {
 }
 
 func (r *Remote) ContainerIP(ctx context.Context, host, name string) (string, error) {
-	out, err := r.client.Run(ctx, host, "docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "+shellQuote(name))
+	// One address per network, space-separated: a container on more than one
+	// network has several, and the template once ran them together into a
+	// single unparseable string. Any of them is reachable from the host.
+	out, err := r.client.Run(ctx, host, "docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}' "+shellQuote(name))
 	if err != nil {
 		return "", err
 	}
@@ -601,10 +654,12 @@ func (r *Remote) ContainerIP(ctx context.Context, host, name string) (string, er
 // whose "Could not resolve host: invalid" buried the real problem — that the
 // container never stayed up.
 func parseContainerIP(out, name, host string) (string, error) {
-	ip := strings.TrimSpace(out)
-	if ip != "" && net.ParseIP(ip) != nil {
-		return ip, nil
+	for _, field := range strings.Fields(out) {
+		if net.ParseIP(field) != nil {
+			return field, nil
+		}
 	}
+	ip := strings.TrimSpace(out)
 	detail := "docker reported no address"
 	if ip != "" {
 		detail = fmt.Sprintf("docker reported %q", ip)

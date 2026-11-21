@@ -166,6 +166,14 @@ type Server struct {
 	// port range published (e.g. WebRTC media) — passed through to
 	// docker's own `-p` range syntax as one entry rather than one per port.
 	ExtraPorts []string `yaml:"extra_ports"`
+	// Networks are docker networks the container joins besides the estate
+	// network (proxy_boot.network), typically a Compose project's
+	// ("myproject_default") so the app reaches services Compose runs on the
+	// same host by their service names. qifa never creates or removes them:
+	// they belong to whatever made them, and a deploy fails before touching
+	// the running container if one is missing. A non-proxied role's
+	// "<service>-<role>" alias applies on these networks too.
+	Networks []string `yaml:"networks"`
 	// Deprecated: use Cmd (native mode's list form).
 	Exec []string `yaml:"exec,omitempty"`
 }
@@ -424,6 +432,10 @@ type Accessory struct {
 	// GPUs gives the accessory GPUs, exactly as servers.<role>.gpus does for
 	// the app: a model server beside the app is the usual case.
 	GPUs string `yaml:"gpus"`
+
+	// Networks are existing docker networks the accessory joins besides the
+	// estate network, as servers.<role>.networks.
+	Networks []string `yaml:"networks"`
 }
 
 // ImageSource returns the effective origin of the accessory image. Defaults
@@ -492,6 +504,9 @@ func (c *Config) Validate() error {
 		if err := ValidateGPUs(server.GPUs); err != nil {
 			return fmt.Errorf("config.servers.%s.gpus: %w", role, err)
 		}
+		if err := c.validateNetworks(server.Networks); err != nil {
+			return fmt.Errorf("config.servers.%s.networks: %w", role, err)
+		}
 	}
 	if c.ProxyBoot.Binary != "" {
 		return errors.New("config.proxy_boot.binary applies only with config.native (the container proxy runs its image)")
@@ -559,8 +574,37 @@ func (c *Config) Validate() error {
 		if err := ValidateGPUs(acc.GPUs); err != nil {
 			return fmt.Errorf("accessories.%s.gpus: %w", name, err)
 		}
+		if err := c.validateNetworks(acc.Networks); err != nil {
+			return fmt.Errorf("accessories.%s.networks: %w", name, err)
+		}
 	}
 	return c.validateBuilder()
+}
+
+// dockerNetworkName is the shape docker accepts for a network name.
+var dockerNetworkName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]*$`)
+
+// validateNetworks checks a networks list: existing user-defined docker
+// networks to join besides the estate network. Docker's built-in ones are
+// refused: "host" and "none" cannot be combined with another network, and
+// the default "bridge" has no DNS, so joining it gives nothing to reach by
+// name and network aliases are rejected on it.
+func (c *Config) validateNetworks(networks []string) error {
+	seen := map[string]bool{}
+	for _, n := range networks {
+		switch {
+		case !dockerNetworkName.MatchString(n):
+			return fmt.Errorf("%q is not a docker network name", n)
+		case n == "host" || n == "none" || n == "bridge":
+			return fmt.Errorf("%q is a docker built-in network; name a user-defined one, such as a Compose project's (myproject_default)", n)
+		case n == c.ProxyBoot.Network:
+			return fmt.Errorf("%q is the estate network (proxy_boot.network), which every container joins already", n)
+		case seen[n]:
+			return fmt.Errorf("%q is listed twice", n)
+		}
+		seen[n] = true
+	}
+	return nil
 }
 
 // gpuDeviceID is one entry of a gpus device list: an index ("0") or a GPU

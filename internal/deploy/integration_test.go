@@ -592,6 +592,110 @@ func TestDeployCreatesTheNetworkOnAHostWithoutAProxy(t *testing.T) {
 	}
 }
 
+// networks: joins Compose-owned networks besides the estate one. The
+// container is created, connected (with the role's alias on each network) and
+// only then started, so the app never runs without the network it reaches its
+// database through.
+func TestDeployJoinsExtraNetworks(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	env := newIntegrationEnv(t)
+	if err := os.MkdirAll(filepath.Join(env.stateDir, "networks"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range []string{"shop_default", "shop_backend"} {
+		if err := os.WriteFile(filepath.Join(env.stateDir, "networks", n), nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cfg := env.config(t, config.BuilderHostPerTarget, "local", "nginx:1.27-alpine", config.Registry{})
+	cfg.Builder = nil
+	proxyDisabled := false
+	web := cfg.Servers["web"]
+	web.Port, web.AppPort, web.Proxy = 19087, 80, &proxyDisabled
+	web.Networks = []string{"shop_default"}
+	cfg.Servers["web"] = web
+	delete(cfg.Servers, "worker")
+	redis := cfg.Accessories["redis"]
+	redis.Networks = []string{"shop_backend"}
+	cfg.Accessories["redis"] = redis
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	store, err := state.NewStore(filepath.Join(env.root, ".qifa", "state.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	deployer, err := New(cfg, store, &stdout, &stderr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := deployer.Deploy(ctx); err != nil {
+		t.Fatalf("deploy: %v\ndocker calls:\n%s", err, readIfExists(filepath.Join(env.stateDir, "docker_calls.log")))
+	}
+	if err := deployer.AccessoryBoot(ctx, "redis"); err != nil {
+		t.Fatalf("accessory boot: %v", err)
+	}
+	calls := readIfExists(filepath.Join(env.stateDir, "docker_calls.log"))
+	create := strings.Index(calls, "create --restart unless-stopped --name testapp-web-")
+	connect := strings.Index(calls, "network connect --alias testapp-web shop_default testapp-web-")
+	start := strings.Index(calls, "start start testapp-web-")
+	if create < 0 || connect < 0 || start < 0 || !(create < connect && connect < start) {
+		t.Errorf("the app should be created, connected with its alias, then started:\n%s", calls)
+	}
+	if !strings.Contains(calls, "network connect shop_backend testapp-accessory-redis") {
+		t.Errorf("the accessory should join its network, with no alias:\n%s", calls)
+	}
+	if strings.Contains(calls, "network create shop_") {
+		t.Errorf("qifa must not create networks it joins but does not own:\n%s", calls)
+	}
+}
+
+// A missing joined network fails the deploy before the running container is
+// touched: a non-proxied role stops its old container before starting the new
+// one, and discovering the missing network at that point would leave it down.
+func TestDeployRefusesAMissingNetworkBeforeStopping(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	env := newIntegrationEnv(t)
+	cfg := env.config(t, config.BuilderHostPerTarget, "local", "nginx:1.27-alpine", config.Registry{})
+	cfg.Builder = nil
+	proxyDisabled := false
+	web := cfg.Servers["web"]
+	web.Port, web.AppPort, web.Proxy = 19088, 80, &proxyDisabled
+	cfg.Servers["web"] = web
+	delete(cfg.Servers, "worker")
+	store, err := state.NewStore(filepath.Join(env.root, ".qifa", "state.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	deployer, err := New(cfg, store, &stdout, &stderr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := deployer.Deploy(ctx); err != nil {
+		t.Fatalf("first deploy: %v", err)
+	}
+
+	web.Networks = []string{"shop_default"}
+	cfg.Servers["web"] = web
+	deployer, err = New(cfg, store, &stdout, &stderr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := readIfExists(filepath.Join(env.stateDir, "docker_calls.log"))
+	err = deployer.Deploy(ctx)
+	if err == nil || !strings.Contains(err.Error(), "shop_default") || !strings.Contains(err.Error(), "docker compose up") {
+		t.Fatalf("deploy should fail naming the missing network: %v", err)
+	}
+	after := strings.TrimPrefix(readIfExists(filepath.Join(env.stateDir, "docker_calls.log")), before)
+	if strings.Contains(after, "stop ") || strings.Contains(after, "rm ") {
+		t.Errorf("the running container was touched before the network check:\n%s", after)
+	}
+}
+
 // Accessory env is plaintext in the config, so a database password has to come
 // from somewhere else. secret_command output reaches the accessory's env file,
 // merged over env.
@@ -1265,8 +1369,15 @@ case "$cmd" in
     exit 0
     ;;
   network)
-    if [ "${1:-}" = "create" ]; then
+    if [ "${1:-}" = "create" ] || [ "${1:-}" = "connect" ]; then
       exit 0
+    fi
+    # Networks another tool owns exist when a test creates
+    # $state/networks/<name>.
+    if [ "${1:-}" = "inspect" ]; then
+      [ -f "$state/networks/$2" ] && exit 0
+      echo "Error response from daemon: network $2 not found" >&2
+      exit 1
     fi
     echo "unsupported docker network command: $*" >&2
     exit 1
@@ -1316,7 +1427,9 @@ case "$cmd" in
       esac
     done
     ;;
-  run)
+  run|create)
+    initial=running
+    if [ "$cmd" = "create" ]; then initial=created; fi
     name=""
     envfile=""
     image=""
@@ -1346,7 +1459,7 @@ case "$cmd" in
       printf 'envfile=%%s\n' "$envfile"
       printf 'cmd=%%s\n' "$usercmd"
       printf 'ip=172.18.0.%%s\n' "$ipoctet"
-      printf 'state=running\n'
+      printf 'state=%%s\n' "$initial"
       printf 'created=2026-04-25 10:00:%%02d +0000 UTC\n' "$seq"
       for l in $labels; do
         printf 'label.%%s\n' "$l"
@@ -1421,6 +1534,12 @@ case "$cmd" in
       # suffix, so the edit silently fails and the container stays "running"
       # — which the next deploy sweep then removes as an orphan.
       sed 's/^state=.*/state=exited/' "$file" > "$file.tmp" && mv "$file.tmp" "$file"
+    fi
+    ;;
+  start)
+    file="$state/containers/$1"
+    if [ -f "$file" ]; then
+      sed 's/^state=.*/state=running/' "$file" > "$file.tmp" && mv "$file.tmp" "$file"
     fi
     ;;
   rm)
