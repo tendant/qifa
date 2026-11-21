@@ -116,6 +116,16 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		printUsage(stdout)
 		return nil
 	}
+	switch {
+	case args[0] == "help" || args[0] == "-h" || args[0] == "--help":
+		if len(args) > 1 {
+			return printCommandUsage(stdout, args[1])
+		}
+		printUsage(stdout)
+		return nil
+	case wantsHelp(args[1:]):
+		return printCommandUsage(stdout, args[0])
+	}
 
 	switch args[0] {
 	case "version", "--version", "-v":
@@ -135,14 +145,25 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		return err
 	case "init":
 		path := "qifa.yaml"
-		if len(args) > 1 {
-			path = args[1]
+		force := false
+		for _, a := range args[1:] {
+			switch {
+			case a == "--force":
+				force = true
+			case strings.HasPrefix(a, "-"):
+				return fmt.Errorf("unknown flag %q", a)
+			default:
+				path = a
+			}
 		}
-		_, err := fmt.Fprintf(stdout, "wrote starter config to %s\n", path)
-		if err != nil {
+		if _, err := os.Stat(path); err == nil && !force {
+			return fmt.Errorf("%s already exists; not overwriting it (qifa init --force replaces it)", path)
+		}
+		if err := config.WriteSample(path); err != nil {
 			return err
 		}
-		return config.WriteSample(path)
+		_, err := fmt.Fprintf(stdout, "wrote starter config to %s\nnext: edit it, check it with `qifa config`, then `qifa deploy`\n", path)
+		return err
 	case "deploy":
 		dryRun := false
 		allowDirty := false
@@ -563,36 +584,81 @@ func withRuntime(ctx context.Context, stdout, stderr io.Writer, configFile, comm
 	return fn(&runtime{deployer: d})
 }
 
+// commands is the usage table: the invocation, then what it does. Help for
+// one command is every row whose invocation starts with its name.
+var commands = [][2]string{
+	{"init [path] [--force]", "write a starter qifa.yaml (refuses to overwrite without --force)"},
+	{"version", "print the build version and commit"},
+	{"config", "validate the config and print it with defaults applied"},
+	{"deploy [--dry-run] [--version <v>] [--allow-dirty]", "build, ship, health-check, switch traffic, prune"},
+	{"rollback [version]", "run the previous version again, or the one named"},
+	{"stop", "stop the running container of each role on each host"},
+	{"start", "start the most recent container again"},
+	{"restart", "stop, then start"},
+	{"setup [--ssh-user <user>] [--deploy-user <user>] [--print [--host <host>]]", "prepare each host once (docker group, or native accounts and units)"},
+	{"remove [--purge [--yes]] [--ssh-user <user>]", "tear the app down; --purge also deletes env files and data"},
+	{"prune", "keep the last prune.retain stopped versions, remove the rest"},
+	{"backup", "run config.backup and download the artifact"},
+	{"restore <local-file>", "upload a backup and run config.restore"},
+	{"sweep", "remove orphan running containers"},
+	{"sync", "push config.files to the hosts"},
+	{"env diff", "compare the config's env with what the running containers got"},
+	{"lock <status|release>", "show or force-clear the deploy lock"},
+	{"proxy <boot|start|stop|restart|upgrade|remove [--purge]|logs [--follow] [--lines N]|details>", "manage the shared kamal-proxy"},
+	{"reconcile [--dry-run]", "deploy only if the hosts differ from the config"},
+	{"doctor", "check every host: ssh, docker, registry, DNS, disk, clock, proxy"},
+	{"status", "deployment history and active containers"},
+	{"logs [--follow] [--lines N]", "logs of the active container"},
+	{"app exec <command>", "run a command in the active container"},
+	{"app containers", "list the app's containers per role and host"},
+	{"app maintenance [--message <msg>] [--drain-timeout <duration>]", "serve a maintenance page through the proxy"},
+	{"app live", "leave maintenance mode"},
+	{"accessory <boot|stop|start|restart|remove|logs|exec> <name> [args...]", "manage an accessory container"},
+	{"cert <issue|renew|list|remove> [args...]", "manage TLS certificates qifa issues"},
+	{"help [command]", "show this list, or one command's usage"},
+}
+
 func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "usage: qifa [-c config.yaml] <command>")
 	fmt.Fprintln(w, "")
 	fmt.Fprintln(w, "commands:")
-	fmt.Fprintln(w, "  init [path]")
-	fmt.Fprintln(w, "  version")
-	fmt.Fprintln(w, "  config")
-	fmt.Fprintln(w, "  deploy [--dry-run] [--version <v>] [--allow-dirty]")
-	fmt.Fprintln(w, "  rollback [version]")
-	fmt.Fprintln(w, "  stop")
-	fmt.Fprintln(w, "  start")
-	fmt.Fprintln(w, "  restart")
-	fmt.Fprintln(w, "  setup [--ssh-user <user>] [--deploy-user <user>] [--print [--host <host>]]")
-	fmt.Fprintln(w, "  remove [--purge [--yes]] [--ssh-user <user>]")
-	fmt.Fprintln(w, "  prune")
-	fmt.Fprintln(w, "  backup")
-	fmt.Fprintln(w, "  restore <local-file>")
-	fmt.Fprintln(w, "  sweep")
-	fmt.Fprintln(w, "  sync")
-	fmt.Fprintln(w, "  env diff")
-	fmt.Fprintln(w, "  lock <status|release>")
-	fmt.Fprintln(w, "  proxy <boot|start|stop|restart|upgrade|remove [--purge]|logs [--follow] [--lines N]|details>")
-	fmt.Fprintln(w, "  reconcile [--dry-run]")
-	fmt.Fprintln(w, "  doctor")
-	fmt.Fprintln(w, "  status")
-	fmt.Fprintln(w, "  logs [--follow] [--lines N]")
-	fmt.Fprintln(w, "  app exec <command>")
-	fmt.Fprintln(w, "  app containers")
-	fmt.Fprintln(w, "  app maintenance [--message <msg>] [--drain-timeout <duration>]")
-	fmt.Fprintln(w, "  app live")
-	fmt.Fprintln(w, "  accessory <boot|stop|start|restart|remove|logs|exec> <name> [args...]")
-	fmt.Fprintln(w, "  cert <issue|renew|list|remove> [args...]")
+	for _, c := range commands {
+		fmt.Fprintf(w, "  %s\n      %s\n", c[0], c[1])
+	}
+	fmt.Fprintln(w, "")
+	fmt.Fprintln(w, "Start with: qifa init, edit qifa.yaml, qifa deploy. More: README.md.")
+}
+
+// printCommandUsage prints the usage of one command, or reports that there
+// is no such command.
+func printCommandUsage(w io.Writer, name string) error {
+	found := false
+	for _, c := range commands {
+		if c[0] == name || strings.HasPrefix(c[0], name+" ") {
+			if !found {
+				fmt.Fprintln(w, "usage:")
+			}
+			found = true
+			fmt.Fprintf(w, "  qifa %s\n      %s\n", c[0], c[1])
+		}
+	}
+	if !found {
+		printUsage(w)
+		return fmt.Errorf("unknown command %q", name)
+	}
+	return nil
+}
+
+// wantsHelp reports whether args ask for a command's usage: -h or --help
+// anywhere before an exec's command, whose own flags are not qifa's.
+func wantsHelp(args []string) bool {
+	for _, a := range args {
+		switch a {
+		case "exec":
+			return false
+		case "-h", "--help":
+			return true
+		}
+	}
+	return false
 }

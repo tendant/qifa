@@ -16,6 +16,24 @@
   reads the address of a container on several networks correctly: it used to
   run them together.
 
+- **`qifa help`**, `-h`/`--help`, and `qifa <command> --help` print usage
+  with a line on what each command does. Before, all of them were errors.
+  An `exec`'s own `--help` still goes to the command it runs.
+
+### Changed
+
+- **`qifa init` writes a starter that deploys as written:** a public image on
+  this machine, published on port 8765, with no SSH, registry or proxy.
+  Building, env, a domain with HTTPS and remote hosts are commented blocks,
+  each tested to load once uncommented. The old starter needed rewriting
+  before anything worked, and it warned about a deprecated key on first
+  load.
+
+### Fixed
+
+- `qifa init` overwrote an existing `qifa.yaml` without asking. It now
+  refuses unless given `--force`.
+
 ## v0.5.0 — 2026-11-14
 
 ### Added

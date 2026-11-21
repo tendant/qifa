@@ -766,71 +766,53 @@ func WriteSample(path string) error {
 	return os.WriteFile(path, []byte(sampleConfig), 0o644)
 }
 
-const sampleConfig = `service: myapp
-image: registry.example.com/myapp
+// sampleConfig is what `qifa init` writes: the smallest config that deploys
+// as written (a public image, on this machine, no proxy or registry), with
+// the usual next steps commented out. Each commented block loads cleanly once
+// uncommented; TestSampleConfigBlocksLoad keeps that true.
+const sampleConfig = `# qifa.yaml: deploys as written. Run "qifa deploy", then open
+# http://localhost:8765. Edit from there; "qifa config" checks your changes.
+service: myapp
+image: nginx:1.27-alpine    # an image with a tag, or set builder: below
 
-# Hosts are SSH targets. The reserved name "local" runs on this machine
-# directly, with no SSH — handy for single-box self-hosting:
-#   hosts: [local]
 servers:
   web:
-    hosts:
-      - 10.0.0.11
-      - 10.0.0.12
-    port: 3000
-  worker:
-    hosts:
-      - 10.0.0.13
-    cmd: ./worker
+    hosts: [local]          # "local" is this machine (no SSH); or SSH hosts: [10.0.0.11]
+    port: 8765              # published on the host
+    app_port: 80            # what the container listens on
+    proxy: false            # true (with proxy: below) for a domain and HTTPS
 
-# proxy_boot describes how to launch the shared kamal-proxy container itself.
-# Owned by the operator via "qifa proxy boot"; app deploys do not touch it.
-# A single proxy is shared by every app on each listed host.
-proxy_boot:
-  hosts:
-    - 10.0.0.11
-    - 10.0.0.12
-  # http_port: 80
-  # https_port: 443
+healthcheck:
+  path: /                   # must answer 2xx before the deploy counts
 
-# proxy describes how THIS app's routes are registered with the running proxy.
-# Set on every "qifa deploy".
-proxy:
-  host: app.example.com
-  app_port: 3000
-  healthcheck:
-    path: /up
-    interval: 2s
-    timeout: 5s
+# --- Build your own image instead of pulling one ---------------------------
+# Uploads this directory to each host and builds there; no registry needed.
+#builder:
+#  host: per_target
+#  context: .
 
-registry:
-  server: registry.example.com
-  username: reg
-  password_env: REGISTRY_PASSWORD
+# --- Environment ----------------------------------------------------------
+#env:
+#  clear:
+#    APP_ENV: production
+#  secret: [DATABASE_URL]          # read from your shell at deploy time
 
-env:
-  clear:
-    APP_ENV: production
-  secret:
-    - DATABASE_URL
+# --- A domain with HTTPS, through kamal-proxy -----------------------------
+# Set servers.web.proxy to true, drop servers.web.port, run "qifa proxy boot"
+# once per host, then deploy.
+#proxy_boot:
+#  hosts: [local]
+#proxy:
+#  host: app.example.com
+#  app_port: 80
+#  ssl: true
+#  tls:
+#    source: kamal                 # kamal-proxy gets a Let's Encrypt certificate
 
-# pull_policy: missing (default) uses the image the host already has and pulls
-# only what it lacks, so a deploy of an unchanged image needs no registry at
-# all. Set "always" for an image tracked by a moving tag (:latest), where the
-# point is to re-resolve it on every deploy.
-# pull_policy: missing
-
-# Omit the builder block to deploy an externally built image (image must
-# include a :tag or @digest). Set host: per_target to build on each target,
-# or host: <ip> to build on a remote host.
-builder:
-  context: .
-  dockerfile: Dockerfile
-  platform: linux/amd64
-
-ssh:
-  user: ubuntu
-  key: ~/.ssh/id_ed25519
+# --- Remote hosts over SSH ------------------------------------------------
+#ssh:
+#  user: deploy
+#  key: ~/.ssh/id_ed25519
 `
 
 func (c *Config) validateBuilder() error {

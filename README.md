@@ -45,12 +45,19 @@ configs written for one version may be rejected by an older one.
 ## Quickstart
 
 ```bash
-qifa init       # writes a starter qifa.yaml
-qifa config     # validate and show the loaded config (unknown keys are errors)
-qifa deploy     # build, ship, healthcheck, switch traffic
+qifa init       # writes a starter qifa.yaml that deploys as written
+qifa deploy     # runs it on this machine: open http://localhost:8765
+qifa config     # after editing: validate and show the loaded config
 qifa logs -f    # tail the running container
 qifa rollback   # roll back to the previous version
+qifa help       # every command; qifa <command> --help for one
 ```
+
+The starter deploys a public image to this machine (`hosts: [local]`), with
+no SSH, registry or proxy, so the first deploy works before you change
+anything. Building your own image, env and secrets, a domain with HTTPS, and
+remote hosts are in it as commented blocks. `qifa init` will not replace an
+existing file; pass `--force` to do that.
 
 ## Three Common Configs
 
@@ -361,7 +368,8 @@ refused, so write it as a list.
 ## Verb Cheatsheet
 
 ```text
-qifa init [path]                 # write a starter qifa.yaml
+qifa help [command]              # all commands, or one; also <command> --help
+qifa init [path] [--force]       # write a starter qifa.yaml (never overwrites without --force)
 qifa version                     # build version + commit
 qifa config                      # validate (unknown keys are errors), print loaded+defaulted config
 

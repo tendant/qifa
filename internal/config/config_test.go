@@ -11,7 +11,21 @@ import (
 func TestLoadConfig(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "qifa.yaml")
-	if err := os.WriteFile(path, []byte(sampleConfig), 0o644); err != nil {
+	// A local build with a registry and an empty builder block, to see the
+	// builder defaults filled in.
+	body := `service: myapp
+image: registry.example.com/myapp
+servers:
+  web:
+    hosts: [10.0.0.11]
+registry:
+  server: registry.example.com
+  username: reg
+  password_env: REGISTRY_PASSWORD
+builder:
+  platform: linux/amd64
+`
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -615,5 +629,47 @@ servers:
 	}
 	if _, err := loadYAML(t, base+"accessories:\n  db:\n    image: postgres:16\n    host: h1\n    networks: [none]\n"); err == nil || !strings.Contains(err.Error(), "accessories.db.networks") {
 		t.Errorf("bad accessory networks: %v", err)
+	}
+}
+
+// The starter config qifa init writes loads with no warnings as written, and
+// still does with every commented block switched on, so the comments cannot
+// drift into advice that no longer validates.
+func TestSampleConfigBlocksLoad(t *testing.T) {
+	cfg, err := loadYAML(t, sampleConfig)
+	if err != nil {
+		t.Fatalf("sample as written: %v", err)
+	}
+	if len(cfg.Warnings) > 0 {
+		t.Errorf("sample as written warns: %v", cfg.Warnings)
+	}
+	if cfg.Servers["web"].Hosts[0] != "local" || cfg.Builder != nil {
+		t.Errorf("sample should deploy a pulled image to this machine: %+v", cfg)
+	}
+
+	var lines []string
+	for _, line := range strings.Split(sampleConfig, "\n") {
+		switch {
+		case strings.HasPrefix(line, "#") && len(line) > 1 && line[1] != ' ':
+			line = line[1:] // a commented setting; prose is "# ..."
+		case strings.Contains(line, "proxy: false"):
+			line = "    proxy: true"
+		case strings.Contains(line, "port: 8765"):
+			continue // the proxy publishes the app, not a host port
+		}
+		lines = append(lines, line)
+	}
+	all := strings.Join(lines, "\n")
+	for _, want := range []string{"\nbuilder:", "\nenv:", "\nproxy_boot:", "\nproxy:", "\nssh:"} {
+		if !strings.Contains(all, want) {
+			t.Fatalf("uncommenting lost %q:\n%s", want, all)
+		}
+	}
+	cfg, err = loadYAML(t, all)
+	if err != nil {
+		t.Fatalf("sample with every block on: %v\n%s", err, all)
+	}
+	if len(cfg.Warnings) > 0 {
+		t.Errorf("sample with every block on warns: %v", cfg.Warnings)
 	}
 }
