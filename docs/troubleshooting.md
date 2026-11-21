@@ -114,9 +114,12 @@ Commands then run through `/bin/sh` on this machine — no sshd, key, or
 `localhost` and `127.0.0.1` still mean SSH by design; only the exact string
 `local` switches transport.
 
-On macOS, Docker Desktop keeps containers in a Linux VM whose bridge IPs the
-host cannot reach, so the kamal-proxy path (which healthchecks a container by
-IP) will not work. Use `proxy: false` with a published `port:` there.
+On macOS, Docker Desktop keeps containers in a Linux VM whose IPs the host
+cannot reach. qifa therefore runs a container's health check inside the docker
+network there, from the app's own image, or from `busybox` if that image has
+no shell or no curl or wget. If the first such deploy stalls on "pulling
+busybox:1.37", the machine cannot reach Docker Hub. Pull or load
+`busybox:1.37` some other way, or add curl or wget to the app image.
 
 ## `knownhosts: key mismatch` during SSH
 

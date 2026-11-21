@@ -48,7 +48,18 @@ type Deployer struct {
 	// preferLocalImages resolves a tag against the image the host already has
 	// instead of asking the registry. Set by Reconcile; see pullImage.
 	preferLocalImages bool
+
+	// dockerInVM caches, per host, whether its docker daemon runs in a VM
+	// (see healthCheck). Rollouts deploy hosts in parallel, hence the mutex.
+	dockerInVMMu sync.Mutex
+	dockerInVM   map[string]bool
 }
+
+// probeImage runs the health probe inside the docker network on a host that
+// cannot reach container addresses itself, when the app's own image cannot
+// (no shell, or neither curl nor wget). busybox has wget and a shell in about
+// 2 MB; it is pulled only where it is missing.
+const probeImage = "busybox:1.37"
 
 // PinVersion fixes the version this deploy ships instead of deriving one from
 // the checkout. An empty version leaves the derivation in place.
@@ -439,7 +450,7 @@ func (d *Deployer) deployHost(ctx context.Context, deployment state.Deployment, 
 	} else if d.cfg.Health().Port == 0 {
 		healthPort = server.Port
 	}
-	if err := d.healthCheck(ctx, host, healthcheckHost, healthPort, containerName, useProxy); err != nil {
+	if err := d.healthCheck(ctx, host, healthcheckHost, healthPort, containerName, imageRef, useProxy); err != nil {
 		return err
 	}
 	if useProxy {
@@ -1893,7 +1904,7 @@ func accessoryContainer(service, name string) string {
 	return service + "-accessory-" + name
 }
 
-func (d *Deployer) healthCheck(ctx context.Context, host, targetHost string, targetPort int, containerName string, useProxy bool) error {
+func (d *Deployer) healthCheck(ctx context.Context, host, targetHost string, targetPort int, containerName, imageRef string, useProxy bool) error {
 	if targetPort == 0 {
 		_, err := d.remoteDocker.Exec(ctx, host, containerName, "true")
 		if err != nil {
@@ -1918,11 +1929,87 @@ func (d *Deployer) healthCheck(ctx context.Context, host, targetHost string, tar
 	timeout := max(int(hc.Timeout.Seconds()), 1)
 	interval := int(hc.Interval.Seconds())
 	command := healthcheckCommand(targetHost, targetPort, path, timeout, interval, healthAttempts(hc))
+	// A probe of a container address (not a published port on loopback)
+	// needs a route from the host to the docker network. On Linux docker's
+	// bridges are host interfaces and that route exists. Where the daemon
+	// runs in a VM — Docker Desktop, Colima, OrbStack on macOS or Windows —
+	// the networks live inside the VM and the address is unreachable from
+	// the host, so a healthy container failed its check. There the same
+	// probe runs in a throwaway container on the app's network instead.
+	if targetHost != "127.0.0.1" {
+		inVM, err := d.hostDockerInVM(ctx, host)
+		if err != nil {
+			return err
+		}
+		if inVM {
+			err = d.probeInNetwork(ctx, host, imageRef, command)
+			if err != nil {
+				return d.withContainerDiagnostics(ctx, host, containerName, err)
+			}
+			return nil
+		}
+	}
 	_, err := d.ssh.Run(ctx, host, command)
 	if err != nil {
 		return d.withContainerDiagnostics(ctx, host, containerName, err)
 	}
 	return nil
+}
+
+// probeInNetwork runs the probe command in a throwaway container on the
+// estate network. It uses the app's own image first: that is on the host
+// already, so the check needs no registry, and most images have a shell and
+// curl or wget. Only an image without them (distroless, scratch) falls back
+// to probeImage — told apart by exit status 126/127, which is what docker
+// gives for a missing sh and what the probe gives for a missing client, where
+// an unhealthy app exits 1.
+func (d *Deployer) probeInNetwork(ctx context.Context, host, imageRef, command string) error {
+	run := func(image string) error {
+		_, err := d.ssh.Run(ctx, host, "docker run --rm --network "+shellQuoteB(d.cfg.ProxyBoot.Network)+" --entrypoint sh "+shellQuoteB(image)+" -c "+shellQuoteB(command))
+		return err
+	}
+	err := run(imageRef)
+	var remote *ssh.RemoteError
+	if err == nil || !errors.As(err, &remote) || (remote.ExitStatus != 126 && remote.ExitStatus != 127) {
+		return err
+	}
+	d.log.Printf("%s has no shell, curl or wget to run the health check with; using %s", imageRef, probeImage)
+	if err := d.ensureProbeImage(ctx, host); err != nil {
+		return err
+	}
+	return run(probeImage)
+}
+
+// hostDockerInVM reports whether host's docker daemon runs in a VM rather
+// than on the host itself: true for any host that is not Linux, since docker
+// containers are Linux processes and elsewhere need one.
+func (d *Deployer) hostDockerInVM(ctx context.Context, host string) (bool, error) {
+	d.dockerInVMMu.Lock()
+	defer d.dockerInVMMu.Unlock()
+	if v, ok := d.dockerInVM[host]; ok {
+		return v, nil
+	}
+	out, err := d.ssh.Run(ctx, host, "uname -s")
+	if err != nil {
+		return false, fmt.Errorf("check the OS of %s: %w", host, err)
+	}
+	inVM := strings.TrimSpace(out) != "Linux"
+	if d.dockerInVM == nil {
+		d.dockerInVM = map[string]bool{}
+	}
+	d.dockerInVM[host] = inVM
+	return inVM, nil
+}
+
+// ensureProbeImage makes probeImage present on host, pulling it only when
+// missing so a repeat deploy contacts no registry for it.
+func (d *Deployer) ensureProbeImage(ctx context.Context, host string) error {
+	exists, err := d.remoteDocker.ImageExists(ctx, host, probeImage)
+	if err != nil || exists {
+		return err
+	}
+	d.log.Printf("pulling %s on %s for the health check", probeImage, host)
+	return d.remoteDocker.Pull(ctx, host, "", probeImage)
 }
 
 // healthcheckCommand builds the probe that runs where the container does.

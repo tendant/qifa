@@ -180,10 +180,12 @@ Two caveats:
 
 - The commands still run through `/bin/sh`, so the host needs `docker` and
   `curl` on `PATH` — the same requirements a remote target has.
-- On macOS, Docker Desktop runs containers in a Linux VM, so the host cannot
-  reach container bridge IPs. The kamal-proxy path healthchecks the container
-  by IP and will not work there; use `proxy: false` with a published `port:`,
-  which is checked over `127.0.0.1`. On Linux the full proxy path works.
+- On macOS (Docker Desktop, Colima, OrbStack), Docker runs in a Linux VM, so
+  the host cannot reach container IPs. A container checked by its IP (a
+  proxied role, or one with no published port) is checked from a throwaway
+  container on its docker network instead. That container uses the app's own
+  image, so no pull is needed, or `busybox` (pulled once) if that image has no
+  `sh` and no curl or wget. Linux hosts check from the host, as before.
 
 ### 5. An internal-only service
 
@@ -219,9 +221,9 @@ the alias does not. Only non-proxied roles get one, because a proxied role runs
 its old and new containers side by side during a rollout and a shared alias
 would resolve to either.
 
-A role with no published port is healthchecked across the bridge by container
-IP, exactly as the proxied path is — so the macOS caveat above applies to it
-too.
+A role with no published port is healthchecked by container IP, exactly as
+the proxied path is. On macOS, that check runs inside the docker network (see
+the caveats above).
 
 Nothing here registers a route with kamal-proxy, which is the point: a route
 would make the service answer to anyone who sends that `Host:` header to the

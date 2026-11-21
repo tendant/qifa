@@ -592,6 +592,75 @@ func TestDeployCreatesTheNetworkOnAHostWithoutAProxy(t *testing.T) {
 	}
 }
 
+// Where docker runs in a VM (Docker Desktop on macOS), the host has no route
+// to container addresses, so the health probe of a proxied container runs in
+// a throwaway container on the docker network instead: from the app's own
+// image, which the host already has, or from busybox when that image has no
+// shell. On Linux it runs on the host as before.
+func TestHealthcheckRunsInsideTheNetworkWhereDockerIsInAVM(t *testing.T) {
+	for _, tc := range []struct {
+		name, os  string
+		noShell   bool
+		probeWith string // image of the probe container, "" for none
+	}{
+		{"linux", "Linux", false, ""},
+		{"vm", "Darwin", false, "app"},
+		{"vm, image without a shell", "Darwin", true, probeImage},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			defer cancel()
+			env := newIntegrationEnv(t)
+			if err := os.WriteFile(filepath.Join(env.stateDir, "uname"), []byte(tc.os+"\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			cfg := env.config(t, config.BuilderHostPerTarget, "local", "testapp", config.Registry{})
+			delete(cfg.Servers, "worker")
+			store, err := state.NewStore(filepath.Join(env.root, ".qifa", "state.jsonl"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var stdout, stderr bytes.Buffer
+			deployer, err := New(cfg, store, &stdout, &stderr)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.noShell {
+				// Every testapp image: the deploy builds and tags it.
+				if err := os.WriteFile(filepath.Join(env.stateDir, "no_shell"), []byte("testapp\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := deployer.Deploy(ctx); err != nil {
+				t.Fatalf("deploy: %v\ndocker calls:\n%s", err, readIfExists(filepath.Join(env.stateDir, "docker_calls.log")))
+			}
+			calls := readIfExists(filepath.Join(env.stateDir, "docker_calls.log"))
+			probeApp := strings.Contains(calls, "run --rm --network kamal --entrypoint sh testapp")
+			probeBusybox := strings.Contains(calls, "run --rm --network kamal --entrypoint sh "+probeImage)
+			switch tc.probeWith {
+			case "":
+				if probeApp || probeBusybox {
+					t.Errorf("Linux should probe from the host:\n%s", calls)
+				}
+			case "app":
+				if !probeApp || probeBusybox {
+					t.Errorf("the probe should use the app's image only:\n%s", calls)
+				}
+			default:
+				if !probeApp || !probeBusybox {
+					t.Errorf("the probe should try the app's image, then busybox:\n%s", calls)
+				}
+			}
+			if got, want := strings.Contains(calls, "pull "+probeImage), tc.probeWith == probeImage; got != want {
+				t.Errorf("busybox pulled = %v, want %v:\n%s", got, want, calls)
+			}
+			if curl := readIfExists(filepath.Join(env.stateDir, "curl_calls.log")); !strings.Contains(curl, "http://172.18.0.") {
+				t.Errorf("the probe should reach the container's address:\n%s", curl)
+			}
+		})
+	}
+}
+
 // A config with a proxy: host needs no `qifa proxy boot` and no proxy_boot
 // block: the deploy boots kamal-proxy on the proxied host where it is
 // missing, then routes to the app through it.
@@ -1529,6 +1598,25 @@ case "$cmd" in
     done
     ;;
   run|create)
+    # docker run --rm --network <net> --entrypoint sh <image> -c <cmd>: the
+    # health probe on a host whose docker runs in a VM. Run the probe here,
+    # against the fake curl, as the throwaway container would — unless a
+    # test listed a prefix of the image in $state/no_shell, where docker
+    # exits 127.
+    if [ "${1:-}" = "--rm" ]; then
+      img=""
+      while [ "$#" -gt 0 ] && [ "$1" != "-c" ]; do img="$1"; shift; done
+      if [ -f "$state/no_shell" ]; then
+        while read -r prefix; do
+          case "$img" in "$prefix"*)
+            echo 'docker: Error response from daemon: exec: "sh": executable file not found in $PATH' >&2
+            exit 127 ;;
+          esac
+        done < "$state/no_shell"
+      fi
+      /bin/sh -c "$2"
+      exit $?
+    fi
     initial=running
     if [ "$cmd" = "create" ]; then initial=created; fi
     name=""
@@ -1652,6 +1740,12 @@ case "$cmd" in
     exit 1
     ;;
 esac
+`, e.stateDir))
+
+	// uname answers Linux, where docker runs on the host, unless a test
+	// writes another OS to $state/uname to stand for Docker Desktop.
+	writeExecutable(t, filepath.Join(e.fakeBin, "uname"), fmt.Sprintf(`#!/bin/sh
+if [ -f %[1]q/uname ]; then cat %[1]q/uname; else echo Linux; fi
 `, e.stateDir))
 
 	writeExecutable(t, filepath.Join(e.fakeBin, "kamal-proxy"), fmt.Sprintf(`#!/bin/sh

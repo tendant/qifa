@@ -44,6 +44,15 @@
 
 ### Fixed
 
+- **Health checks on macOS.** A container checked by its IP (a proxied role,
+  or one with no published port) always failed on Docker Desktop, Colima or
+  OrbStack. Docker runs in a VM there, and the host has no route to container
+  addresses. On a host that is not Linux, the check now runs inside the
+  docker network, from a throwaway container of the app's own image (already
+  present, no pull), or of `busybox:1.37` (pulled once) when that image has
+  no shell and no curl or wget. Linux hosts check from the host, unchanged.
+  With this and the proxy boot above, the full proxy path works on a Mac.
+
 - `qifa init` overwrote an existing `qifa.yaml` without asking. It now
   refuses unless given `--force`.
 
