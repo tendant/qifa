@@ -883,6 +883,11 @@ func buildContextArchive(root string) ([]byte, error) {
 		if rel == "." {
 			return nil
 		}
+		// qifa's own state (.qifa/ next to qifa.yaml) is never part of a
+		// build, and changes on every deploy.
+		if rel == ".qifa" && info.IsDir() {
+			return filepath.SkipDir
+		}
 		header, err := tar.FileInfoHeader(info, "")
 		if err != nil {
 			return err

@@ -11,6 +11,7 @@ make test-e2e         # Docker deploys, end to end
 make test-e2e-native  # native (systemd) deploys, end to end
 make test-e2e-mixed   # Docker and native apps on one server
 make test-e2e-launchd # native deploys to this Mac, under launchd (macOS only)
+make test-e2e-vps     # docs/vps.md as written: fresh Ubuntu server to HTTPS
 ```
 
 The end-to-end suites need Docker on your machine, only to provide
@@ -81,6 +82,29 @@ release rolled back, launchd restarting a killed app, restart/stop/start,
 logs, `app exec`, status, rollback, and remove. Everything lives in a temp
 directory and the agent is booted out at the end. Port 38085
 (`QIFA_LAUNCHD_E2E_PORT`).
+
+### `test-e2e-vps`: the fresh-server guide
+
+[`test/e2e/vps-e2e.sh`](test/e2e/vps-e2e.sh) runs
+[docs/vps.md](docs/vps.md) step by step against a container that stands in
+for a new VPS: Ubuntu 24.04 with systemd and sshd, root logging in with a
+key, and no Docker. Each guide command is printed as `$ …` and run as the
+guide writes it, with the test's address for the server: Docker from
+get.docker.com, the deploy user, `qifa init --host --domain`, `setup`,
+`doctor`, `deploy`, then a second deploy. It checks the app answers at
+`https://app.test` with a certificate issued by
+[Pebble](https://github.com/letsencrypt/pebble), and that `http://`
+redirects to it.
+
+Only the plumbing differs from a real server:
+
+- **kamal-proxy** is a build whose staging ACME URL points at Pebble, so the
+  config adds `proxy_boot.image` and `tls.staging`.
+- **DNS:** Pebble's DNS server points `app.test` at the box, and the box's
+  Docker uses it so kamal-proxy finds `pebble.test`.
+
+It doesn't cover real DNS, cloud firewalls or Let's Encrypt itself. It needs
+the internet, because the box installs Docker and pulls nginx.
 
 ### `test-e2e-mixed`: one proxy for Docker and native
 

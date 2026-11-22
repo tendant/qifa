@@ -1,7 +1,12 @@
 package docker
 
 import (
+	"archive/tar"
+	"bytes"
+	"io"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -144,5 +149,43 @@ func TestGPUsFlag(t *testing.T) {
 	}
 	if string(out) != `[--gpus]["device=0,1"]` {
 		t.Errorf("shell passes %s", out)
+	}
+}
+
+// The build context sent to a host leaves out qifa's own state directory.
+func TestBuildContextArchiveSkipsQifaState(t *testing.T) {
+	dir := t.TempDir()
+	for name, body := range map[string]string{
+		"Dockerfile":        "FROM scratch\n",
+		"app/main.go":       "package main\n",
+		".qifa/state.jsonl": "{}\n",
+	} {
+		path := filepath.Join(dir, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	data, err := buildContextArchive(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	tr := tar.NewReader(bytes.NewReader(data))
+	for {
+		h, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		names = append(names, h.Name)
+	}
+	got := strings.Join(names, " ")
+	if strings.Contains(got, ".qifa") || !strings.Contains(got, "Dockerfile") || !strings.Contains(got, "app/main.go") {
+		t.Errorf("archive holds %s", got)
 	}
 }

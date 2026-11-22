@@ -40,7 +40,7 @@ func runInit(args []string, stdout io.Writer) error {
 	}
 
 	starter := config.DetectStarter(filepath.Dir(path))
-	starter.Host = strings.TrimSpace(host)
+	starter.SetHost(host)
 	starter.Domain = strings.ToLower(strings.TrimSpace(domain))
 	if err := starter.Check(); err != nil {
 		return err
@@ -73,7 +73,11 @@ func runInit(args []string, stdout io.Writer) error {
 		fmt.Fprintln(stdout, "  healthcheck.path is /: set it to a route your app answers with 2xx (such as /up), or the deploy fails")
 	}
 	if starter.Host != "" {
-		fmt.Fprintf(stdout, "  qifa connects to %s over SSH and needs Docker there; qifa doctor checks both\n", starter.Host)
+		who := "as ~/.ssh/config says, or as your local user (--host user@host to choose)"
+		if starter.SSHUser != "" {
+			who = "as " + starter.SSHUser
+		}
+		fmt.Fprintf(stdout, "  qifa connects to %s over SSH %s, and needs Docker there; qifa doctor checks both\n", starter.Host, who)
 	}
 	if starter.Domain != "" {
 		fmt.Fprintf(stdout, "  before deploying, point DNS for %s at the host and open ports 80 and 443\n", starter.Domain)

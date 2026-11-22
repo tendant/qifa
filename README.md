@@ -104,6 +104,9 @@ qifa init --host 10.0.0.11 --domain app.example.com
 qifa deploy
 ```
 
+Starting from a new VPS? [docs/vps.md](docs/vps.md) goes from a fresh
+server to the app over HTTPS: Docker, a deploy user, DNS and the firewall.
+
 ## Three Common Configs
 
 ### 1. Build on each target (no registry)
@@ -585,6 +588,7 @@ in their environment.
 
 ## Troubleshooting
 
+From a fresh server to HTTPS: [docs/vps.md](docs/vps.md).
 Common issues and fixes: [docs/troubleshooting.md](docs/troubleshooting.md).
 Team and multi-machine setup: [docs/deploying.md](docs/deploying.md).
 Deploying without Docker: [docs/native.md](docs/native.md).

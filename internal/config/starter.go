@@ -17,7 +17,8 @@ import (
 // flags. The zero value is the plain starter: nginx on this machine.
 type Starter struct {
 	Service string // default "myapp"
-	Host    string // an SSH host; "" deploys to this machine ("local")
+	Host    string // an SSH host[:port]; "" deploys to this machine ("local")
+	SSHUser string // the SSH user, written as ssh.user; "" leaves it to ~/.ssh/config
 	Domain  string // serve through kamal-proxy at https://Domain
 	Build   bool   // build the Dockerfile in Context on each host instead of pulling nginx
 	Context string // the build context, relative to where qifa runs; default "."
@@ -40,7 +41,10 @@ func DetectStarter(dir string) Starter {
 	return s
 }
 
-var nonServiceChars = regexp.MustCompile(`[^a-z0-9]+`)
+var (
+	nonServiceChars = regexp.MustCompile(`[^a-z0-9]+`)
+	validSSHUser    = regexp.MustCompile(`^[a-z_][a-z0-9_.-]*$`)
+)
 
 // serviceNameFrom turns a directory name into a service name: lower case,
 // letters and digits joined by single dashes. qifa names containers after
@@ -74,11 +78,27 @@ func exposedPort(dockerfile []byte) int {
 	return port
 }
 
+// SetHost takes --host as given, user@host[:port], and puts the user in
+// SSHUser: qifa reads the SSH user from ssh.user, never from hosts.
+func (s *Starter) SetHost(v string) {
+	v = strings.TrimSpace(v)
+	if i := strings.LastIndex(v, "@"); i > 0 { // "@box" stays whole, and Check rejects it
+		s.SSHUser, v = v[:i], v[i+1:]
+	}
+	s.Host = v
+}
+
 // Check rejects flag values that would not survive being written into YAML
 // unquoted; whether they make a working config is Load's job.
 func (s Starter) Check() error {
+	if s.SSHUser != "" && !validSSHUser.MatchString(s.SSHUser) {
+		return fmt.Errorf("--host: SSH user %q is not a user name", s.SSHUser)
+	}
+	if s.Host == "" && s.SSHUser != "" {
+		return fmt.Errorf("--host %s@: give the host after the @", s.SSHUser)
+	}
 	for name, v := range map[string]string{"--host": s.Host, "--domain": s.Domain} {
-		if v != "" && strings.ContainsAny(v, " \t\n,[]{}#:'\"") && !(name == "--host" && hostWithPort(v)) {
+		if v != "" && strings.ContainsAny(v, " \t\n,[]{}#:'\"@") && !(name == "--host" && hostWithPort(v)) {
 			return fmt.Errorf("%s %q: give one bare name or address", name, v)
 		}
 	}
@@ -113,11 +133,8 @@ func (s Starter) YAML() string {
 		s.Context = strconv.Quote(s.Context) // a YAML double-quoted string
 	}
 	// Addr is the machine itself, for the URL and the DNS hint: the host
-	// without an SSH user or port.
+	// without its SSH port.
 	addr := s.Host
-	if i := strings.LastIndex(addr, "@"); i >= 0 {
-		addr = addr[i+1:]
-	}
 	if host, _, ok := strings.Cut(addr, ":"); ok {
 		addr = host
 	}
@@ -245,10 +262,17 @@ proxy:
 {{- end}}
 
 # --- Remote hosts over SSH ------------------------------------------------
+{{- if .SSHUser}}
+ssh:
+  user: {{.SSHUser}}
+#  key: ~/.ssh/id_ed25519          # default: your SSH agent and ~/.ssh keys
+{{- else}}
 {{- if .Host}}
-# Without this block qifa connects as your SSH config (~/.ssh/config) says.
+# Without ssh.user qifa connects as ~/.ssh/config says for the host, or as
+# your local user name.
 {{- end}}
 #ssh:
 #  user: deploy
 #  key: ~/.ssh/id_ed25519
+{{- end}}
 `))

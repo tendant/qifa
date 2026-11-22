@@ -138,6 +138,11 @@ func (d *Deployer) doctorHost(ctx context.Context, target doctorTarget, image st
 		return checks, failed
 	}
 	for _, c := range report.Checks {
+		// An image each host builds is never pulled: whether it is cached
+		// says nothing about the deploy.
+		if c.Name == "image-cached" && d.cfg.Builder.IsPerTarget() {
+			c = dockererr.Check{Name: c.Name, Status: "info", Detail: "built on this host by each deploy (builder: per_target)"}
+		}
 		record(c)
 	}
 
@@ -178,6 +183,9 @@ func (d *Deployer) doctorHost(ctx context.Context, target doctorTarget, image st
 func (d *Deployer) doctorRegistryAuth(ctx context.Context, host, image string) dockererr.Check {
 	if d.cfg.IsLocalSource() {
 		return dockererr.Check{Name: "registry pull", Status: "info", Detail: "source: local — qifa never pulls this image"}
+	}
+	if d.cfg.Builder.IsPerTarget() {
+		return dockererr.Check{Name: "registry pull", Status: "info", Detail: "builder: per_target — each host builds this image; qifa never pulls it"}
 	}
 	if !strings.Contains(image, ":") && !strings.Contains(image, "@") {
 		image += ":latest"

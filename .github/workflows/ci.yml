@@ -47,3 +47,8 @@ jobs:
       # Docker and native apps behind one kamal-proxy on the same server.
       - name: Run Mixed E2E
         run: make test-e2e-mixed
+
+      # docs/vps.md run as written against a fresh Ubuntu server, through
+      # to HTTPS, so the guide fails here when it stops working.
+      - name: Run VPS Guide E2E
+        run: make test-e2e-vps

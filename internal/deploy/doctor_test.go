@@ -124,3 +124,16 @@ func TestProxyURL(t *testing.T) {
 		})
 	}
 }
+
+// An image each host builds is never pulled, so doctor does not ask the
+// registry for it (and touches no host to find out).
+func TestDoctorSkipsTheRegistryForPerTargetBuilds(t *testing.T) {
+	d := &Deployer{cfg: &config.Config{
+		Image:   "hello",
+		Builder: &config.Builder{Host: config.BuilderHostPerTarget, Context: "."},
+	}}
+	c := d.doctorRegistryAuth(t.Context(), "10.0.0.11", "hello")
+	if c.Status != "info" || !strings.Contains(c.Detail, "per_target") {
+		t.Errorf("got %+v", c)
+	}
+}

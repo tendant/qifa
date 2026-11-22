@@ -1,0 +1,12 @@
+# Installs the mounted public key for root before sshd starts, as a cloud
+# provider does with the key you register.
+[Unit]
+Description=install e2e ssh key for root
+Before=ssh.service
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c 'install -d -m 700 /root/.ssh && install -m 600 /test-ssh/authorized_keys /root/.ssh/authorized_keys'
+
+[Install]
+WantedBy=multi-user.target

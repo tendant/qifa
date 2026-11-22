@@ -1,4 +1,4 @@
-.PHONY: build dist install uninstall test test-install test-e2e test-e2e-native test-e2e-mixed test-e2e-launchd ci
+.PHONY: build dist install uninstall test test-install test-e2e test-e2e-native test-e2e-mixed test-e2e-launchd test-e2e-vps ci
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
@@ -69,6 +69,11 @@ test-e2e-native:
 # host.
 test-e2e-mixed:
 	test/e2e/mixed-e2e.sh
+
+# docs/vps.md, word for word: a fresh Ubuntu server (a container) to the app
+# over HTTPS, with Pebble issuing the certificate. Needs the internet.
+test-e2e-vps:
+	test/e2e/vps-e2e.sh
 
 # Native deploys to this Mac as a LaunchAgent (native.init: launchd). macOS
 # only; no Docker.

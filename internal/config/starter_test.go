@@ -13,7 +13,8 @@ func TestStarterShapesLoad(t *testing.T) {
 	for _, host := range []string{"", "10.0.0.11", "deploy@10.0.0.11:2222"} {
 		for _, domain := range []string{"", "app.example.com"} {
 			for _, build := range []bool{false, true} {
-				s := Starter{Service: "shop", Host: host, Domain: domain, Build: build}
+				s := Starter{Service: "shop", Domain: domain, Build: build}
+				s.SetHost(host)
 				if build {
 					s.AppPort = 3000
 				}
@@ -28,9 +29,15 @@ func TestStarterShapesLoad(t *testing.T) {
 						t.Errorf("warns: %v", cfg.Warnings)
 					}
 					web := cfg.Servers["web"]
-					wantHost := host
-					if wantHost == "" {
+					wantHost, wantUser := host, ""
+					switch host {
+					case "":
 						wantHost = "local"
+					case "deploy@10.0.0.11:2222":
+						wantHost, wantUser = "10.0.0.11:2222", "deploy"
+					}
+					if cfg.SSH.User != wantUser {
+						t.Errorf("ssh.user = %q, want %q", cfg.SSH.User, wantUser)
 					}
 					if len(web.Hosts) != 1 || web.Hosts[0] != wantHost {
 						t.Errorf("hosts = %v, want [%s]", web.Hosts, wantHost)
@@ -135,7 +142,14 @@ func TestStarterCheck(t *testing.T) {
 			t.Errorf("%+v passed", s)
 		}
 	}
-	for _, s := range []Starter{{Host: "10.0.0.11"}, {Host: "deploy@box:2222"}, {Domain: "app.example.com"}} {
+	for _, host := range []string{"@box", "Bad User@box", "a@b@c"} {
+		var s Starter
+		s.SetHost(host)
+		if err := s.Check(); err == nil {
+			t.Errorf("--host %q passed as %+v", host, s)
+		}
+	}
+	for _, s := range []Starter{{Host: "10.0.0.11"}, {Host: "box:2222", SSHUser: "deploy"}, {Domain: "app.example.com"}} {
 		if err := s.Check(); err != nil {
 			t.Errorf("%+v: %v", s, err)
 		}
