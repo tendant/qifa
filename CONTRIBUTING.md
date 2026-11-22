@@ -6,6 +6,7 @@ Go 1.27.1 or newer builds qifa (`make build`, `make install`).
 
 ```bash
 make test             # unit tests (go test ./...)
+make test-install     # install.sh against freshly built dist/ binaries
 make test-e2e         # Docker deploys, end to end
 make test-e2e-native  # native (systemd) deploys, end to end
 make test-e2e-mixed   # Docker and native apps on one server
@@ -25,9 +26,12 @@ running sshd and its own Docker daemon. Against them qifa:
 
 - builds images locally and pushes them to the registry, authenticated
 - deploys over SSH: the host pulls, authenticated, and starts the containers
-- boots kamal-proxy and switches it between versions; health checks and the
-  app answer through the proxy
+- boots kamal-proxy from the first deploy, with no `qifa proxy boot`, and
+  switches it between versions; health checks and the app answer through it
 - runs `status`, `logs`, `app exec`, and a worker redeploy and rollback
+- joins the worker to a network it doesn't own (`shop_default`, standing in
+  for a Compose project's): the deploy refuses while the network is missing,
+  then the worker and a container on that network reach each other by name
 - checks **zero downtime**: a client sends requests back to back while the
   web role deploys `zd1` → `zd2`, rolls back to `zd1`, and redeploys `zd1`.
   Every request must succeed (at least 20), and the responses, which carry

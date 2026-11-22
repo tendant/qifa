@@ -1,4 +1,4 @@
-.PHONY: build dist install uninstall test test-e2e test-e2e-native test-e2e-mixed test-e2e-launchd ci
+.PHONY: build dist install uninstall test test-install test-e2e test-e2e-native test-e2e-mixed test-e2e-launchd ci
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
@@ -49,6 +49,11 @@ uninstall:
 
 test:
 	go test ./...
+
+# install.sh against freshly built dist/ binaries served from disk: a good
+# release installs, a checksum mismatch or a missing entry installs nothing.
+test-install: dist
+	test/install-test.sh
 
 # Docker deploys against a throwaway SSH+Docker host, with a local zot
 # registry and kamal-proxy.

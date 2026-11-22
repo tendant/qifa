@@ -178,6 +178,10 @@ servers:
   worker:
     hosts:
       - 127.0.0.1:$SSH_PORT
+    # A network another tool owns, as a Compose project's default network
+    # would be; qifa joins it but never creates it.
+    networks:
+      - shop_default
 
 proxy:
   host: localhost
@@ -331,7 +335,28 @@ load_check() {
 
 (
   cd "$WORKER_DIR"
+  # Beside Docker Compose: with shop_default missing, the deploy refuses
+  # before it starts anything.
+  if "$BIN_DIR/qifa" deploy > "$RUN_ROOT/worker-missing-net.log" 2>&1; then
+    echo "FAIL: the worker deployed without its shop_default network" >&2; exit 1
+  fi
+  grep -q "shop_default not found" "$RUN_ROOT/worker-missing-net.log" \
+    || { echo "FAIL: the deploy did not name the missing network:" >&2; cat "$RUN_ROOT/worker-missing-net.log" >&2; exit 1; }
+  [ -z "$(docker --host "$DOCKER_HOST" ps -aq --filter label=qifa.service=demo-worker)" ] \
+    || { echo "FAIL: containers created before the network check" >&2; exit 1; }
+  # Stand in for the Compose project: its network and one service on it,
+  # run from the demo image already on the host.
+  shop_image="$(docker --host "$DOCKER_HOST" images --format '{{.Repository}}:{{.Tag}}' | grep "^$REGISTRY_HOST/demo-web:" | head -1)"
+  docker --host "$DOCKER_HOST" network create shop_default >/dev/null
+  docker --host "$DOCKER_HOST" run -d --name shop-db --network shop_default "$shop_image" >/dev/null
   "$BIN_DIR/qifa" deploy
+  # Both ways by name: the worker reaches shop-db, and shop-db reaches the
+  # worker by its role alias.
+  "$BIN_DIR/qifa" app exec "wget -qO- http://shop-db:3000/up" \
+    || { echo "FAIL: the worker cannot reach shop-db over shop_default" >&2; exit 1; }
+  docker --host "$DOCKER_HOST" exec shop-db wget -qO- http://demo-worker-worker:3000/up \
+    || { echo "FAIL: shop-db cannot reach the worker as demo-worker-worker" >&2; exit 1; }
+  echo "networks: the worker and shop-db reach each other over shop_default"
   sleep 1
   "$BIN_DIR/qifa" deploy
   "$BIN_DIR/qifa" rollback

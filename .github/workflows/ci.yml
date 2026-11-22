@@ -31,6 +31,11 @@ jobs:
       - name: Run Go Tests
         run: make test
 
+      # install.sh against this commit's release binaries, so a broken
+      # installer fails here rather than after a tag publishes it.
+      - name: Test Install Script
+        run: make test-install
+
       - name: Run Docker E2E
         run: make test-e2e
 
