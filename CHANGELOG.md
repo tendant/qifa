@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **`qifa init` shapes the starter to the project.** With a `Dockerfile`
+  next to it, the starter builds that on each host (`builder: per_target`,
+  no registry), on the port its last `EXPOSE` names, instead of pulling
+  nginx. `--host <ssh host>` deploys there instead of to this machine, and
+  `--domain <name>` serves the app at that name over HTTPS through
+  kamal-proxy. The service is named after the directory. init loads the
+  config it is about to write and refuses flags that would not load.
+- **Release binaries carry build-provenance attestations**, checkable with
+  `gh attestation verify <binary> --repo tendant/qifa`.
+
 ## v0.6.0 — 2026-11-21
 
 ### Added

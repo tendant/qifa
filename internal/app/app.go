@@ -144,26 +144,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		_, err = stdout.Write(data)
 		return err
 	case "init":
-		path := "qifa.yaml"
-		force := false
-		for _, a := range args[1:] {
-			switch {
-			case a == "--force":
-				force = true
-			case strings.HasPrefix(a, "-"):
-				return fmt.Errorf("unknown flag %q", a)
-			default:
-				path = a
-			}
-		}
-		if _, err := os.Stat(path); err == nil && !force {
-			return fmt.Errorf("%s already exists; not overwriting it (qifa init --force replaces it)", path)
-		}
-		if err := config.WriteSample(path); err != nil {
-			return err
-		}
-		_, err := fmt.Fprintf(stdout, "wrote starter config to %s\nnext: edit it, check it with `qifa config`, then `qifa deploy`\n", path)
-		return err
+		return runInit(args[1:], stdout)
 	case "deploy":
 		dryRun := false
 		allowDirty := false
@@ -587,7 +568,7 @@ func withRuntime(ctx context.Context, stdout, stderr io.Writer, configFile, comm
 // commands is the usage table: the invocation, then what it does. Help for
 // one command is every row whose invocation starts with its name.
 var commands = [][2]string{
-	{"init [path] [--force]", "write a starter qifa.yaml (refuses to overwrite without --force)"},
+	{"init [path] [--host <ssh host>] [--domain <name>] [--force]", "write a qifa.yaml that deploys as written; builds ./Dockerfile if there is one"},
 	{"version", "print the build version and commit"},
 	{"config", "validate the config and print it with defaults applied"},
 	{"deploy [--dry-run] [--version <v>] [--allow-dirty]", "build, ship, health-check, switch traffic, prune"},
@@ -626,7 +607,7 @@ func printUsage(w io.Writer) {
 		fmt.Fprintf(w, "  %s\n      %s\n", c[0], c[1])
 	}
 	fmt.Fprintln(w, "")
-	fmt.Fprintln(w, "Start with: qifa init, edit qifa.yaml, qifa deploy. More: README.md.")
+	fmt.Fprintln(w, "Start with: qifa init, then qifa deploy. More: README.md.")
 }
 
 // printCommandUsage prints the usage of one command, or reports that there

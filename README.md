@@ -40,6 +40,13 @@ release's files. You can also download a binary from the
 [releases page](https://github.com/tendant/qifa/releases) and put it on
 `$PATH` yourself.
 
+Binaries from releases after v0.6.0 carry a signed build-provenance
+attestation: `gh attestation verify qifa-linux-amd64 --repo tendant/qifa`
+checks that a binary was built by this repository's release workflow.
+
+To upgrade, run the same line again: it replaces the binary with the latest
+release (or `QIFA_VERSION`'s), checked the same way.
+
 With Go 1.27.1 or newer (an older `go` fetches the right toolchain itself
 unless `GOTOOLCHAIN=local`), this works for every release, including ones before v0.6.0:
 
@@ -76,6 +83,26 @@ no SSH, registry or proxy, so the first deploy works before you change
 anything. Building your own image, env and secrets, a domain with HTTPS, and
 remote hosts are in it as commented blocks. `qifa init` will not replace an
 existing file; pass `--force` to do that.
+
+`qifa init` also shapes the starter to your project:
+
+- **A `Dockerfile` next to it:** the starter builds that instead of pulling
+  nginx. qifa uploads the directory to each host and builds there, with no
+  registry. The app port comes from the Dockerfile's last `EXPOSE`. Set
+  `healthcheck.path` to a route your app answers with 2xx (it starts as `/`).
+- **`--host 10.0.0.11`:** deploy there over SSH instead of to this machine
+  (`deploy@host:2222` works too). The host needs Docker; `qifa doctor` checks.
+- **`--domain app.example.com`:** serve the app at that name over HTTPS
+  through kamal-proxy, which the first deploy starts and which gets a Let's
+  Encrypt certificate. Point the name's DNS at the host and open ports 80 and
+  443 first.
+
+The service is named after the directory. So in a project with a Dockerfile:
+
+```bash
+qifa init --host 10.0.0.11 --domain app.example.com
+qifa deploy
+```
 
 ## Three Common Configs
 

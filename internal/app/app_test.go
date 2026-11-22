@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/tendant/qifa/internal/config"
 )
 
 func TestRunNoArgsPrintsUsage(t *testing.T) {
@@ -127,5 +129,57 @@ func TestSetupHostNeedsPrint(t *testing.T) {
 	err = runSetup(context.Background(), []string{"--print", "--bogus"}, &out, &errOut, "missing.yaml")
 	if err == nil || !strings.Contains(err.Error(), `unknown argument "--bogus"`) {
 		t.Fatalf("got %v", err)
+	}
+}
+
+// init in a project with a Dockerfile, given a host and a domain, writes a
+// config that builds that project, deploys it there over SSH and serves it
+// at the domain, and that qifa loads.
+func TestRunInitShapesTheStarter(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "Shop API")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "Dockerfile"), []byte("FROM alpine\nEXPOSE 3000\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "qifa.yaml")
+	var stdout, stderr bytes.Buffer
+	if err := Run(context.Background(), []string{"init", path, "--host", "10.0.0.11", "--domain", "App.Example.com"}, &stdout, &stderr); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	web := cfg.Servers["web"]
+	if cfg.Service != "shop-api" || !cfg.Builder.IsPerTarget() || cfg.Builder.Context != dir ||
+		web.Hosts[0] != "10.0.0.11" || web.AppPort != 3000 || cfg.Proxy.Host != "app.example.com" {
+		t.Errorf("unexpected config: service %q builder %+v hosts %v app_port %d proxy %q",
+			cfg.Service, cfg.Builder, web.Hosts, web.AppPort, cfg.Proxy.Host)
+	}
+	for _, want := range []string{"found a Dockerfile", "listens on 3000", "point DNS for app.example.com"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Errorf("output lacks %q:\n%s", want, stdout.String())
+		}
+	}
+}
+
+// A flag value init cannot write fails before any file is written.
+func TestRunInitRejectsBadFlags(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "qifa.yaml")
+	for _, args := range [][]string{
+		{"--domain", "https://app.example.com"},
+		{"--host", "a b"},
+		{"--host"},
+		{"--port", "80"},
+	} {
+		var stdout, stderr bytes.Buffer
+		if err := Run(context.Background(), append([]string{"init", path}, args...), &stdout, &stderr); err == nil {
+			t.Errorf("%v: no error", args)
+		}
+		if _, err := os.Stat(path); err == nil {
+			t.Fatalf("%v: wrote %s", args, path)
+		}
 	}
 }

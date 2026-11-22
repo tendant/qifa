@@ -7,7 +7,6 @@ import (
 	"io"
 	"net"
 	"os"
-	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -755,63 +754,6 @@ func applyDefaults(cfg *Config) {
 func (c *Config) Marshal() ([]byte, error) {
 	return yaml.Marshal(c)
 }
-
-func WriteSample(path string) error {
-	dir := filepath.Dir(path)
-	if dir != "." {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return err
-		}
-	}
-	return os.WriteFile(path, []byte(sampleConfig), 0o644)
-}
-
-// sampleConfig is what `qifa init` writes: the smallest config that deploys
-// as written (a public image, on this machine, no proxy or registry), with
-// the usual next steps commented out. Each commented block loads cleanly once
-// uncommented; TestSampleConfigBlocksLoad keeps that true.
-const sampleConfig = `# qifa.yaml: deploys as written. Run "qifa deploy", then open
-# http://localhost:8765. Edit from there; "qifa config" checks your changes.
-service: myapp
-image: nginx:1.27-alpine    # an image with a tag, or set builder: below
-
-servers:
-  web:
-    hosts: [local]          # "local" is this machine (no SSH); or SSH hosts: [10.0.0.11]
-    port: 8765              # published on the host
-    app_port: 80            # what the container listens on
-    proxy: false            # true (with proxy: below) for a domain and HTTPS
-
-healthcheck:
-  path: /                   # must answer 2xx before the deploy counts
-
-# --- Build your own image instead of pulling one ---------------------------
-# Uploads this directory to each host and builds there; no registry needed.
-#builder:
-#  host: per_target
-#  context: .
-
-# --- Environment ----------------------------------------------------------
-#env:
-#  clear:
-#    APP_ENV: production
-#  secret: [DATABASE_URL]          # read from your shell at deploy time
-
-# --- A domain with HTTPS, through kamal-proxy -----------------------------
-# Set servers.web.proxy to true and drop servers.web.port. The first deploy
-# starts kamal-proxy on the host (ports 80 and 443) if it is not running.
-#proxy:
-#  host: app.example.com
-#  app_port: 80
-#  ssl: true
-#  tls:
-#    source: kamal                 # kamal-proxy gets a Let's Encrypt certificate
-
-# --- Remote hosts over SSH ------------------------------------------------
-#ssh:
-#  user: deploy
-#  key: ~/.ssh/id_ed25519
-`
 
 func (c *Config) validateBuilder() error {
 	if c.Builder == nil {

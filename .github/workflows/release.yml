@@ -5,6 +5,10 @@ name: Release
 # The release notes are the tag's section of CHANGELOG.md, so the tag must
 # have a "## v0.6.0 — <date>" section there; without one the release fails
 # before anything is published.
+#
+# Each binary also gets a signed build-provenance attestation, so anyone can
+# check that it was built by this workflow from this repository:
+#   gh attestation verify qifa-linux-amd64 --repo tendant/qifa
 
 on:
   push:
@@ -16,6 +20,9 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      id-token: write # sign the attestations (Sigstore)
+      attestations: write
+      artifact-metadata: write
 
     steps:
       - name: Check Out
@@ -45,6 +52,11 @@ jobs:
 
       - name: Build Binaries
         run: make dist VERSION="$GITHUB_REF_NAME"
+
+      - name: Attest Build Provenance
+        uses: actions/attest@v4
+        with:
+          subject-path: dist/qifa-*
 
       # A tag with a suffix (v0.6.0-rc1) is a prerelease, which GitHub's
       # "latest" download URL, and so install.sh by default, skips.
