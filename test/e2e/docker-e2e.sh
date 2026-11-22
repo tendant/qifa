@@ -139,12 +139,8 @@ servers:
       - 127.0.0.1:$SSH_PORT
     port: 3000
 
-# The shared proxy container is the operator's to launch (qifa proxy boot);
-# app deploys only verify it is running.
-proxy_boot:
-  hosts:
-    - 127.0.0.1:$SSH_PORT
-
+# No proxy_boot block and no `qifa proxy boot`: the first deploy boots
+# kamal-proxy on the host itself, because proxy: names a host.
 proxy:
   host: localhost
   app_port: 3000
@@ -219,8 +215,19 @@ EOF
   host_ssh 'id -nG deploy' | tr ' ' '\n' | grep -qx docker \
     || { echo "FAIL: setup did not put deploy in the docker group" >&2; exit 1; }
   "$BIN_DIR/qifa" setup --deploy-user deploy | grep -q "added" && { echo "FAIL: second setup changed something" >&2; exit 1; }
+  # The deploy boots the proxy where it is missing, with no separate step.
+  host_ssh "docker ps -q --filter name=^kamal-proxy\$" | grep -q . \
+    && { echo "FAIL: kamal-proxy already runs before the first deploy" >&2; exit 1; }
+  "$BIN_DIR/qifa" deploy 2>&1 | tee "$RUN_ROOT/first-deploy.log"
+  grep -q "kamal-proxy is not running on .*; booting it" "$RUN_ROOT/first-deploy.log" \
+    || { echo "FAIL: the first deploy did not boot kamal-proxy" >&2; exit 1; }
+  proxy_id="$(host_ssh "docker ps -q --filter name=^kamal-proxy\$")"
+  [ -n "$proxy_id" ] || { echo "FAIL: kamal-proxy is not running after the deploy" >&2; exit 1; }
+  # qifa proxy boot, with proxy_boot.hosts defaulted to the web role's host,
+  # finds that proxy and leaves it alone.
   "$BIN_DIR/qifa" proxy boot
-  "$BIN_DIR/qifa" deploy
+  [ "$(host_ssh "docker ps -q --filter name=^kamal-proxy\$")" = "$proxy_id" ] \
+    || { echo "FAIL: qifa proxy boot replaced the running proxy" >&2; exit 1; }
   curl -fsS -H 'Host: localhost' http://127.0.0.1:$HTTP_PORT/up
   curl -fsS -H 'Host: localhost' http://127.0.0.1:$HTTP_PORT/version
   "$BIN_DIR/qifa" deploy
