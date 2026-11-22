@@ -112,7 +112,9 @@ server to the app over HTTPS: Docker, a deploy user, DNS and the firewall.
 ### 1. Build on each target (no registry)
 
 Simplest setup: code lives where you run qifa, qifa uploads it to each host
-and builds the image there. No registry needed.
+and builds the image there. No registry needed. What `.dockerignore`
+excludes is left out of the upload, so a `.env` or `.git` listed there
+never reaches the hosts.
 
 ```yaml
 service: myapp

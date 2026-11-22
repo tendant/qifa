@@ -23,8 +23,13 @@
 - `qifa doctor` failed a `builder: per_target` app's "registry pull" check,
   asking the registry for an image each host builds and nothing pulls. It now
   reports it as info, and doesn't call the image "must be pulled".
-- The build context uploaded to each host no longer includes qifa's own
-  `.qifa/` state directory.
+- **A build on each host (`builder: per_target`, or a remote builder) uploaded
+  the whole context directory**, including files `.dockerignore` excludes,
+  such as `.env` files with secrets, `.git` and `node_modules`. They landed in
+  a temporary directory on every host each deploy. The upload now follows
+  `.dockerignore` with docker build's own rules, so excluded files never leave
+  this machine; the Dockerfile and `.dockerignore` are always sent. qifa's own
+  `.qifa/` state directory is left out too.
 
 ## v0.6.0 — 2026-11-21
 

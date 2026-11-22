@@ -136,11 +136,11 @@ opens the site over HTTPS, so the first request takes a few seconds. Plain
   to accept the key (step 1).
 - **`permission denied` from Docker as `deploy`:** run `qifa setup --ssh-user
   root` (step 4).
-- **Large uploads:** qifa uploads the whole project directory to the server
-  each deploy, apart from its own `.qifa/` directory. `.dockerignore` decides
-  what goes into the image, but not what is uploaded. Keep big directories
-  you don't build from (`node_modules`, build output) out of the project
-  directory, or deploy from a clean checkout.
+- **Slow or large uploads:** qifa uploads the project directory to the server
+  on each deploy, leaving out its own `.qifa/` directory and whatever
+  `.dockerignore` excludes, using the same rules as `docker build`. List
+  `.git`, `node_modules`, build output and `.env` files there: what it
+  excludes never leaves your machine.
 
 [docs/troubleshooting.md](troubleshooting.md) covers more, and
 [docs/deploying.md](deploying.md) covers deploying from several machines

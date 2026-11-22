@@ -168,7 +168,7 @@ func TestBuildContextArchiveSkipsQifaState(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	data, err := buildContextArchive(dir)
+	data, err := buildContextArchive(dir, "Dockerfile")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -187,5 +187,87 @@ func TestBuildContextArchiveSkipsQifaState(t *testing.T) {
 	got := strings.Join(names, " ")
 	if strings.Contains(got, ".qifa") || !strings.Contains(got, "Dockerfile") || !strings.Contains(got, "app/main.go") {
 		t.Errorf("archive holds %s", got)
+	}
+}
+
+// What .dockerignore excludes stays on this machine: the upload to the host
+// follows docker build's rules, and always carries the Dockerfile and
+// .dockerignore itself.
+func TestBuildContextArchiveFollowsDockerignore(t *testing.T) {
+	files := []string{
+		"Dockerfile", "app/main.go", ".env", "secrets/prod.env", "debug.log",
+		"node_modules/left-pad/index.js", "node_modules/keep.txt", "build/out.bin", ".git/config",
+	}
+	for _, tc := range []struct {
+		name, ignore string
+		want         []string
+	}{
+		{"none", "", files},
+		{
+			"secrets, dependencies and logs",
+			"# local only\n.env\nsecrets\nnode_modules\n*.log\n/build\n.git\n",
+			[]string{"Dockerfile", "app/main.go"},
+		},
+		{
+			"everything but the app",
+			"*\n!app\n",
+			[]string{"Dockerfile", "app/main.go"},
+		},
+		{
+			"an exception inside an excluded directory",
+			"node_modules\n!node_modules/keep.txt\n",
+			[]string{"Dockerfile", "app/main.go", ".env", "secrets/prod.env", "debug.log", "node_modules/keep.txt", "build/out.bin", ".git/config"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			for _, name := range files {
+				path := filepath.Join(dir, name)
+				if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, []byte(name), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			want := map[string]bool{}
+			for _, name := range tc.want {
+				want[name] = true
+			}
+			if tc.ignore != "" {
+				if err := os.WriteFile(filepath.Join(dir, ".dockerignore"), []byte(tc.ignore), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				want[".dockerignore"] = true
+			}
+			data, err := buildContextArchive(dir, "Dockerfile")
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := map[string]bool{}
+			tr := tar.NewReader(bytes.NewReader(data))
+			for {
+				h, err := tr.Next()
+				if err == io.EOF {
+					break
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				if h.Typeflag == tar.TypeReg {
+					got[h.Name] = true
+				}
+			}
+			for name := range want {
+				if !got[name] {
+					t.Errorf("%s was left out", name)
+				}
+			}
+			for name := range got {
+				if !want[name] {
+					t.Errorf("%s was uploaded", name)
+				}
+			}
+		})
 	}
 }

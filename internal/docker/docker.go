@@ -16,6 +16,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/moby/patternmatcher"
+	"github.com/moby/patternmatcher/ignorefile"
 	"github.com/tendant/qifa/internal/config"
 	"github.com/tendant/qifa/internal/dockererr"
 	"github.com/tendant/qifa/internal/registry"
@@ -320,7 +322,7 @@ func (r *Remote) BuildxPush(ctx context.Context, host string, cfg *config.Config
 		return dockererr.WrapKnownNetwork(ctx, r.client, "build and push image", host, imageRef, 1,
 			r.streamWatched(ctx, host, command, "buildx of "+imageRef))
 	}
-	archive, err := buildContextArchive(cfg.Builder.Context)
+	archive, err := buildContextArchive(cfg.Builder.Context, cfg.Builder.Dockerfile)
 	if err != nil {
 		return err
 	}
@@ -369,7 +371,7 @@ func (r *Remote) Build(ctx context.Context, host string, cfg *config.Config, ima
 			r.streamWatched(ctx, host, command, "build of "+imageRef))
 	}
 	fmt.Fprintf(r.out, "==> compressing build context %s\n", cfg.Builder.Context)
-	archive, err := buildContextArchive(cfg.Builder.Context)
+	archive, err := buildContextArchive(cfg.Builder.Context, cfg.Builder.Dockerfile)
 	if err != nil {
 		return err
 	}
@@ -867,11 +869,29 @@ func IsMultiPlatform(platform string) bool {
 	return strings.Contains(platform, ",")
 }
 
-func buildContextArchive(root string) ([]byte, error) {
+func buildContextArchive(root, dockerfile string) ([]byte, error) {
 	var buf bytes.Buffer
 	tw := tar.NewWriter(&buf)
 
 	root = filepath.Clean(root)
+	ignore, err := readDockerignore(root)
+	if err != nil {
+		return nil, err
+	}
+	// docker build always sends the Dockerfile and .dockerignore, whatever
+	// .dockerignore says; so does this.
+	keep := map[string]bool{".dockerignore": true}
+	if dockerfile == "" {
+		dockerfile = "Dockerfile"
+	}
+	if filepath.IsAbs(dockerfile) {
+		if rel, err := filepath.Rel(root, dockerfile); err == nil && !strings.HasPrefix(rel, "..") {
+			keep[filepath.ToSlash(rel)] = true
+		}
+	} else {
+		keep[filepath.ToSlash(filepath.Clean(dockerfile))] = true
+	}
+
 	if err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
@@ -887,6 +907,22 @@ func buildContextArchive(root string) ([]byte, error) {
 		// build, and changes on every deploy.
 		if rel == ".qifa" && info.IsDir() {
 			return filepath.SkipDir
+		}
+		// What .dockerignore excludes never leaves this machine: not only
+		// out of the image, but out of the upload, which lands on the host.
+		if ignore != nil && !keep[filepath.ToSlash(rel)] {
+			excluded, err := ignore.MatchesOrParentMatches(filepath.ToSlash(rel))
+			if err != nil {
+				return fmt.Errorf(".dockerignore: %w", err)
+			}
+			if excluded {
+				// A "!" pattern can bring back something inside an excluded
+				// directory, so only skip the whole directory without one.
+				if info.IsDir() && !ignore.Exclusions() {
+					return filepath.SkipDir
+				}
+				return nil
+			}
 		}
 		header, err := tar.FileInfoHeader(info, "")
 		if err != nil {
@@ -961,4 +997,29 @@ func localBuildSpec(ctx context.Context, cfg *config.Config) (BuildSpec, func(),
 // outlives the build. Each build had left one in /tmp per deploy.
 func cleanupAfter(root string, steps []string) string {
 	return "( " + strings.Join(steps, " && ") + " ); rc=$?; rm -rf " + shellQuote(root) + "; exit $rc"
+}
+
+// readDockerignore loads root/.dockerignore the way docker build reads it;
+// nil when there is none.
+func readDockerignore(root string) (*patternmatcher.PatternMatcher, error) {
+	f, err := os.Open(filepath.Join(root, ".dockerignore"))
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	patterns, err := ignorefile.ReadAll(f)
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", filepath.Join(root, ".dockerignore"), err)
+	}
+	if len(patterns) == 0 {
+		return nil, nil
+	}
+	pm, err := patternmatcher.New(patterns)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", filepath.Join(root, ".dockerignore"), err)
+	}
+	return pm, nil
 }
