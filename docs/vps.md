@@ -17,6 +17,8 @@ there.
   to be able to log in as root with your SSH key, which is how most providers
   hand one over. The server builds your image, so give it the memory your
   build needs.
+- **Docker on the server.** qifa needs it and doesn't install it. Step 1
+  installs it.
 - **A domain name** whose DNS you can edit.
 - **qifa** on your machine:
   `curl -fsSL https://raw.githubusercontent.com/tendant/qifa/main/install.sh | sh`
@@ -44,9 +46,16 @@ These can't be tested from here. Check each one by hand before going on.
 
 ## 1. Install Docker on the server
 
+qifa needs Docker on the server and doesn't install it. Docker's own
+script is one way:
+
 ```bash
 ssh root@203.0.113.10 'curl -fsSL https://get.docker.com | sh'
 ```
+
+If the server can't reach `get.docker.com`, install Docker Engine any other
+way ([Docker's install guide](https://docs.docker.com/engine/install/)).
+`qifa setup` and `qifa doctor` check that it runs.
 
 The first `ssh` asks you to accept the server's host key. Answer yes: qifa
 checks the server against that saved key on every deploy.

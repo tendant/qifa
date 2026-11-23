@@ -797,7 +797,7 @@ func (d *Deployer) Setup(ctx context.Context, deployUser string) error {
 	}
 	script := fmt.Sprintf(`set -eu
 deploy=%s
-command -v docker >/dev/null 2>&1 || { echo "docker is not installed: https://docs.docker.com/engine/install/" >&2; exit 1; }
+command -v docker >/dev/null 2>&1 || { echo "docker is required and qifa does not install it: install Docker Engine (https://docs.docker.com/engine/install/), then run qifa setup again" >&2; exit 1; }
 docker info >/dev/null 2>&1 || { echo "the docker daemon is not running" >&2; exit 1; }
 id "$deploy" >/dev/null 2>&1 || { echo "deploy user $deploy does not exist; create it first (docs/deploying.md)" >&2; exit 1; }
 if ! id -nG "$deploy" | tr ' ' '\n' | grep -qx docker; then

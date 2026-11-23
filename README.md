@@ -21,6 +21,11 @@ systemd service: see [Native deploys](docs/native.md).
 
 ## Install
 
+qifa needs Docker on every host it deploys to, and on this machine to build
+locally. It doesn't install Docker: see
+[Docker's install guide](https://docs.docker.com/engine/install/).
+[Native deploys](docs/native.md) run without Docker.
+
 The current release is **v0.7.0** ([CHANGELOG](CHANGELOG.md)).
 
 Each release from v0.6.0 on publishes a prebuilt binary for Linux and macOS
@@ -91,7 +96,7 @@ existing file; pass `--force` to do that.
   registry. The app port comes from the Dockerfile's last `EXPOSE`. Set
   `healthcheck.path` to a route your app answers with 2xx (it starts as `/`).
 - **`--host 10.0.0.11`:** deploy there over SSH instead of to this machine
-  (`deploy@host:2222` works too). The host needs Docker; `qifa doctor` checks.
+  (`deploy@host:2222` works too). The host needs Docker, which qifa doesn't install; `qifa doctor` checks.
 - **`--domain app.example.com`:** serve the app at that name over HTTPS
   through kamal-proxy, which the first deploy starts and which gets a Let's
   Encrypt certificate. Point the name's DNS at the host and open ports 80 and

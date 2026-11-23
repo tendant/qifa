@@ -77,7 +77,7 @@ func runInit(args []string, stdout io.Writer) error {
 		if starter.SSHUser != "" {
 			who = "as " + starter.SSHUser
 		}
-		fmt.Fprintf(stdout, "  qifa connects to %s over SSH %s, and needs Docker there; qifa doctor checks both\n", starter.Host, who)
+		fmt.Fprintf(stdout, "  qifa connects to %s over SSH %s, and needs Docker there, which qifa doesn't install; qifa doctor checks both\n", starter.Host, who)
 	}
 	if starter.Domain != "" {
 		fmt.Fprintf(stdout, "  before deploying, point DNS for %s at the host and open ports 80 and 443\n", starter.Domain)

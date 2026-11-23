@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- When Docker is missing on a host, `qifa setup`, failed commands and
+  `qifa init --host` now say that qifa needs Docker and doesn't install it,
+  and point to Docker's install guide instead of `get.docker.com`.
+
 ## v0.7.0 — 2026-11-22
 
 ### Added

@@ -289,7 +289,8 @@ var rules = []rule{
 		cause: Cause{
 			Category: CategoryDockerMissing,
 			Summary:  "docker is not installed on the host (or not on the SSH PATH)",
-			Hint: `- install it: curl -fsSL https://get.docker.com | sh
+			Hint: `- qifa needs Docker on the host and does not install it: install Docker Engine
+  (https://docs.docker.com/engine/install/), then run the command again
 - if it IS installed, a non-login SSH shell may not have /usr/bin on PATH`,
 		},
 	},
