@@ -1,0 +1,42 @@
+name: Mirror To Gitee
+
+# Keeps https://gitee.com/tendant/qifa in step with this repository: every
+# push to main and every release tag is pushed there too. Fast-forward only,
+# so a commit made on Gitee directly fails this job instead of being lost.
+#
+# Needs the GITEE_TOKEN secret, a Gitee personal access token with the
+# "projects" scope (gitee.com/profile/personal_access_tokens). Without it the
+# job warns and does nothing.
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+
+concurrency:
+  group: gitee-mirror
+  cancel-in-progress: false
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Check Out
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Push To Gitee
+        env:
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+        run: |
+          if [ -z "$GITEE_TOKEN" ]; then
+            echo "::warning::GITEE_TOKEN is not set; skipping the Gitee mirror"
+            exit 0
+          fi
+          git push "https://tendant:${GITEE_TOKEN}@gitee.com/tendant/qifa.git" "$GITHUB_SHA:$GITHUB_REF"
