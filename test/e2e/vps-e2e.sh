@@ -196,8 +196,19 @@ step "guide 4: qifa setup, as root"
 guide "qifa setup --ssh-user root"
 on_box 'id -nG deploy' | tr ' ' '\n' | grep -qx docker || fail "setup did not put deploy in the docker group"
 
+step "doctor fails while something else holds port 80"
+# Test-only: a stand-in for a VPS image's preinstalled nginx.
+on_box 'docker run -d --name squatter -p 80:80 nginx:1.27-alpine >/dev/null'
+if qifa doctor > "$work/doctor.out" 2>&1; then cat "$work/doctor.out"; fail "doctor passed with port 80 taken"; fi
+grep -q "ports free.*FAIL.*already listens on :80" "$work/doctor.out" || { cat "$work/doctor.out"; fail "doctor did not say port 80 is taken"; }
+on_box 'docker rm -f squatter >/dev/null'
+
 step "guide 5: qifa doctor"
-guide "qifa doctor"
+guide "qifa doctor" > "$work/doctor.out" 2>&1 || { cat "$work/doctor.out"; fail "qifa doctor"; }
+cat "$work/doctor.out"
+# app.test resolves only on the test network, so from here it is a warning.
+grep -q "dns app.test .*warn .*does not resolve from this machine" "$work/doctor.out" || fail "doctor did not check app.test's DNS"
+grep -q "ports free .*ok" "$work/doctor.out" || fail "doctor did not find ports 80 and 443 free"
 
 step "guide 6: qifa deploy"
 guide "qifa deploy"

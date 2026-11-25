@@ -161,6 +161,7 @@ func (d *Deployer) doctorHost(ctx context.Context, target doctorTarget, image st
 	}
 
 	if d.usesProxy() {
+		proxyRunning := false
 		if err := d.proxy.EnsureRunning(ctx, target.host); err != nil {
 			switch {
 			case !hostInList(target.host, proxyBootFor(d.cfg).Hosts):
@@ -171,7 +172,15 @@ func (d *Deployer) doctorHost(ctx context.Context, target doctorTarget, image st
 				record(dockererr.Check{Name: "kamal-proxy", Status: "FAIL", Detail: "not running — run `qifa proxy boot`"})
 			}
 		} else {
+			proxyRunning = true
 			record(dockererr.Check{Name: "kamal-proxy", Status: "ok", Detail: "running"})
+		}
+		// The names and ports kamal-proxy serves, on a host it serves them
+		// from. A local host is this machine, where the checks mean nothing.
+		if d.autoBootsProxy() && hostInList(target.host, proxyBootFor(d.cfg).Hosts) && !sshpkg.IsLocal(target.host) {
+			for _, c := range d.doctorDomain(ctx, target.host, proxyRunning) {
+				record(c)
+			}
 		}
 	}
 	return checks, failed

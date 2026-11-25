@@ -450,7 +450,8 @@ qifa reconcile [--dry-run]       # converge only if the host differs from the co
                                  # a no-op when it already matches, so it is safe
                                  # to run unattended on a schedule
 qifa doctor                      # preflight every host: ssh, docker, registry,
-                                 # DNS/TCP/TLS, credentials, disk, clock, proxy
+                                 # DNS/TCP/TLS, credentials, disk, clock, proxy,
+                                 # and the domain's DNS and ports 80/443
 
 qifa logs [--follow] [--lines N] # docker logs from the active container
 qifa app exec <command>          # docker exec in the active container

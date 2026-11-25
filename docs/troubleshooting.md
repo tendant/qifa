@@ -16,6 +16,24 @@ mirrors and insecure registries, free space under the docker root, clock
 skew, and whether kamal-proxy is running. It exits non-zero if anything
 failed. Every check is read-only.
 
+On a host kamal-proxy serves `proxy.host` from, it also checks the domain,
+from the machine running qifa:
+
+- **`dns <name>`:** the name resolves to this host's SSH address or one of
+  its interfaces' addresses. A warning, not a failure, because this
+  machine's DNS can differ from the internet's, and a CDN or load balancer
+  in front is legitimate.
+- **`port 80`, `port 443`:** a TCP connection from here. *Refused* is fine
+  before the first deploy: the path is open and nothing listens yet. *No
+  answer* within 3 seconds means a firewall drops the port, usually the
+  provider's firewall or security group, and fails when Let's Encrypt has to
+  reach port 80 (`tls.source: kamal`).
+- **`ports free`:** before kamal-proxy runs, nothing else on the host listens
+  on its ports. A preinstalled nginx or Apache would stop it from starting.
+
+The probes come from your machine, not from the internet, so a firewall that
+only lets your own address through looks open here.
+
 The same host report is attached automatically to a failed pull, so you
 usually do not need to run `doctor` separately — it is there for checking a
 new host before the first deploy, or after changing a network.

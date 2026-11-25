@@ -582,6 +582,16 @@ func currentUser() string {
 	return "root"
 }
 
+// HostName is the address a host entry connects to: its ssh_config
+// HostName when it has one, else the entry itself, without a port.
+func HostName(host string) string {
+	alias, _ := splitHostPort(host)
+	if hostname, err := sshConfigValue(alias, "HostName"); err == nil && hostname != "" {
+		return hostname
+	}
+	return alias
+}
+
 func splitHostPort(host string) (string, string) {
 	name, port, err := net.SplitHostPort(host)
 	if err == nil {

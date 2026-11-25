@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Added
+
+- **`qifa doctor` checks the domain** on each host kamal-proxy serves
+  `proxy.host` from, before the first deploy rather than after a certificate
+  that never arrives. `dns <name>` warns when the name doesn't resolve, or
+  resolves somewhere other than the host. `port 80`/`port 443` connect from
+  this machine and fail when a firewall drops the port (no answer within
+  3s), which would stop Let's Encrypt. `ports free` fails when something
+  else on the host, such as a preinstalled nginx, already listens where
+  kamal-proxy needs to.
+
 ### Changed
 
 - When Docker is missing on a host, `qifa setup`, failed commands and

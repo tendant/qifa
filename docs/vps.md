@@ -9,7 +9,7 @@ against a fresh Ubuntu 24.04 machine, word for word. That machine is a
 container standing in for the VPS, with a test certificate authority
 standing in for Let's Encrypt. Step 0, DNS and the firewall, is what that
 test can't cover. When a first deploy goes wrong, the cause is usually
-there.
+there, so `qifa doctor` checks it.
 
 ## What you need
 
@@ -30,7 +30,9 @@ Below, `203.0.113.10` stands for your server's IP address and
 
 ## 0. DNS and the firewall
 
-These can't be tested from here. Check each one by hand before going on.
+Set these up first. `qifa doctor` (step 5) checks both from your machine:
+that the name points at the server, and that ports 80 and 443 aren't
+blocked on the way.
 
 - **DNS:** add an `A` record for `app.example.com` pointing at
   `203.0.113.10` (and an `AAAA` record if the server has IPv6). Wait until
@@ -103,7 +105,10 @@ qifa doctor
 
 This checks, without changing anything: SSH as `deploy`, Docker, the
 server's route to Docker Hub (for your Dockerfile's base images), disk
-space and the clock. Fix any `FAIL` line before deploying.
+space and the clock. It also checks step 0: that `app.example.com` points at
+the server, that ports 80 and 443 aren't blocked by a firewall, and that
+nothing else on the server holds them. Fix any `FAIL` line before deploying,
+and read the warnings.
 
 ## 6. `qifa deploy`
 
@@ -135,8 +140,9 @@ opens the site over HTTPS, so the first request takes a few seconds. Plain
 
 - **The certificate never arrives** (the browser warns, or `curl` reports a
   TLS error): DNS doesn't point at the server yet, or ports 80/443 are
-  blocked (step 0). `qifa proxy logs` shows what kamal-proxy tried. Let's
-  Encrypt limits failed attempts per hour. While experimenting, set
+  blocked (step 0); `qifa doctor` checks both. `qifa proxy logs` shows what
+  kamal-proxy tried. Let's Encrypt limits failed attempts per hour. While
+  experimenting, set
   `staging: true` under `proxy.tls` to use its staging service, which has
   generous limits but certificates browsers don't trust.
 - **The deploy stops at the health check** with `404` or another non-2xx
