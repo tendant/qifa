@@ -26,7 +26,7 @@ locally. It doesn't install Docker: see
 [Docker's install guide](https://docs.docker.com/engine/install/).
 [Native deploys](docs/native.md) run without Docker.
 
-The current release is **v0.7.0** ([CHANGELOG](CHANGELOG.md)).
+The current release is **v0.7.1** ([CHANGELOG](CHANGELOG.md)).
 
 Each release from v0.6.0 on publishes a prebuilt binary for Linux and macOS
 (amd64 and arm64), and one line installs it. You need no Go, only
@@ -39,7 +39,7 @@ curl -fsSL https://raw.githubusercontent.com/tendant/qifa/main/install.sh | sh
 [`install.sh`](install.sh) checks the binary against the release's
 `SHA256SUMS` before installing it. It puts it in `/usr/local/bin` if you can
 write there, otherwise in `~/.local/bin`, and never uses sudo. Set
-`QIFA_VERSION=v0.7.0` to pin a release, `QIFA_INSTALL_DIR` to choose the
+`QIFA_VERSION=v0.7.1` to pin a release, `QIFA_INSTALL_DIR` to choose the
 directory, or `QIFA_DOWNLOAD_URL` to install from a mirror that holds the
 release's files. You can also download a binary from the
 [releases page](https://github.com/tendant/qifa/releases) and put it on
@@ -56,7 +56,7 @@ With Go 1.27.1 or newer (an older `go` fetches the right toolchain itself
 unless `GOTOOLCHAIN=local`), this works for every release, including ones before v0.6.0:
 
 ```bash
-go install github.com/tendant/qifa/cmd/qifa@v0.7.0
+go install github.com/tendant/qifa/cmd/qifa@v0.7.1
 qifa version
 ```
 
@@ -604,7 +604,7 @@ Building and testing qifa: [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Status
 
-Active development; current release v0.7.0, changes in
+Active development; current release v0.7.1, changes in
 [CHANGELOG.md](CHANGELOG.md). The CLI is reasonably stable; the schema may
 still change before a 1.0 tag, and renamed keys keep loading with a warning
 when it does.
